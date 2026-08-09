@@ -7,15 +7,21 @@ deterministic state construction, and flat artifact handling.
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
-import resource
 import sys
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+
+
+try:
+    _resource = importlib.import_module("resource")
+except ImportError:  # pragma: no cover - Windows does not provide resource
+    _resource = None
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -88,8 +94,10 @@ def capability_manifest_paths() -> tuple[Path, ...]:
 
 
 def peak_rss_bytes() -> int:
-    """Return process peak RSS in bytes on supported local platforms."""
-    value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    """Return process peak RSS in bytes when the platform exposes it."""
+    if _resource is None:
+        return 0
+    value = int(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss)
     return value if sys.platform == "darwin" else value * 1024
 
 

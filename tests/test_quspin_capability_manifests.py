@@ -119,6 +119,15 @@ def test_shared_quspin_protocol_rejects_missing_provenance_fields() -> None:
         )
 
 
+def test_peak_rss_bytes_is_zero_when_platform_has_no_resource_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import quspin_capabilities as protocol
+
+    monkeypatch.setattr(protocol, "_resource", None)
+    assert protocol.peak_rss_bytes() == 0
+
+
 def test_exact_command_is_deterministic_from_child_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
