@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import math
 import threading
-from dataclasses import dataclass
-from typing import Any, Optional, Sequence, Tuple, cast
+from dataclasses import dataclass, field
+from typing import Any, Literal, Optional, Sequence, Tuple, cast
 
 import numpy as np
 
 from . import _native
+from ._native_mvp import NativePlanMetadata, _NativeMvpFacade
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     COOMatrix,
@@ -475,25 +476,12 @@ class U1RestrictedOperator:
 
 
 @dataclass(frozen=True, init=False)
-class U1MvpPlan:
+class U1MvpPlan(_NativeMvpFacade):
     """Reusable matrix-free plan over a fixed-particle-number basis."""
 
     sector: U1Sector
-    dimension: int
-    term_count: int
-    transition_count: int
-    estimated_bytes: int
-    basis_ordering: str
-    target: str
-    _native_plan: Any
-    storage: str
-    execution_family: str
-    native_variant: str
-    retained_format: str
-    source_term_count: int
-    schedule_count: int
-    estimated_retained_bytes: int
-    estimated_construction_peak_bytes: int
+    _execution: Any = field(repr=False, compare=False)
+    _metadata: NativePlanMetadata = field(repr=False, compare=False)
 
     def __init__(
         self,
@@ -503,100 +491,46 @@ class U1MvpPlan:
         *,
         storage: str = "eager",
     ) -> None:
-        object.__setattr__(self, "sector", sector)
         if storage not in {"lazy", "eager"}:
             raise ValueError("storage must be either 'eager' or 'lazy'")
         if native_plan is None:
             raise RuntimeError("U1 MVP plan requires a native plan")
+        dimension = int(native_plan.dimension)
+        eager_transition_count = (
+            0 if storage == "lazy" else int(native_plan.transition_count)
+        )
+        transition_count = None if storage == "lazy" else eager_transition_count
+        retained_bytes = int(
+            int(native_plan.estimated_bytes)
+            if storage == "lazy"
+            else dimension * 16 + (dimension + 1) * 8 + eager_transition_count * 32
+        )
+        object.__setattr__(self, "sector", sector)
+        object.__setattr__(self, "_execution", native_plan)
         object.__setattr__(
             self,
-            "dimension",
-            int(native_plan.dimension),
-        )
-        object.__setattr__(self, "term_count", int(term_count))
-        object.__setattr__(
-            self,
-            "transition_count",
-            0 if storage == "lazy" else int(native_plan.transition_count),
-        )
-        object.__setattr__(
-            self,
-            "estimated_bytes",
-            int(
-                int(native_plan.estimated_bytes)
-                if storage == "lazy"
-                else self.dimension * 16
-                + (self.dimension + 1) * 8
-                + self.transition_count * 32
-            ),
-        )
-        object.__setattr__(self, "basis_ordering", "qubit0_msb_matrix")
-        object.__setattr__(self, "target", "native_mvp")
-        object.__setattr__(self, "_native_plan", native_plan)
-        object.__setattr__(self, "storage", storage)
-        retained_bytes = int(self.estimated_bytes)
-        object.__setattr__(self, "execution_family", "product")
-        object.__setattr__(
-            self,
-            "native_variant",
-            str(getattr(native_plan, "native_variant", "qubit")),
-        )
-        object.__setattr__(
-            self,
-            "retained_format",
-            "compiled_actions" if storage == "lazy" else "csr",
-        )
-        object.__setattr__(self, "source_term_count", int(term_count))
-        object.__setattr__(self, "schedule_count", int(term_count))
-        object.__setattr__(self, "estimated_retained_bytes", retained_bytes)
-        object.__setattr__(self, "estimated_construction_peak_bytes", retained_bytes)
-
-    def apply(
-        self,
-        state: Sequence[complex],
-        *,
-        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> np.ndarray[Any, Any]:
-        """Apply the reusable restricted plan."""
-        _validate_max_bytes(max_bytes)
-        values = np.asarray(state, dtype=np.complex128)
-        if values.ndim != 1 or values.shape[0] != self.dimension:
-            raise ValueError(
-                f"state must have shape ({self.dimension},), got {values.shape}"
-            )
-        return cast(
-            np.ndarray[Any, Any],
-            np.asarray(
-                self._native_plan.apply(
-                    np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
-                ),
-                dtype=np.complex128,
-                order="C",
+            "_metadata",
+            NativePlanMetadata(
+                dimension=dimension,
+                term_count=int(term_count),
+                storage=cast(Literal["lazy", "eager"], storage),
+                basis_ordering="qubit0_msb_matrix",
+                target="native_mvp",
+                execution_family="product",
+                native_variant=str(getattr(native_plan, "native_variant", "qubit")),
+                retained_format="compiled_actions" if storage == "lazy" else "csr",
+                source_term_count=int(term_count),
+                schedule_count=int(term_count),
+                estimated_retained_bytes=retained_bytes,
+                estimated_construction_peak_bytes=retained_bytes,
+                transition_count=transition_count,
             ),
         )
 
-    def apply_into(
-        self,
-        input_state: np.ndarray[Any, Any],
-        output_state: np.ndarray[Any, Any],
-        *,
-        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> None:
-        _validate_apply_into_buffers(input_state, output_state, self.dimension)
-        self._native_plan.apply_into(
-            input_state, output_state, _effective_max_bytes(max_bytes)
-        )
-
-    def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
-        return self.apply(state)
-
-    def to_scipy_linear_operator(
-        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
-    ) -> Any:
-        """Expose the U(1)-restricted plan as a SciPy ``LinearOperator``."""
-        from .integrations.scipy import to_scipy_linear_operator
-
-        return to_scipy_linear_operator(self, max_bytes=max_bytes)
+    @property
+    def _native_plan(self) -> Any:
+        """Compatibility access to the single retained native execution handle."""
+        return self._execution
 
 
 def _validate_sector_value(value: int) -> int:

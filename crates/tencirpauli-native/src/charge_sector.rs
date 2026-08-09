@@ -4,14 +4,10 @@ use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadwrit
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use tencir_pauli_core::{
-    apply_charge_csr_into, apply_charge_mvp_from_prepared_plan,
-    apply_charge_mvp_from_prepared_plan_into, build_compact_charge_sector_plan,
-    build_fast_boson_mvp_plan, build_fast_fermion_mvp_plan, build_fast_product_mvp_plan,
-    build_fast_qubit_mvp_plan, build_fast_qudit_mvp_plan, compile_charge_csr_from_prepared_plan,
-    compile_charge_csr_from_prepared_plan_with_chunk_capacity,
-    estimate_charge_transition_terms_bytes, group_charge_transition_terms,
-    prepare_charge_transition_plan_layout, ChargeCsrResult, ChargeSectorPlan, ChargeTransitionTerm,
-    Complex64, FastChargeMvpPlan, PauliError, PreparedChargeTransitionPlanLayout,
+    build_compact_charge_sector_plan, estimate_charge_transition_terms_bytes,
+    group_charge_transition_terms, prepare_charge_mvp_plan, prepare_charge_transition_plan_layout,
+    ChargeCsrResult, ChargeKernelHints, ChargeSectorPlan, ChargeTransitionTerm, Complex64,
+    CsrApplyPolicy, CsrGraph, PauliError, PreparedChargeMvpPlan,
 };
 
 use crate::convert::map_error;
@@ -135,113 +131,29 @@ fn build_native_charge_mvp_plan(
     .map_err(map_error)?;
     let fast_budget =
         charge_remaining_budget(layout_budget, layout.estimated_bytes()).map_err(map_error)?;
-    let fast_plan = if termwise_conserved {
-        build_fast_fermion_mvp_plan(
-            &plan,
-            &local_dimensions,
-            &fermion_positions,
-            &boson_positions,
-            &qubit_positions,
-            &qudit_positions,
-            &terms,
-            fast_fermion_particles,
-            fast_fermion_mode_order.as_deref(),
-            fast_budget,
-        )
-        .map_err(map_error)?
-        .map(FastChargeMvpPlan::Fermion)
-    } else {
-        None
-    };
-    let fast_plan = if fast_plan.is_some() {
-        fast_plan
-    } else if fast_qubit_particles.is_some() {
-        let candidate = build_fast_qubit_mvp_plan(
-            &plan,
-            &local_dimensions,
-            &fermion_positions,
-            &boson_positions,
-            &qubit_positions,
-            &qudit_positions,
-            qudit_dimension,
-            &terms,
-            fast_qubit_particles,
-            fast_qubit_positions.as_deref(),
-            fast_budget,
-        )
-        .map_err(map_error)?;
-        if candidate.is_some() {
-            candidate.map(FastChargeMvpPlan::Qubit)
-        } else if let Some(factor_positions) = fast_product_positions.as_deref() {
-            build_fast_product_mvp_plan(&plan, &layout, &terms, factor_positions, fast_budget, true)
-                .map_err(map_error)?
-                .map(FastChargeMvpPlan::Product)
-        } else {
-            None
-        }
-    } else if fast_qudit_weights.is_some() {
-        let candidate = build_fast_qudit_mvp_plan(
-            &plan,
-            &local_dimensions,
-            &fermion_positions,
-            &boson_positions,
-            &qubit_positions,
-            &qudit_positions,
-            qudit_dimension,
-            &terms,
-            fast_qudit_weights.as_deref(),
-            fast_qudit_target,
-            fast_qudit_positions.as_deref(),
-            fast_budget,
-        )
-        .map_err(map_error)?;
-        if candidate.is_some() {
-            candidate.map(FastChargeMvpPlan::Qudit)
-        } else if let Some(factor_positions) = fast_product_positions.as_deref() {
-            build_fast_product_mvp_plan(&plan, &layout, &terms, factor_positions, fast_budget, true)
-                .map_err(map_error)?
-                .map(FastChargeMvpPlan::Product)
-        } else {
-            None
-        }
-    } else if fast_boson_weights.is_some() {
-        let candidate = build_fast_boson_mvp_plan(
-            &plan,
-            &local_dimensions,
-            &fermion_positions,
-            &boson_positions,
-            &qubit_positions,
-            &qudit_positions,
-            qudit_dimension,
-            &terms,
-            fast_boson_weights.as_deref(),
-            fast_boson_target,
-            fast_boson_positions.as_deref(),
-            fast_budget,
-        )
-        .map_err(map_error)?;
-        if candidate.is_some() {
-            candidate.map(FastChargeMvpPlan::Boson)
-        } else if let Some(factor_positions) = fast_product_positions.as_deref() {
-            build_fast_product_mvp_plan(&plan, &layout, &terms, factor_positions, fast_budget, true)
-                .map_err(map_error)?
-                .map(FastChargeMvpPlan::Product)
-        } else {
-            None
-        }
-    } else if let Some(factor_positions) = fast_product_positions.as_deref() {
-        build_fast_product_mvp_plan(&plan, &layout, &terms, factor_positions, fast_budget, true)
-            .map_err(map_error)?
-            .map(FastChargeMvpPlan::Product)
-    } else {
-        None
+    let hints = ChargeKernelHints {
+        fermion_particles: fast_fermion_particles,
+        fermion_mode_order: fast_fermion_mode_order.as_deref(),
+        qubit_particles: fast_qubit_particles,
+        qubit_positions: fast_qubit_positions.as_deref(),
+        qudit_weights: fast_qudit_weights.as_deref(),
+        qudit_target: fast_qudit_target,
+        qudit_positions: fast_qudit_positions.as_deref(),
+        boson_weights: fast_boson_weights.as_deref(),
+        boson_target: fast_boson_target,
+        boson_positions: fast_boson_positions.as_deref(),
+        product_positions: fast_product_positions.as_deref(),
     };
     Ok(NativeChargeMvpPlan {
-        plan,
-        layout,
-        terms,
-        termwise_conserved,
-        fast_plan,
+        plan: prepare_charge_mvp_plan(
+            plan,
+            layout,
+            terms.into_boxed_slice(),
+            termwise_conserved,
+            fast_budget,
+            hints,
+        )
+        .map_err(map_error)?,
     })
 }
 
@@ -440,11 +352,7 @@ impl NativeChargeSectorPlan {
 
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeChargeMvpPlan {
-    plan: Arc<ChargeSectorPlan>,
-    layout: PreparedChargeTransitionPlanLayout,
-    terms: Vec<ChargeTransitionTerm>,
-    termwise_conserved: bool,
-    fast_plan: Option<FastChargeMvpPlan>,
+    plan: PreparedChargeMvpPlan,
 }
 
 #[pymethods]
@@ -456,17 +364,7 @@ impl NativeChargeMvpPlan {
 
     #[getter]
     fn estimated_bytes(&self) -> u128 {
-        self.plan
-            .estimated_bytes()
-            .saturating_add(
-                estimate_charge_transition_terms_bytes(&self.terms).unwrap_or(u128::MAX),
-            )
-            .saturating_add(self.layout.estimated_bytes())
-            .saturating_add(
-                self.fast_plan
-                    .as_ref()
-                    .map_or(0, FastChargeMvpPlan::estimated_bytes),
-            )
+        self.plan.estimated_bytes().unwrap_or(u128::MAX)
     }
 
     /// Return the executor selected by native plan construction.
@@ -475,53 +373,25 @@ impl NativeChargeMvpPlan {
     /// selector actually fell through to the generic executor.
     #[getter]
     fn execution_family(&self) -> &'static str {
-        if self.fast_plan.is_some() {
-            "product"
-        } else {
-            "generic"
-        }
+        self.plan.execution_family()
     }
 
     #[getter]
     fn native_variant(&self) -> &'static str {
-        self.fast_plan
-            .as_ref()
-            .map_or("generic", FastChargeMvpPlan::native_variant)
+        self.plan.native_variant()
     }
 
     fn debug_counters<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         let values = self
-            .fast_plan
-            .as_ref()
-            .and_then(FastChargeMvpPlan::debug_counters)
-            .unwrap_or_else(|| {
-                let (
-                    scalar_insertions,
-                    wide_insertions,
-                    capacity_growths,
-                    owned_keys,
-                    fallbacks,
-                    rankers,
-                    validations,
-                    destination_allocations,
-                ) = self.layout.debug_counters();
-                vec![
-                    scalar_insertions,
-                    wide_insertions,
-                    capacity_growths,
-                    owned_keys,
-                    fallbacks,
-                    rankers,
-                    validations,
-                    destination_allocations,
-                ]
-            });
+            .plan
+            .debug_counters()
+            .unwrap_or_else(|| self.plan.generic_debug_counters().to_vec());
         PyTuple::new(py, values)
     }
 
     #[getter]
     fn schedule_count(&self) -> usize {
-        self.terms.len()
+        self.plan.schedule_count()
     }
 
     fn apply<'py>(
@@ -541,17 +411,7 @@ impl NativeChargeMvpPlan {
             )));
         }
         let result = py
-            .allow_threads(|| {
-                apply_charge_mvp_from_prepared_plan(
-                    &self.plan,
-                    &self.layout,
-                    &self.terms,
-                    state_values,
-                    self.termwise_conserved,
-                    self.fast_plan.as_ref(),
-                    max_bytes,
-                )
-            })
+            .allow_threads(|| self.plan.apply(state_values, max_bytes))
             .map_err(map_error)?;
         Ok(PyArray1::from_vec(py, result))
     }
@@ -576,16 +436,8 @@ impl NativeChargeMvpPlan {
             })?;
         let effective_max = max_bytes.saturating_add(output_bytes);
         py.allow_threads(|| {
-            apply_charge_mvp_from_prepared_plan_into(
-                &self.plan,
-                &self.layout,
-                &self.terms,
-                state_values,
-                output_values,
-                self.termwise_conserved,
-                self.fast_plan.as_ref(),
-                effective_max,
-            )
+            self.plan
+                .apply_into(state_values, output_values, effective_max)
         })
         .map_err(map_error)
     }
@@ -596,13 +448,7 @@ impl NativeChargeMvpPlan {
         max_bytes: u128,
     ) -> PyResult<NativeChargeEagerMvpPlan> {
         py.allow_threads(|| {
-            let result = compile_charge_csr_from_prepared_plan(
-                &self.plan,
-                &self.layout,
-                &self.terms,
-                max_bytes,
-            )
-            .map_err(map_error)?;
+            let result = self.plan.compile_eager(max_bytes).map_err(map_error)?;
             NativeChargeEagerMvpPlan::from_csr(result, self.native_variant())
         })
     }
@@ -615,14 +461,10 @@ impl NativeChargeMvpPlan {
         chunk_capacity: usize,
     ) -> PyResult<NativeChargeEagerMvpPlan> {
         py.allow_threads(|| {
-            let result = compile_charge_csr_from_prepared_plan_with_chunk_capacity(
-                &self.plan,
-                &self.layout,
-                &self.terms,
-                max_bytes,
-                chunk_capacity,
-            )
-            .map_err(map_error)?;
+            let result = self
+                .plan
+                .compile_eager_with_chunk_capacity(max_bytes, chunk_capacity)
+                .map_err(map_error)?;
             NativeChargeEagerMvpPlan::from_csr(result, self.native_variant())
         })
     }
@@ -630,10 +472,7 @@ impl NativeChargeMvpPlan {
 
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeChargeEagerMvpPlan {
-    dimension: usize,
-    indptr: Vec<usize>,
-    columns: Vec<usize>,
-    values: Vec<Complex64>,
+    graph: CsrGraph<usize>,
     estimated_bytes: u128,
     estimated_construction_peak_bytes: u128,
     schedule_count: usize,
@@ -652,23 +491,15 @@ pub(crate) struct NativeChargeEagerMvpPlan {
 
 impl NativeChargeEagerMvpPlan {
     fn from_csr(result: ChargeCsrResult, native_variant: &'static str) -> PyResult<Self> {
-        let columns = result
-            .columns
-            .into_iter()
-            .map(usize::try_from)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| pyo3::exceptions::PyValueError::new_err("charge CSR column overflow"))?;
-        let indptr = result
-            .indptr
-            .into_iter()
-            .map(usize::try_from)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| pyo3::exceptions::PyValueError::new_err("charge CSR offset overflow"))?;
+        let graph = CsrGraph::try_from_u64(
+            result.dimension,
+            result.indptr,
+            result.columns,
+            result.values,
+        )
+        .map_err(map_error)?;
         Ok(Self {
-            dimension: result.dimension,
-            indptr,
-            columns,
-            values: result.values,
+            graph,
             estimated_bytes: result.estimated_bytes,
             estimated_construction_peak_bytes: result.estimated_construction_peak_bytes,
             schedule_count: result.schedule_count,
@@ -692,15 +523,14 @@ impl NativeChargeEagerMvpPlan {
         output: &mut [Complex64],
         parallel: bool,
     ) -> PyResult<()> {
-        apply_charge_csr_into(
-            &self.indptr,
-            &self.columns,
-            &self.values,
-            state,
-            output,
-            parallel,
-        )
-        .map_err(map_error)
+        let policy = if parallel {
+            CsrApplyPolicy::parallel(1 << 14)
+        } else {
+            CsrApplyPolicy::serial()
+        };
+        self.graph
+            .apply_into(state, output, policy)
+            .map_err(map_error)
     }
 }
 
@@ -708,12 +538,12 @@ impl NativeChargeEagerMvpPlan {
 impl NativeChargeEagerMvpPlan {
     #[getter]
     fn dimension(&self) -> usize {
-        self.dimension
+        self.graph.dimension()
     }
 
     #[getter]
     fn transition_count(&self) -> usize {
-        self.values.len()
+        self.graph.transition_count()
     }
 
     #[getter]
@@ -765,35 +595,23 @@ impl NativeChargeEagerMvpPlan {
     }
 
     fn csr<'py>(&self, py: Python<'py>) -> ChargeCsrArrays<'py> {
-        let indptr = self.indptr.iter().map(|&value| value as u64).collect();
-        let columns = self.columns.iter().map(|&value| value as u64).collect();
+        let (indptr, columns, values) = self
+            .graph
+            .to_u64_arrays(u128::MAX)
+            .expect("validated charge CSR graph is always readable");
         (
             PyArray1::from_vec(py, indptr),
             PyArray1::from_vec(py, columns),
-            PyArray1::from_vec(py, self.values.clone()),
+            PyArray1::from_vec(py, values),
         )
     }
 
     fn coo<'py>(&self, py: Python<'py>, max_bytes: u128) -> PyResult<ChargeCooArrays<'py>> {
-        let transition_bytes = (self.values.len() as u128)
-            .checked_mul(32)
-            .ok_or_else(|| pyo3::exceptions::PyMemoryError::new_err("charge COO size overflow"))?;
-        if transition_bytes > max_bytes {
-            return Err(pyo3::exceptions::PyMemoryError::new_err(format!(
-                "charge COO requires approximately {transition_bytes} bytes, exceeding max_bytes={max_bytes}"
-            )));
-        }
-        let mut rows = Vec::with_capacity(self.values.len());
-        for row in 0..self.dimension {
-            let start = self.indptr[row];
-            let end = self.indptr[row + 1];
-            rows.extend(std::iter::repeat_n(row as u64, end - start));
-        }
-        let columns = self.columns.iter().map(|&value| value as u64).collect();
+        let (rows, columns, values) = self.graph.to_coo_u64(max_bytes).map_err(map_error)?;
         Ok((
             PyArray1::from_vec(py, rows),
             PyArray1::from_vec(py, columns),
-            PyArray1::from_vec(py, self.values.clone()),
+            PyArray1::from_vec(py, values),
         ))
     }
 
@@ -802,8 +620,9 @@ impl NativeChargeEagerMvpPlan {
         py: Python<'py>,
         max_bytes: u128,
     ) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
-        let entries = (self.dimension as u128)
-            .checked_mul(self.dimension as u128)
+        let dimension = self.graph.dimension();
+        let entries = (dimension as u128)
+            .checked_mul(dimension as u128)
             .ok_or_else(|| {
                 pyo3::exceptions::PyMemoryError::new_err("charge dense size overflow")
             })?;
@@ -825,9 +644,10 @@ impl NativeChargeEagerMvpPlan {
         ];
         let values = py.allow_threads(|| {
             let mut values = values;
-            for row in 0..self.dimension {
-                for index in self.indptr[row]..self.indptr[row + 1] {
-                    values[row * self.dimension + self.columns[index]] = self.values[index];
+            for row in 0..dimension {
+                for index in self.graph.indptr()[row]..self.graph.indptr()[row + 1] {
+                    values[row * dimension + self.graph.columns()[index]] =
+                        self.graph.values()[index];
                 }
             }
             values
@@ -844,7 +664,8 @@ impl NativeChargeEagerMvpPlan {
         let state_values = state.as_slice().map_err(|_| {
             pyo3::exceptions::PyValueError::new_err("charge state must be C-contiguous")
         })?;
-        let output_bytes = (self.dimension as u128)
+        let dimension = self.graph.dimension();
+        let output_bytes = (dimension as u128)
             .checked_mul(std::mem::size_of::<Complex64>() as u128)
             .ok_or_else(|| {
                 pyo3::exceptions::PyMemoryError::new_err("charge output size overflow")
@@ -854,7 +675,7 @@ impl NativeChargeEagerMvpPlan {
                 "charge MVP output requires approximately {output_bytes} bytes, exceeding max_bytes={max_bytes}"
             )));
         }
-        let mut output = vec![Complex64::default(); self.dimension];
+        let mut output = vec![Complex64::default(); dimension];
         py.allow_threads(|| self.apply_values(state_values, &mut output, true))?;
         Ok(PyArray1::from_vec(py, output))
     }
@@ -869,7 +690,8 @@ impl NativeChargeEagerMvpPlan {
         let state_values = state.as_slice().map_err(|_| {
             pyo3::exceptions::PyValueError::new_err("charge state must be C-contiguous")
         })?;
-        let output_bytes = (self.dimension as u128)
+        let dimension = self.graph.dimension();
+        let output_bytes = (dimension as u128)
             .checked_mul(std::mem::size_of::<Complex64>() as u128)
             .ok_or_else(|| {
                 pyo3::exceptions::PyMemoryError::new_err("charge output size overflow")
@@ -879,7 +701,7 @@ impl NativeChargeEagerMvpPlan {
                 "charge MVP output requires approximately {output_bytes} bytes, exceeding max_bytes={max_bytes}"
             )));
         }
-        let mut output = vec![Complex64::default(); self.dimension];
+        let mut output = vec![Complex64::default(); dimension];
         py.allow_threads(|| self.apply_values(state_values, &mut output, parallel))?;
         Ok(PyArray1::from_vec(py, output))
     }
@@ -897,7 +719,7 @@ impl NativeChargeEagerMvpPlan {
         let output_values = output.as_slice_mut().map_err(|_| {
             pyo3::exceptions::PyValueError::new_err("charge output must be C-contiguous")
         })?;
-        let output_bytes = (self.dimension as u128)
+        let output_bytes = (self.graph.dimension() as u128)
             .checked_mul(std::mem::size_of::<Complex64>() as u128)
             .ok_or_else(|| {
                 pyo3::exceptions::PyMemoryError::new_err("charge output size overflow")

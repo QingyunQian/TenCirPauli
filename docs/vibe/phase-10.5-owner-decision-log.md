@@ -338,6 +338,14 @@ Decision: the manual evidence set uses actual native variants, complete commands
 
 Evidence: `tests/test_execution_invariants.py`; `crates/tencir-pauli-core/src/charge.rs`, `charge_sector.rs`, `fermion_mask.rs`, and `structured.rs`; `benchmarks/manual/product_variant_matrix.py`, `fermion_mask_phase_profile.py`, `generic_wide_profile.py`, `product_thread_ab.py`, and `csr_chunk_scaling.py`. Current release records show the five-site public Holstein route selecting `fermion` at 5.00/2.91/1.69 ms for 1/2/4 threads and the seven-site public route selecting `fermion` at 1.534 s median, versus the matched isolated QuSpin matrix-free 1.730 s median. The acceptance evidence records the numerical and resource fields and the current regression matrix.
 
+### D31 — Raw-Fermion direct public-index execution and workspace closure
+
+Status: `technically resolved and release-verified in the current worktree; clean-commit provenance excluded by owner direction`.
+
+Decision: the uniform raw-Fermion CPU-native default retains `FermionMaskDescriptor` as the sole lowering and sign authority. Eligible one-word identity-axis descriptors now publish one construction-time public-index view containing occupied, empty, parity, flip, and fixed-sign masks. Full binary and Fermion-prefix kernels gather directly with XOR and evaluate the view without building a state-sized packed-source cache. Multiword and non-contiguous layouts retain the caller-owned width-generic scratch path. No raw/Jordan--Wigner topology selector, persistent cache, or second sign convention is added.
+
+Evidence: allocator-backed core coverage proves a contiguous raw apply performs zero per-call workspace allocations, while public `apply_into(max_bytes=0)` remains valid for both full-space and Fermion-prefix inputs. Release topology records at `D=262,144` preserve mapped-Pauli numerical agreement below `1.6e-13`: at one thread raw/JW medians are `27.31/23.09 ms` for the local chain, `70.21/87.65 ms` for long-range hopping, and `17.99/127.07 ms` for nonlocal pair transfer; at four threads they are `7.21/5.96 ms`, `18.17/22.57 ms`, and `4.78/32.67 ms`. The direct view therefore removes the unchecked `O(D)` workspace without a material change of the established topology-dependent performance class.
+
 ### P01 — Exact lazy representation for factorable workloads
 
 Status: `resolved by D06`.

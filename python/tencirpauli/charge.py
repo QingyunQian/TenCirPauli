@@ -5,6 +5,7 @@ from __future__ import annotations
 import cmath
 import math
 import threading
+from dataclasses import dataclass
 from typing import (
     Any,
     Dict,
@@ -21,6 +22,12 @@ from typing import (
 import numpy as np
 
 from . import _native
+from ._native_mvp import (
+    NativePlanMetadata,
+    _NativeMvpFacade,
+    _read_coo_arrays,
+    _read_csr_arrays,
+)
 from ._validation import validate_nonnegative_int
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
@@ -966,7 +973,7 @@ def _supports_independent_factor_product(
     return None
 
 
-class ChargeMvpPlan:
+class ChargeMvpPlan(_NativeMvpFacade):
     """Reusable matrix-free transition plan in a finite charge-sector basis.
 
     The native handle owns validated destination-major CSR storage and can
@@ -976,38 +983,12 @@ class ChargeMvpPlan:
     """
 
     __slots__ = (
+        "_execution",
         "_locked",
-        "_native_plan",
-        "basis_ordering",
-        "dimension",
-        "estimated_bytes",
-        "estimated_construction_peak_bytes",
-        "estimated_retained_bytes",
-        "execution_family",
-        "native_variant",
-        "retained_format",
-        "schedule_count",
-        "source_term_count",
-        "storage",
-        "target",
-        "term_count",
-        "transition_count",
+        "_metadata",
     )
-    dimension: int
-    term_count: int
-    transition_count: int
-    estimated_bytes: int
-    basis_ordering: str
-    storage: ChargeStorage
-    target: str
-    execution_family: str
-    native_variant: str
-    retained_format: str
-    source_term_count: int
-    schedule_count: int
-    estimated_retained_bytes: int
-    estimated_construction_peak_bytes: int
-    _native_plan: Any
+    _execution: Any
+    _metadata: NativePlanMetadata
     _locked: bool
 
     def __init__(
@@ -1019,46 +1000,40 @@ class ChargeMvpPlan:
         storage: ChargeStorage = "eager",
         execution_family: str = "generic",
     ) -> None:
-        object.__setattr__(self, "dimension", int(dimension))
-        object.__setattr__(self, "term_count", int(term_count))
-        object.__setattr__(self, "transition_count", int(native_plan.transition_count))
-        object.__setattr__(self, "_native_plan", native_plan)
+        normalized_storage = _validate_storage(storage)
+        retained_bytes = int(native_plan.estimated_bytes)
+        object.__setattr__(self, "_execution", native_plan)
         object.__setattr__(
             self,
-            "estimated_bytes",
-            int(native_plan.estimated_bytes),
-        )
-        object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
-        object.__setattr__(self, "storage", _validate_storage(storage))
-        object.__setattr__(self, "target", "native_mvp")
-        object.__setattr__(self, "execution_family", execution_family)
-        object.__setattr__(
-            self,
-            "native_variant",
-            str(getattr(native_plan, "native_variant", "generic")),
-        )
-        object.__setattr__(self, "retained_format", "csr")
-        object.__setattr__(self, "source_term_count", int(term_count))
-        object.__setattr__(
-            self,
-            "schedule_count",
-            int(getattr(native_plan, "schedule_count", term_count)),
-        )
-        object.__setattr__(
-            self, "estimated_retained_bytes", int(native_plan.estimated_bytes)
-        )
-        object.__setattr__(
-            self,
-            "estimated_construction_peak_bytes",
-            int(
-                getattr(
-                    native_plan,
-                    "estimated_construction_peak_bytes",
-                    native_plan.estimated_bytes,
-                )
+            "_metadata",
+            NativePlanMetadata(
+                dimension=int(dimension),
+                term_count=int(term_count),
+                storage=normalized_storage,
+                basis_ordering=MIXED_RADIX_BASIS_ORDERING,
+                target="native_mvp",
+                execution_family=execution_family,
+                native_variant=str(getattr(native_plan, "native_variant", "generic")),
+                retained_format="csr",
+                source_term_count=int(term_count),
+                schedule_count=int(getattr(native_plan, "schedule_count", term_count)),
+                estimated_retained_bytes=retained_bytes,
+                estimated_construction_peak_bytes=int(
+                    getattr(
+                        native_plan,
+                        "estimated_construction_peak_bytes",
+                        retained_bytes,
+                    )
+                ),
+                transition_count=int(native_plan.transition_count),
             ),
         )
         object.__setattr__(self, "_locked", True)
+
+    @property
+    def _native_plan(self) -> Any:
+        """Compatibility access to the single retained native execution handle."""
+        return self._execution
 
     def _csr_arrays(
         self,
@@ -1067,13 +1042,8 @@ class ChargeMvpPlan:
         np.ndarray[Any, Any],
         np.ndarray[Any, Any],
     ]:
-        native_indptr, native_columns, native_coefficients = self._native_plan.csr()
-        indptr = np.asarray(native_indptr, dtype=np.uint64)
-        columns = np.asarray(native_columns, dtype=np.uint64)
-        coefficients = np.asarray(native_coefficients, dtype=np.complex128)
-        for value in (indptr, columns, coefficients):
-            value.setflags(write=False)
-        return indptr, columns, coefficients
+        matrix = _read_csr_arrays(self._execution, self.dimension, None)
+        return matrix.indptr, matrix.indices, matrix.data
 
     def _coo_arrays(
         self,
@@ -1084,15 +1054,8 @@ class ChargeMvpPlan:
         np.ndarray[Any, Any],
         np.ndarray[Any, Any],
     ]:
-        native_rows, native_columns, native_coefficients = self._native_plan.coo(
-            _effective_max_bytes(max_bytes)
-        )
-        rows = np.asarray(native_rows, dtype=np.uint64)
-        columns = np.asarray(native_columns, dtype=np.uint64)
-        coefficients = np.asarray(native_coefficients, dtype=np.complex128)
-        for value in (rows, columns, coefficients):
-            value.setflags(write=False)
-        return rows, columns, coefficients
+        matrix = _read_coo_arrays(self._execution, self.dimension, max_bytes)
+        return matrix.row, matrix.column, matrix.data
 
     @property
     def indptr(self) -> np.ndarray[Any, Any]:
@@ -1119,59 +1082,8 @@ class ChargeMvpPlan:
             raise AttributeError("ChargeMvpPlan is immutable")
         object.__setattr__(self, name, value)
 
-    def apply(
-        self,
-        state: Sequence[complex],
-        *,
-        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> np.ndarray[Any, Any]:
-        """Apply restricted transitions without a full-space allocation."""
-        _validate_max_bytes(max_bytes)
-        values = np.asarray(state, dtype=np.complex128)
-        if values.ndim != 1 or values.shape[0] != self.dimension:
-            raise ValueError(
-                f"state must have shape ({self.dimension},), got {values.shape}"
-            )
-        _check_allocation(self.dimension * 16, max_bytes, "charge MVP output")
-        return cast(
-            np.ndarray[Any, Any],
-            np.asarray(
-                self._native_plan.apply(
-                    np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
-                ),
-                dtype=np.complex128,
-                order="C",
-            ),
-        )
 
-    def apply_into(
-        self,
-        input_state: np.ndarray[Any, Any],
-        output_state: np.ndarray[Any, Any],
-        *,
-        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> None:
-        """Apply into strict caller-owned buffers without changing the input."""
-        _validate_apply_into_buffers(input_state, output_state, self.dimension)
-        self._native_plan.apply_into(
-            input_state,
-            output_state,
-            _effective_max_bytes(max_bytes),
-        )
-
-    def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
-        return self.apply(state)
-
-    def to_scipy_linear_operator(
-        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
-    ) -> Any:
-        """Expose the eager restricted plan as a SciPy ``LinearOperator``."""
-        from .integrations.scipy import to_scipy_linear_operator
-
-        return to_scipy_linear_operator(self, max_bytes=max_bytes)
-
-
-class ChargeLazyMvpPlan:
+class ChargeLazyMvpPlan(_NativeMvpFacade):
     """Explicitly lazy native MVP plan for a finite charge sector.
 
     Unlike :class:`ChargeMvpPlan`, this plan does not retain the complete
@@ -1182,41 +1094,15 @@ class ChargeLazyMvpPlan:
     """
 
     __slots__ = (
+        "_execution",
         "_locked",
-        "_native_execution",
-        "_native_plan",
-        "basis_ordering",
-        "dimension",
-        "estimated_bytes",
-        "estimated_construction_peak_bytes",
-        "estimated_retained_bytes",
-        "execution_family",
-        "native_variant",
-        "retained_format",
-        "schedule_count",
-        "source_term_count",
-        "storage",
-        "target",
-        "term_count",
-        "transition_count",
+        "_metadata",
+        "_sector_plan",
     )
-    dimension: int
-    term_count: int
-    transition_count: Optional[int]
-    estimated_bytes: int
-    basis_ordering: str
-    storage: ChargeStorage
-    target: str
-    execution_family: str
-    native_variant: str
-    retained_format: str
-    source_term_count: int
-    schedule_count: int
-    estimated_retained_bytes: int
-    estimated_construction_peak_bytes: int
     _locked: bool
-    _native_plan: Any
-    _native_execution: Any
+    _sector_plan: Any
+    _execution: Any
+    _metadata: NativePlanMetadata
 
     def __init__(
         self,
@@ -1247,16 +1133,7 @@ class ChargeLazyMvpPlan:
             tuple(float(value) for value in charge.qudit_weights)
             for charge, _ in sector.constraints
         ]
-        fast_qubit_factor = _fast_qubit_particles(sector)
-        fast_qubit_particles = (
-            fast_qubit_factor[0] if fast_qubit_factor is not None else None
-        )
-        fast_qubit_positions = (
-            list(fast_qubit_factor[1]) if fast_qubit_factor is not None else None
-        )
-        fast_qudit = _fast_qudit_factor(sector)
-        fast_boson = _fast_boson_factor(sector)
-        fast_product_positions = _supports_independent_factor_product(sector)
+        hints = ChargeCompileHints.from_sector(operator, sector)
         # Product is a supported fallback and the general factorized route,
         # but it is not allowed to displace a measured specialized winner.
         # Native construction tries the specialized candidates first and only
@@ -1281,17 +1158,29 @@ class ChargeLazyMvpPlan:
                 _effective_max_bytes(max_bytes),
                 None,
                 None,
-                fast_qubit_particles,
-                fast_qubit_positions,
-                list(fast_qudit[0]) if fast_qudit is not None else None,
-                fast_qudit[1] if fast_qudit is not None else None,
-                list(fast_qudit[2]) if fast_qudit is not None else None,
-                list(fast_boson[0]) if fast_boson is not None else None,
-                fast_boson[1] if fast_boson is not None else None,
-                list(fast_boson[2]) if fast_boson is not None else None,
+                hints.qubit_particles,
                 (
-                    [list(values) for values in fast_product_positions]
-                    if fast_product_positions is not None
+                    list(hints.qubit_positions)
+                    if hints.qubit_positions is not None
+                    else None
+                ),
+                list(hints.qudit_weights) if hints.qudit_weights is not None else None,
+                hints.qudit_target,
+                (
+                    list(hints.qudit_positions)
+                    if hints.qudit_positions is not None
+                    else None
+                ),
+                list(hints.boson_weights) if hints.boson_weights is not None else None,
+                hints.boson_target,
+                (
+                    list(hints.boson_positions)
+                    if hints.boson_positions is not None
+                    else None
+                ),
+                (
+                    [list(values) for values in hints.product_positions]
+                    if hints.product_positions is not None
                     else None
                 ),
             )
@@ -1317,25 +1206,11 @@ class ChargeLazyMvpPlan:
                     sector.constraints, level_rows, qudit_rows
                 )
             )
-            fast_fermion_candidate = (
-                _fast_fermion_particles(operator, sector)
-                if termwise_conserved
-                else None
-            )
             # The matched compact Fermion executor also supports the
             # eligible Cartesian-Boson layout.  Keep it as the fixed winner
             # until the general Product kernel passes a reverse-order A/B;
             # Product remains available when this specialized builder rejects
             # the public layout or its bounded descriptor budget.
-            fast_fermion_factor = fast_fermion_candidate
-            fast_fermion_particles = (
-                fast_fermion_factor[0] if fast_fermion_factor is not None else None
-            )
-            fast_fermion_mode_order = (
-                list(fast_fermion_factor[1])
-                if fast_fermion_factor is not None
-                else None
-            )
             native_execution = sector._native_plan.compile_mvp_hybrid_handle(
                 native_handle,
                 sector.dimension,
@@ -1347,113 +1222,80 @@ class ChargeLazyMvpPlan:
                 qudit_dimension,
                 termwise_conserved,
                 _effective_max_bytes(max_bytes),
-                fast_fermion_particles,
-                fast_fermion_mode_order,
-                fast_qubit_particles,
-                fast_qubit_positions,
-                list(fast_qudit[0]) if fast_qudit is not None else None,
-                fast_qudit[1] if fast_qudit is not None else None,
-                list(fast_qudit[2]) if fast_qudit is not None else None,
-                list(fast_boson[0]) if fast_boson is not None else None,
-                fast_boson[1] if fast_boson is not None else None,
-                list(fast_boson[2]) if fast_boson is not None else None,
+                hints.fermion_particles if termwise_conserved else None,
                 (
-                    [list(values) for values in fast_product_positions]
-                    if fast_product_positions is not None
+                    list(hints.fermion_mode_order)
+                    if termwise_conserved and hints.fermion_mode_order is not None
+                    else None
+                ),
+                hints.qubit_particles,
+                (
+                    list(hints.qubit_positions)
+                    if hints.qubit_positions is not None
+                    else None
+                ),
+                list(hints.qudit_weights) if hints.qudit_weights is not None else None,
+                hints.qudit_target,
+                (
+                    list(hints.qudit_positions)
+                    if hints.qudit_positions is not None
+                    else None
+                ),
+                list(hints.boson_weights) if hints.boson_weights is not None else None,
+                hints.boson_target,
+                (
+                    list(hints.boson_positions)
+                    if hints.boson_positions is not None
+                    else None
+                ),
+                (
+                    [list(values) for values in hints.product_positions]
+                    if hints.product_positions is not None
                     else None
                 ),
             )
-        object.__setattr__(self, "_native_plan", sector._native_plan)
-        object.__setattr__(self, "_native_execution", native_execution)
-        object.__setattr__(self, "dimension", sector.dimension)
-        object.__setattr__(self, "term_count", int(term_count))
-        object.__setattr__(self, "transition_count", None)
+        retained_bytes = int(native_execution.estimated_bytes)
+        object.__setattr__(self, "_sector_plan", sector._native_plan)
+        object.__setattr__(self, "_execution", native_execution)
         object.__setattr__(
             self,
-            "estimated_bytes",
-            int(self._native_execution.estimated_bytes),
-        )
-        object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
-        object.__setattr__(self, "storage", "lazy")
-        object.__setattr__(self, "target", "native_mvp")
-        object.__setattr__(
-            self, "execution_family", str(native_execution.execution_family)
-        )
-        object.__setattr__(
-            self,
-            "native_variant",
-            str(getattr(native_execution, "native_variant", "generic")),
-        )
-        object.__setattr__(self, "retained_format", "compiled_actions")
-        object.__setattr__(self, "source_term_count", int(term_count))
-        object.__setattr__(
-            self,
-            "schedule_count",
-            int(getattr(native_execution, "schedule_count", term_count)),
-        )
-        object.__setattr__(self, "estimated_retained_bytes", int(self.estimated_bytes))
-        object.__setattr__(
-            self,
-            "estimated_construction_peak_bytes",
-            int(self.estimated_bytes),
+            "_metadata",
+            NativePlanMetadata(
+                dimension=sector.dimension,
+                term_count=int(term_count),
+                storage="lazy",
+                basis_ordering=MIXED_RADIX_BASIS_ORDERING,
+                target="native_mvp",
+                execution_family=str(native_execution.execution_family),
+                native_variant=str(
+                    getattr(native_execution, "native_variant", "generic")
+                ),
+                retained_format="compiled_actions",
+                source_term_count=int(term_count),
+                schedule_count=int(
+                    getattr(native_execution, "schedule_count", term_count)
+                ),
+                estimated_retained_bytes=retained_bytes,
+                estimated_construction_peak_bytes=retained_bytes,
+                transition_count=None,
+            ),
         )
         object.__setattr__(self, "_locked", True)
+
+    @property
+    def _native_plan(self) -> Any:
+        """Compatibility access to the sector-plan lifetime owner."""
+        return self._sector_plan
+
+    @property
+    def _native_execution(self) -> Any:
+        """Compatibility access to the single numerical execution handle."""
+        return self._execution
 
     def __setattr__(self, name: str, value: object) -> None:
         if getattr(self, "_locked", False):
             raise AttributeError("ChargeLazyMvpPlan is immutable")
         object.__setattr__(self, name, value)
-
-    def apply(
-        self,
-        state: Sequence[complex],
-        *,
-        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> np.ndarray[Any, Any]:
-        """Apply the operator without storing all restricted transitions."""
-        _validate_max_bytes(max_bytes)
-        values = np.asarray(state, dtype=np.complex128)
-        if values.ndim != 1 or values.shape[0] != self.dimension:
-            raise ValueError(
-                f"state must have shape ({self.dimension},), got {values.shape}"
-            )
-        _check_allocation(self.dimension * 16, max_bytes, "charge MVP output")
-        return cast(
-            np.ndarray[Any, Any],
-            np.asarray(
-                self._native_execution.apply(
-                    np.ascontiguousarray(values), _effective_max_bytes(max_bytes)
-                ),
-                dtype=np.complex128,
-                order="C",
-            ),
-        )
-
-    def apply_into(
-        self,
-        input_state: np.ndarray[Any, Any],
-        output_state: np.ndarray[Any, Any],
-        *,
-        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> None:
-        """Apply the lazy native handle into strict caller-owned storage."""
-        _validate_apply_into_buffers(input_state, output_state, self.dimension)
-        self._native_execution.apply_into(
-            input_state,
-            output_state,
-            _effective_max_bytes(max_bytes),
-        )
-
-    def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
-        return self.apply(state)
-
-    def to_scipy_linear_operator(
-        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
-    ) -> Any:
-        """Expose the lazy restricted plan as a SciPy ``LinearOperator``."""
-        from .integrations.scipy import to_scipy_linear_operator
-
-        return to_scipy_linear_operator(self, max_bytes=max_bytes)
 
 
 class ChargeRestrictedOperator:
@@ -1604,7 +1446,7 @@ class ChargeRestrictedOperator:
             else:
                 _check_allocation(
                     _charge_materialization_bytes(
-                        self.dimension, cached.transition_count, target
+                        self.dimension, cast(int, cached.transition_count), target
                     ),
                     max_bytes,
                     f"charge {target} materialization",
@@ -1620,7 +1462,7 @@ class ChargeRestrictedOperator:
                 else:
                     _check_allocation(
                         _charge_materialization_bytes(
-                            self.dimension, cached.transition_count, target
+                            self.dimension, cast(int, cached.transition_count), target
                         ),
                         max_bytes,
                         f"charge {target} materialization",
@@ -1801,6 +1643,65 @@ def _fast_fermion_particles(
         )
         mode_order = tuple(mode_order[0::2]) + tuple(mode_order[1::2])
     return particles, mode_order
+
+
+@dataclass(frozen=True)
+class ChargeCompileHints:
+    """One immutable classification result passed to native charge compilation."""
+
+    __slots__ = (
+        "boson_positions",
+        "boson_target",
+        "boson_weights",
+        "fermion_mode_order",
+        "fermion_particles",
+        "product_positions",
+        "qubit_particles",
+        "qubit_positions",
+        "qudit_positions",
+        "qudit_target",
+        "qudit_weights",
+    )
+
+    fermion_particles: Optional[int]
+    fermion_mode_order: Optional[Tuple[int, ...]]
+    qubit_particles: Optional[int]
+    qubit_positions: Optional[Tuple[int, ...]]
+    qudit_weights: Optional[Tuple[int, ...]]
+    qudit_target: Optional[int]
+    qudit_positions: Optional[Tuple[int, ...]]
+    boson_weights: Optional[Tuple[int, ...]]
+    boson_target: Optional[int]
+    boson_positions: Optional[Tuple[int, ...]]
+    product_positions: Optional[Tuple[Tuple[int, ...], ...]]
+
+    @classmethod
+    def from_sector(
+        cls,
+        operator: Union[_StructuredOperator, PauliOperator],
+        sector: ChargeSector,
+    ) -> "ChargeCompileHints":
+        fermion = _fast_fermion_particles(operator, sector)
+        qubit = _fast_qubit_particles(sector)
+        qudit = _fast_qudit_factor(sector)
+        boson = _fast_boson_factor(sector)
+        if sum(candidate is not None for candidate in (qubit, qudit, boson)) > 1:
+            raise RuntimeError(
+                "charge-sector classification selected incompatible factors"
+            )
+        return cls(
+            fermion_particles=None if fermion is None else fermion[0],
+            fermion_mode_order=None if fermion is None else fermion[1],
+            qubit_particles=None if qubit is None else qubit[0],
+            qubit_positions=None if qubit is None else qubit[1],
+            qudit_weights=None if qudit is None else qudit[0],
+            qudit_target=None if qudit is None else qudit[1],
+            qudit_positions=None if qudit is None else qudit[2],
+            boson_weights=None if boson is None else boson[0],
+            boson_target=None if boson is None else boson[1],
+            boson_positions=None if boson is None else boson[2],
+            product_positions=_supports_independent_factor_product(sector),
+        )
 
 
 def analyze_charge(

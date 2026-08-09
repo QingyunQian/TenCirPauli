@@ -11,6 +11,7 @@ import json
 import os
 import resource
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -175,6 +176,115 @@ def save_action_vector_artifact(
         values=action[order],
         states=occupations[order],
     )
+
+
+def write_preflight_artifact(
+    validation_kind: str,
+    states: np.ndarray[Any, Any],
+    action: np.ndarray[Any, Any],
+    path: Path,
+) -> None:
+    """Write the shared flat preflight artifact for a matrix or action vector."""
+    if validation_kind == "dense":
+        save_action_artifact(path, action, states)
+    elif validation_kind == "vector":
+        save_action_vector_artifact(path, action, states)
+    else:
+        raise ValueError("validation_kind must be 'dense' or 'vector'")
+
+
+def measure_apply(
+    apply: Any, warmups: int, repeats: int
+) -> dict[str, float | list[float]]:
+    """Measure one unchanged public apply expression after fixed warmups."""
+    for _ in range(warmups):
+        apply()
+    start = time.perf_counter()
+    apply()
+    first = time.perf_counter() - start
+    samples: list[float] = []
+    for _ in range(repeats):
+        start = time.perf_counter()
+        apply()
+        samples.append(time.perf_counter() - start)
+    return {"first": first, "samples": samples, "median": float(np.median(samples))}
+
+
+_TIMING_REQUIRED_KEYS = frozenset(
+    {
+        "library",
+        "capability",
+        "comparison",
+        "operator_family",
+        "dimension",
+        "dtype",
+        "warmups",
+        "sample_count",
+        "peak_rss_bytes",
+        "thread_environment",
+        "workload_manifest",
+        "exact_command",
+        "commit",
+        "dirty",
+        "worktree_fingerprint",
+    }
+)
+
+
+def build_timing_record(
+    manifest: Mapping[str, Any],
+    *,
+    library: str,
+    dimension: int,
+    warmups: int,
+    repeats: int,
+    fields: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build and validate the common isolated-child timing record schema."""
+    record: dict[str, Any] = {
+        "library": library,
+        "capability": manifest["capability"],
+        "comparison": manifest["comparison"],
+        "operator_family": manifest["operator_family"],
+        "dtype": manifest["dtype"],
+        "dimension": dimension,
+        "warmups": warmups,
+        "sample_count": repeats,
+        "peak_rss_bytes": peak_rss_bytes(),
+        "thread_environment": thread_environment(),
+        "workload_manifest": manifest["workload_manifest"],
+        "exact_command": exact_command(),
+    }
+    record.update(fields)
+    validate_timing_record(record)
+    return record
+
+
+def validate_timing_record(record: Mapping[str, Any]) -> None:
+    """Reject incomplete or nondeterministic child timing records before JSON output."""
+    missing = _TIMING_REQUIRED_KEYS.difference(record)
+    if missing:
+        raise ValueError(f"timing record is missing required keys: {sorted(missing)}")
+    if record["dimension"] <= 0 or record["sample_count"] <= 0:
+        raise ValueError("timing record dimension and sample_count must be positive")
+    if not isinstance(record["thread_environment"], dict):
+        raise ValueError("timing record thread_environment must be a mapping")
+    command = record["exact_command"]
+    if not isinstance(command, list) or not all(
+        isinstance(value, str) for value in command
+    ):
+        raise ValueError("timing record exact_command must be a string list")
+    if not isinstance(record["commit"], str) or not record["commit"]:
+        raise ValueError("timing record commit must be a non-empty string")
+    if not isinstance(record["dirty"], bool):
+        raise ValueError("timing record dirty must be a boolean")
+    if (
+        not isinstance(record["worktree_fingerprint"], str)
+        or not record["worktree_fingerprint"]
+    ):
+        raise ValueError(
+            "timing record worktree_fingerprint must be a non-empty string"
+        )
 
 
 def exact_command() -> list[str]:

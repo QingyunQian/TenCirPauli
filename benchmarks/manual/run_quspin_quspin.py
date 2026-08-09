@@ -20,13 +20,13 @@ from quspin.basis import (
 from quspin.operators import hamiltonian, quantum_LinearOperator
 from quspin_capabilities import (
     ROOT,
+    build_timing_record,
     canonical_state,
     exact_command,
     load_manifest,
-    peak_rss_bytes,
-    save_action_artifact,
-    save_action_vector_artifact,
+    measure_apply,
     thread_environment,
+    write_preflight_artifact,
 )
 
 
@@ -290,10 +290,10 @@ def main() -> None:
             raise RuntimeError(
                 f"QuSpin dense-action mismatch {action_error} exceeds {tolerance}"
             )
-        save_action_artifact(args.artifact, dense_action, states)
+        write_preflight_artifact("dense", states, dense_action, args.artifact)
     else:
         action_error = 0.0
-        save_action_vector_artifact(args.artifact, validation_output, states)
+        write_preflight_artifact("vector", states, validation_output, args.artifact)
     validation_seconds = time.perf_counter() - validation_start
 
     if args.preflight:
@@ -318,45 +318,32 @@ def main() -> None:
 
     warmups = int(manifest["warmups"])
     repeats = int(manifest["repeats"])
-    for _ in range(warmups):
-        operator.dot(state)
-    first_public_apply_start = time.perf_counter()
+    public_measurement = measure_apply(lambda: operator.dot(state), warmups, repeats)
     output = operator.dot(state)
-    first_public_apply_seconds = time.perf_counter() - first_public_apply_start
-    public_apply_seconds: list[float] = []
-    for _ in range(repeats):
-        start = time.perf_counter()
-        output = operator.dot(state)
-        public_apply_seconds.append(time.perf_counter() - start)
 
-    record: dict[str, Any] = {
-        "library": "quspin",
-        "capability": manifest["capability"],
-        "comparison": manifest["comparison"],
-        "operator_family": manifest["operator_family"],
-        "dtype": manifest["dtype"],
-        "quspin_mode": manifest["quspin_mode"],
-        "dimension": int(basis.Ns),
-        "term_count": len(static),
-        "basis": str(type(basis).__name__),
-        "basis_build_seconds": basis_build_seconds,
-        "static_build_seconds": static_build_seconds,
-        "operator_build_seconds": operator_build_seconds,
-        "validation_seconds": validation_seconds,
-        "action_error": action_error,
-        "warmups": warmups,
-        "sample_count": repeats,
-        "first_public_apply_seconds": first_public_apply_seconds,
-        "public_apply_seconds": public_apply_seconds,
-        "public_apply_seconds_median": float(np.median(public_apply_seconds)),
-        "caller_owned_apply_supported": False,
-        "output_norm": float(np.linalg.norm(output)),
-        "peak_rss_bytes": peak_rss_bytes(),
-        "thread_environment": thread_environment(),
-        "workload_manifest": manifest["workload_manifest"],
-        "exact_command": exact_command(),
-        **worktree_fingerprint(ROOT),
-    }
+    record = build_timing_record(
+        manifest,
+        library="quspin",
+        dimension=int(basis.Ns),
+        warmups=warmups,
+        repeats=repeats,
+        fields={
+            "quspin_mode": manifest["quspin_mode"],
+            "term_count": len(static),
+            "basis": str(type(basis).__name__),
+            "basis_build_seconds": basis_build_seconds,
+            "static_build_seconds": static_build_seconds,
+            "operator_build_seconds": operator_build_seconds,
+            "validation_seconds": validation_seconds,
+            "action_error": action_error,
+            "first_public_apply_seconds": public_measurement["first"],
+            "public_apply_seconds": public_measurement["samples"],
+            "public_apply_seconds_median": public_measurement["median"],
+            "caller_owned_apply_supported": False,
+            "output_norm": float(np.linalg.norm(output)),
+            **worktree_fingerprint(ROOT),
+        },
+    )
     print(json.dumps(record, sort_keys=True))
 
 

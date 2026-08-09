@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import pickle
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,7 @@ import pytest
 
 import tencirpauli as tcp
 from tencirpauli import advanced
+from tencirpauli._native_mvp import NativePlanMetadata
 from tencirpauli.structured import _StructuredOperator
 
 
@@ -91,6 +93,52 @@ def test_top_level_and_advanced_manifests_are_separated() -> None:
     assert not hasattr(advanced, "U1CircuitPlan")
 
 
+def test_structured_public_facade_preserves_identity_module_repr_and_pickle() -> None:
+    import tencirpauli._structured.boson as boson_implementation
+    import tencirpauli._structured.fermion as fermion_implementation
+    import tencirpauli._structured.hybrid as hybrid_implementation
+    import tencirpauli._structured.mapping as mapping_implementation
+    import tencirpauli._structured.space as space_implementation
+    import tencirpauli._structured.words as words_implementation
+    import tencirpauli.structured as facade
+
+    implementations = {
+        "BosonOperator": boson_implementation,
+        "BosonTerm": words_implementation,
+        "BosonWord": words_implementation,
+        "FermionOperator": fermion_implementation,
+        "FermionTerm": words_implementation,
+        "FermionWord": words_implementation,
+        "HybridOperator": hybrid_implementation,
+        "HybridTerm": hybrid_implementation,
+        "OperatorBuilder": hybrid_implementation,
+        "OperatorSpace": space_implementation,
+        "QuditProduct": words_implementation,
+        "QuditWeylOperator": mapping_implementation,
+        "QuditWeylTerm": words_implementation,
+        "QuditWeylWord": words_implementation,
+    }
+    for name, implementation in implementations.items():
+        value = getattr(facade, name)
+        assert value is getattr(implementation, name)
+        if isinstance(value, type):
+            assert value.__module__ == "tencirpauli.structured"
+
+    values = (
+        tcp.FermionWord(3, creation_modes=(2,), annihilation_modes=(0,)),
+        tcp.BosonWord(2, ((1, 1, 0),)),
+        tcp.QuditWeylWord(3, ((0, 1, 2),)),
+        tcp.QuditProduct(tcp.QuditWeylWord(3, ((0, 1, 2),)), 2),
+        tcp.FermionTerm(tcp.FermionWord(1, creation_modes=(0,)), 0.5),
+        tcp.BosonTerm(tcp.BosonWord(1, ((0, 1, 0),)), 0.5),
+        tcp.QuditWeylTerm(tcp.QuditWeylWord(3, ((0, 1, 2),)), 0.5),
+    )
+    for value in values:
+        assert value.__class__.__module__ == "tencirpauli.structured"
+        assert repr(value).startswith(value.__class__.__name__ + "(")
+        assert pickle.loads(pickle.dumps(value)) == value
+
+
 def test_operator_counts_and_unified_code_validation() -> None:
     zero = tcp.PauliOperator.empty(2)
     assert zero.term_count == 0
@@ -157,6 +205,27 @@ def test_mvp_plan_contract_and_factory_only_construction() -> None:
         inspect.signature(plan.apply).parameters["max_bytes"].kind
         is inspect.Parameter.KEYWORD_ONLY
     )
+
+
+def test_native_mvp_metadata_is_frozen_and_slot_backed() -> None:
+    metadata = NativePlanMetadata(
+        dimension=2,
+        term_count=1,
+        storage="lazy",
+        basis_ordering="qubit0_msb_matrix",
+        target="native_mvp",
+        execution_family="pauli",
+        native_variant="pauli",
+        retained_format="compiled_actions",
+        source_term_count=1,
+        schedule_count=1,
+        estimated_retained_bytes=16,
+        estimated_construction_peak_bytes=32,
+        transition_count=None,
+    )
+    assert not hasattr(metadata, "__dict__")
+    with pytest.raises(AttributeError):
+        metadata.dimension = 3  # type: ignore[misc]
 
 
 def test_all_four_mvp_plans_share_flat_apply_contract() -> None:

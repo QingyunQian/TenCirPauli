@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import cmath
 import math
+import threading
+from typing import Any
 
 import numpy as np
 import pytest
@@ -11,6 +13,32 @@ import pytest
 import tencirpauli as tcp
 from tencirpauli import _native, advanced
 from tencirpauli.structured import _jordan_wigner_word, _StructuredOperator
+
+
+def _assert_binary_handle_releases_gil(operation: Any) -> Any:
+    """Verify one coarse native binary operation leaves the GIL to a peer thread."""
+    progress = [0]
+    ready = threading.Event()
+    stop = threading.Event()
+
+    def observe() -> None:
+        ready.set()
+        while not stop.is_set():
+            progress[0] += 1
+
+    observer = threading.Thread(target=observe)
+    observer.start()
+    assert ready.wait(2.0)
+    result: Any
+    try:
+        before = progress[0]
+        result = operation()
+        assert progress[0] > before
+    finally:
+        stop.set()
+        observer.join(2.0)
+    assert not observer.is_alive()
+    return result
 
 
 def _bit_count(value: int) -> int:
@@ -55,6 +83,51 @@ def test_structured_operators_keep_native_storage_until_terms_are_requested() ->
     assert boson.terms
     assert qudit.terms
     assert hybrid.terms
+
+
+def test_shared_binary_handle_helpers_release_gil_and_preserve_flat_values() -> None:
+    """All three payload families retain their native result materialization."""
+    mode_count = 96
+    fermion = tcp.FermionOperator.from_terms(
+        mode_count,
+        [(((mode, "create"), (mode, "annihilate")), 1.0) for mode in range(mode_count)],
+    )
+    boson = tcp.BosonOperator.from_terms(
+        mode_count,
+        [(((mode, "create"), (mode, "annihilate")), 1.0) for mode in range(mode_count)],
+    )
+    hybrid_space = tcp.OperatorSpace(qubits=mode_count)
+    from tencirpauli.structured import _Term
+
+    hybrid = tcp.HybridOperator._from_terms(
+        hybrid_space,
+        (
+            _Term(
+                None,
+                None,
+                tuple(3 if axis == mode else 0 for axis in range(mode_count)),
+                None,
+                None,
+                1.0,
+            )
+            for mode in range(mode_count)
+        ),
+    )
+
+    for operator in (fermion, boson, hybrid):
+        added = operator.add(operator)
+        assert added.to_dict() == {
+            term: 2.0 * coefficient for term, coefficient in operator.to_dict().items()
+        }
+        product = _assert_binary_handle_releases_gil(
+            lambda operator=operator: operator.multiply(operator)
+        )
+        commutator = _assert_binary_handle_releases_gil(
+            lambda operator=operator: operator.commutator(operator)
+        )
+        assert product._terms is None
+        assert commutator.to_dict() == {}
+        assert product.to_dict()
 
 
 def test_compatible_specialized_and_hybrid_addition_promotes_natively() -> None:

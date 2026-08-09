@@ -89,20 +89,20 @@ mod test_allocation_counter {
 pub(crate) use test_allocation_counter::allocation_count;
 
 pub use charge::{
-    apply_charge_csr_into, apply_charge_mvp_from_prepared_plan,
-    apply_charge_mvp_from_prepared_plan_into, build_fast_boson_mvp_plan,
-    build_fast_fermion_mvp_plan, build_fast_product_mvp_plan, build_fast_qubit_mvp_plan,
-    build_fast_qudit_mvp_plan, compile_charge_csr_from_prepared_plan,
+    apply_charge_csr_into, build_fast_boson_mvp_plan, build_fast_fermion_mvp_plan,
+    build_fast_product_mvp_plan, build_fast_qubit_mvp_plan, build_fast_qudit_mvp_plan,
+    compile_charge_csr_from_prepared_plan,
     compile_charge_csr_from_prepared_plan_with_chunk_capacity,
-    estimate_charge_transition_terms_bytes, group_charge_transition_terms,
-    prepare_charge_transition_plan_layout, ChargeCsrResult, ChargeTransitionTerm,
-    FastAdditiveMvpPlan, FastChargeMvpPlan, FastFermionMvpPlan, FastQubitMvpPlan,
-    PreparedChargeTransitionPlanLayout,
+    estimate_charge_transition_terms_bytes, group_charge_transition_terms, prepare_charge_mvp_plan,
+    prepare_charge_transition_plan_layout, ChargeBuildContext, ChargeCsrResult, ChargeKernelHints,
+    ChargeLazyKernel, ChargeTransitionTerm, FastAdditiveMvpPlan, FastFermionMvpPlan,
+    FastQubitMvpPlan, PreparedChargeMvpPlan, PreparedChargeTransitionPlanLayout,
 };
 pub use charge_sector::{
     build_charge_sector_plan, build_compact_charge_sector_plan, ChargeSectorPlan,
 };
 pub use circuit_ir::{AngleRef, CircuitGate, CircuitProgram, CIRCUIT_SCHEMA_VERSION};
+pub use csr::{CsrApplyPolicy, CsrGraph, CsrIndex};
 pub use error::PauliError;
 pub use gate::{Clifford1, Clifford2, GateOperation, ParameterRef, RotationAxis};
 pub use grouping::{

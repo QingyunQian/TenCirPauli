@@ -13,13 +13,13 @@ import numpy as np
 from _provenance import worktree_fingerprint
 from quspin_capabilities import (
     ROOT,
+    build_timing_record,
     canonical_state,
     exact_command,
     load_manifest,
-    peak_rss_bytes,
-    save_action_artifact,
-    save_action_vector_artifact,
+    measure_apply,
     thread_environment,
+    write_preflight_artifact,
 )
 
 import tencirpauli as tcp
@@ -422,10 +422,10 @@ def main() -> None:
             raise RuntimeError(
                 f"TenCirPauli dense-action mismatch {action_error} exceeds {tolerance}"
             )
-        save_action_artifact(args.artifact, dense_action, states)
+        write_preflight_artifact("dense", states, dense_action, args.artifact)
     else:
         action_error = 0.0
-        save_action_vector_artifact(args.artifact, output, states)
+        write_preflight_artifact("vector", states, output, args.artifact)
     validation_seconds = time.perf_counter() - validation_start
 
     if args.preflight:
@@ -450,70 +450,54 @@ def main() -> None:
 
     warmups = int(manifest["warmups"])
     repeats = int(manifest["repeats"])
-    for _ in range(warmups):
-        plan.apply_into(state, output, max_bytes=max_bytes)
-    first_apply_into_start = time.perf_counter()
-    plan.apply_into(state, output, max_bytes=max_bytes)
-    first_apply_into_seconds = time.perf_counter() - first_apply_into_start
-    apply_into_seconds: list[float] = []
-    for _ in range(repeats):
-        start = time.perf_counter()
-        plan.apply_into(state, output, max_bytes=max_bytes)
-        apply_into_seconds.append(time.perf_counter() - start)
 
-    for _ in range(warmups):
-        plan.apply(state, max_bytes=max_bytes)
-    first_public_apply_start = time.perf_counter()
+    def apply_into() -> np.ndarray[Any, Any]:
+        plan.apply_into(state, output, max_bytes=max_bytes)
+        return output
+
+    apply_into_measurement = measure_apply(apply_into, warmups, repeats)
+    public_measurement = measure_apply(
+        lambda: plan.apply(state, max_bytes=max_bytes), warmups, repeats
+    )
     public_output = plan.apply(state, max_bytes=max_bytes)
-    first_public_apply_seconds = time.perf_counter() - first_public_apply_start
-    public_apply_seconds: list[float] = []
-    for _ in range(repeats):
-        start = time.perf_counter()
-        public_output = plan.apply(state, max_bytes=max_bytes)
-        public_apply_seconds.append(time.perf_counter() - start)
 
-    record: dict[str, Any] = {
-        "library": "tencirpauli",
-        "capability": manifest["capability"],
-        "comparison": manifest["comparison"],
-        "operator_family": manifest["operator_family"],
-        "dtype": manifest["dtype"],
-        "storage": plan.storage,
-        "dimension": int(plan.dimension),
-        "term_count": int(plan.term_count),
-        "execution_family": str(plan.execution_family),
-        "native_variant": str(plan.native_variant),
-        "retained_format": str(plan.retained_format),
-        "transition_count": plan.transition_count,
-        "native_diagnostics": _native_diagnostics(plan),
-        "operator_build_seconds": operator_build_seconds,
-        "sector_build_seconds": sector_build_seconds,
-        "plan_build_seconds": plan_build_seconds,
-        "validation_seconds": validation_seconds,
-        "action_error": action_error,
-        "warmups": warmups,
-        "sample_count": repeats,
-        "first_apply_into_seconds": first_apply_into_seconds,
-        "apply_into_seconds": apply_into_seconds,
-        "apply_into_seconds_median": float(np.median(apply_into_seconds)),
-        "first_public_apply_seconds": first_public_apply_seconds,
-        "public_apply_seconds": public_apply_seconds,
-        "public_apply_seconds_median": float(np.median(public_apply_seconds)),
-        "caller_owned_apply_supported": True,
-        "input_output_norm_error": float(
-            abs(np.linalg.norm(output) - np.linalg.norm(public_output))
-        ),
-        "plan_estimated_bytes": int(plan.estimated_bytes),
-        "plan_estimated_retained_bytes": int(plan.estimated_retained_bytes),
-        "plan_estimated_construction_peak_bytes": int(
-            plan.estimated_construction_peak_bytes
-        ),
-        "peak_rss_bytes": peak_rss_bytes(),
-        "thread_environment": thread_environment(),
-        "workload_manifest": manifest["workload_manifest"],
-        "exact_command": exact_command(),
-        **worktree_fingerprint(ROOT),
-    }
+    record = build_timing_record(
+        manifest,
+        library="tencirpauli",
+        dimension=int(plan.dimension),
+        warmups=warmups,
+        repeats=repeats,
+        fields={
+            "storage": plan.storage,
+            "term_count": int(plan.term_count),
+            "execution_family": str(plan.execution_family),
+            "native_variant": str(plan.native_variant),
+            "retained_format": str(plan.retained_format),
+            "transition_count": plan.transition_count,
+            "native_diagnostics": _native_diagnostics(plan),
+            "operator_build_seconds": operator_build_seconds,
+            "sector_build_seconds": sector_build_seconds,
+            "plan_build_seconds": plan_build_seconds,
+            "validation_seconds": validation_seconds,
+            "action_error": action_error,
+            "first_apply_into_seconds": apply_into_measurement["first"],
+            "apply_into_seconds": apply_into_measurement["samples"],
+            "apply_into_seconds_median": apply_into_measurement["median"],
+            "first_public_apply_seconds": public_measurement["first"],
+            "public_apply_seconds": public_measurement["samples"],
+            "public_apply_seconds_median": public_measurement["median"],
+            "caller_owned_apply_supported": True,
+            "input_output_norm_error": float(
+                abs(np.linalg.norm(output) - np.linalg.norm(public_output))
+            ),
+            "plan_estimated_bytes": int(plan.estimated_bytes),
+            "plan_estimated_retained_bytes": int(plan.estimated_retained_bytes),
+            "plan_estimated_construction_peak_bytes": int(
+                plan.estimated_construction_peak_bytes
+            ),
+            **worktree_fingerprint(ROOT),
+        },
+    )
     print(json.dumps(record, sort_keys=True))
 
 

@@ -3,16 +3,32 @@
 from __future__ import annotations
 
 import math
-import sys
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional, Protocol, Sequence, Tuple, Union, cast
 
 import numpy as np
 
+from ._native_mvp import (
+    DEFAULT_MAX_BYTES as DEFAULT_MAX_BYTES,
+)
+from ._native_mvp import (
+    NativePlanMetadata,
+    _NativeMvpFacade,
+    _read_csr_arrays,
+)
+from ._native_mvp import (
+    _check_allocation as _check_allocation,
+)
+from ._native_mvp import (
+    _effective_max_bytes as _effective_max_bytes,
+)
+from ._native_mvp import (
+    _validate_apply_into_buffers as _validate_apply_into_buffers,
+)
+from ._native_mvp import (
+    _validate_max_bytes as _validate_max_bytes,
+)
 
-# A practical default for explicit statevector Hamiltonian targets. Users can
-# lower or raise this per call through the public ``max_bytes`` parameter.
-DEFAULT_MAX_BYTES = 16 * 1024 * 1024 * 1024
 
 # These labels are part of the reusable-plan metadata contract.  Pauli plans
 # keep the historical qubit spelling; structured plans use the ordered axes of
@@ -139,7 +155,7 @@ class CSRMatrix:
 
 
 @dataclass(frozen=True, init=False)
-class NativeMVPPlan:
+class NativeMVPPlan(_NativeMvpFacade):
     """Reusable Rust-native matrix-free MVP plan.
 
     The immutable metadata fields describe the target schema, canonical term
@@ -147,30 +163,16 @@ class NativeMVPPlan:
     """
 
     nqubits: int
-    term_count: int
-    storage: Literal["lazy", "eager"]
-    _native_plan: Any
+    _execution: Any = field(repr=False, compare=False)
+    _metadata: NativePlanMetadata = field(repr=False, compare=False)
     local_dimensions: Tuple[int, ...]
-    basis_ordering: str
-    estimated_bytes: int
-    _generic_entries: Any
     schema_version: int
-    target: str
-    source_term_count: int
     plan_term_count: int
     mapping: Optional[str]
     boson_cutoffs: Tuple[Tuple[int, int], ...]
     boson_boundary: Optional[str]
     qudit_dimension: Optional[int]
     weyl_convention: Optional[str]
-    execution_family: str
-    native_variant: str
-    retained_format: str
-    schedule_count: int
-    estimated_retained_bytes: int
-    estimated_construction_peak_bytes: int
-    transition_count: Optional[int]
-    _dimension_value: int = field(init=False, repr=False, compare=False)
 
     def __init__(
         self,
@@ -182,7 +184,6 @@ class NativeMVPPlan:
         local_dimensions: Tuple[int, ...] = (),
         basis_ordering: str = "qubit0_msb_matrix",
         estimated_bytes: int = 0,
-        generic_entries: Any = None,
         schema_version: int = 1,
         target: str = "native_mvp",
         source_term_count: Optional[int] = None,
@@ -216,24 +217,14 @@ class NativeMVPPlan:
         dimension = _checked_dimension(dimensions, nqubits)
         if schema_version <= 0:
             raise ValueError("schema_version must be positive")
-        if target != "native_mvp":
-            raise ValueError("native MVP plans must have target='native_mvp'")
-        if storage not in {"lazy", "eager"}:
-            raise ValueError("storage must be either 'eager' or 'lazy'")
         if mapping not in {None, "jordan_wigner", "parity", "bravyi_kitaev"}:
             raise ValueError(
                 "mapping must be None, 'jordan_wigner', 'parity', or 'bravyi_kitaev'"
             )
         object.__setattr__(self, "nqubits", nqubits)
-        object.__setattr__(self, "term_count", term_count)
-        object.__setattr__(self, "storage", storage)
-        object.__setattr__(self, "_native_plan", native_plan)
+        object.__setattr__(self, "_execution", native_plan)
         object.__setattr__(self, "local_dimensions", dimensions)
-        object.__setattr__(self, "basis_ordering", basis_ordering)
-        object.__setattr__(self, "estimated_bytes", int(estimated_bytes))
-        object.__setattr__(self, "_generic_entries", generic_entries)
         object.__setattr__(self, "schema_version", schema_version)
-        object.__setattr__(self, "target", target)
         for name, candidate in (
             ("source_term_count", source_term_count),
             ("plan_term_count", plan_term_count),
@@ -244,10 +235,8 @@ class NativeMVPPlan:
                 or candidate < 0
             ):
                 raise ValueError(f"{name} must be a non-negative integer")
-        object.__setattr__(
-            self,
-            "source_term_count",
-            term_count if source_term_count is None else source_term_count,
+        resolved_source_term_count = (
+            term_count if source_term_count is None else source_term_count
         )
         object.__setattr__(
             self,
@@ -269,29 +258,17 @@ class NativeMVPPlan:
             raise ValueError("Weyl plans require convention 'X^a Z^b'")
         object.__setattr__(self, "qudit_dimension", qudit_dimension)
         object.__setattr__(self, "weyl_convention", weyl_convention)
-        if execution_family not in {"pauli", "cartesian", "product", "generic"}:
-            raise ValueError("invalid native MVP execution family")
         resolved_native_variant = (
             str(getattr(native_plan, "native_variant", execution_family))
             if native_variant is None
             else native_variant
         )
-        if not resolved_native_variant:
-            raise ValueError("native_variant must be non-empty")
         resolved_format = retained_format or (
             "compiled_actions" if storage == "lazy" else "csr"
         )
-        if resolved_format not in {"compiled_actions", "compact_graph", "csr"}:
-            raise ValueError("invalid native MVP retained format")
         resolved_schedule_count = (
             term_count if schedule_count is None else schedule_count
         )
-        if (
-            not isinstance(resolved_schedule_count, int)
-            or isinstance(resolved_schedule_count, bool)
-            or resolved_schedule_count < 0
-        ):
-            raise ValueError("schedule_count must be a non-negative integer")
         resolved_retained = (
             int(estimated_bytes)
             if estimated_retained_bytes is None
@@ -302,111 +279,38 @@ class NativeMVPPlan:
             if estimated_construction_peak_bytes is None
             else estimated_construction_peak_bytes
         )
-        for name, value in (
-            ("estimated_retained_bytes", resolved_retained),
-            ("estimated_construction_peak_bytes", resolved_peak),
-        ):
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise ValueError(f"{name} must be a non-negative integer")
-        if transition_count is not None and (
-            not isinstance(transition_count, int)
-            or isinstance(transition_count, bool)
-            or transition_count < 0
-        ):
-            raise ValueError("transition_count must be a non-negative integer or None")
-        object.__setattr__(self, "execution_family", execution_family)
-        object.__setattr__(self, "native_variant", resolved_native_variant)
-        object.__setattr__(self, "retained_format", resolved_format)
-        object.__setattr__(self, "schedule_count", resolved_schedule_count)
-        object.__setattr__(self, "estimated_retained_bytes", int(resolved_retained))
         object.__setattr__(
-            self, "estimated_construction_peak_bytes", int(resolved_peak)
-        )
-        object.__setattr__(self, "transition_count", transition_count)
-        object.__setattr__(self, "_dimension_value", dimension)
-
-    def apply(
-        self,
-        state: Sequence[complex],
-        *,
-        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> np.ndarray[Any, Any]:
-        """Apply the precompiled Rust plan without rebuilding its structure."""
-        if self._generic_entries is not None:
-            return _apply_generic_entries(self._generic_entries, state, max_bytes)
-        dimension = self.dimension
-        values = np.asarray(state, dtype=np.complex128)
-        if values.ndim != 1 or values.shape[0] != dimension:
-            raise ValueError(
-                f"state must have shape ({dimension},), got {values.shape}"
-            )
-        contiguous = np.ascontiguousarray(values)
-        return cast(
-            np.ndarray[Any, Any],
-            np.asarray(
-                self._native_plan.apply(contiguous, _effective_max_bytes(max_bytes)),
-                dtype=np.complex128,
-                order="C",
+            self,
+            "_metadata",
+            NativePlanMetadata(
+                dimension=dimension,
+                term_count=term_count,
+                storage=storage,
+                basis_ordering=basis_ordering,
+                target=cast(Literal["native_mvp"], target),
+                execution_family=execution_family,
+                native_variant=resolved_native_variant,
+                retained_format=resolved_format,
+                source_term_count=resolved_source_term_count,
+                schedule_count=resolved_schedule_count,
+                estimated_retained_bytes=int(resolved_retained),
+                estimated_construction_peak_bytes=int(resolved_peak),
+                transition_count=transition_count,
             ),
         )
 
-    def apply_into(
-        self,
-        input_state: np.ndarray[Any, Any],
-        output_state: np.ndarray[Any, Any],
-        *,
-        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> None:
-        """Write the complete MVP result into a caller-owned output array."""
-        _validate_apply_into_buffers(input_state, output_state, self.dimension)
-        if self._generic_entries is not None:
-            result = _apply_generic_entries(
-                self._generic_entries, input_state, max_bytes
-            )
-            np.copyto(output_state, result)
-            return
-        self._native_plan.apply_into(
-            input_state, output_state, _effective_max_bytes(max_bytes)
-        )
-
     @property
-    def dimension(self) -> int:
-        """Finite basis dimension represented by this plan."""
-        return self._dimension_value
-
-    def __call__(self, state: Sequence[complex]) -> np.ndarray[Any, Any]:
-        """Apply the plan using its default memory limit."""
-        return self.apply(state)
-
-    def to_scipy_linear_operator(
-        self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
-    ) -> Any:
-        """Expose this reusable plan as a SciPy ``LinearOperator``."""
-        from .integrations.scipy import to_scipy_linear_operator
-
-        return to_scipy_linear_operator(self, max_bytes=max_bytes)
+    def _native_plan(self) -> Any:
+        """Compatibility access to the single retained native execution handle."""
+        return self._execution
 
     def csr(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> CSRMatrix:
         """Materialize the retained eager graph as deterministic CSR."""
-        if self.storage != "eager" or not hasattr(self._native_plan, "csr"):
+        if self.storage != "eager" or not hasattr(self._execution, "csr"):
             raise ValueError("CSR materialization requires an eager native plan")
-        _validate_max_bytes(max_bytes)
-        indptr, columns, values = self._native_plan.csr()
-        indptr_array = np.asarray(indptr, dtype=np.uint64)
-        columns_array = np.asarray(columns, dtype=np.uint64)
-        values_array = np.asarray(values, dtype=np.complex128)
-        _check_allocation(
-            int(indptr_array.nbytes + columns_array.nbytes + values_array.nbytes),
-            max_bytes,
-            "native eager CSR materialization",
-        )
-        for array in (indptr_array, columns_array, values_array):
-            array.setflags(write=False)
-        return CSRMatrix(
-            indptr_array,
-            columns_array,
-            values_array,
-            (self.dimension, self.dimension),
+        return cast(
+            CSRMatrix,
+            _read_csr_arrays(self._execution, self.dimension, max_bytes),
         )
 
 
@@ -430,7 +334,6 @@ class BackendMVPPlan:
     local_dimensions: Tuple[int, ...] = ()
     basis_ordering: str = "qubit0_msb_matrix"
     estimated_bytes: int = 0
-    _generic_entries: Any = None
     plan_kind: str = "pauli"
     qudit_dimension: int = 0
     a_exponents: np.ndarray[Any, Any] = field(
@@ -573,8 +476,6 @@ class BackendMVPPlan:
             ValueError: If the state shape is incompatible with the plan.
             MemoryError: If the estimated workspace exceeds ``max_bytes``.
         """
-        if self._generic_entries is not None:
-            return _apply_generic_entries(self._generic_entries, state, max_bytes)
         if self.plan_kind == "direct_weyl":
             return self._apply_direct_weyl(state, max_bytes)
         dimension = _dimension(self.nqubits)
@@ -699,68 +600,6 @@ def _checked_dimension(local_dimensions: Tuple[int, ...], nqubits: int) -> int:
             "finite basis dimension cannot be represented by platform indices"
         )
     return dimension
-
-
-def _validate_max_bytes(max_bytes: Optional[int]) -> None:
-    if max_bytes is not None and (
-        not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 0
-    ):
-        raise ValueError("max_bytes must be a non-negative integer or None")
-
-
-def _effective_max_bytes(max_bytes: Optional[int]) -> int:
-    _validate_max_bytes(max_bytes)
-    return sys.maxsize if max_bytes is None else max_bytes
-
-
-def _check_allocation(requested: int, limit: Optional[int], context: str) -> None:
-    _validate_max_bytes(limit)
-    if limit is not None and requested > limit:
-        raise MemoryError(
-            f"{context} requires approximately {requested} bytes, "
-            f"exceeding max_bytes={limit}"
-        )
-
-
-def _validate_apply_into_buffers(
-    input_state: object, output_state: object, dimension: int
-) -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
-    """Validate the strict zero-copy MVP buffer protocol."""
-    if not isinstance(input_state, np.ndarray) or not isinstance(
-        output_state, np.ndarray
-    ):
-        raise TypeError("apply_into input and output must be NumPy arrays")
-    expected: np.dtype[Any] = np.dtype(np.complex128)
-    if input_state.dtype != expected or output_state.dtype != expected:
-        raise TypeError("apply_into input and output must have dtype complex128")
-    for name, value in (("input", input_state), ("output", output_state)):
-        if value.ndim != 1 or value.shape != (dimension,):
-            raise ValueError(f"apply_into {name} must have shape ({dimension},)")
-        if not value.flags.c_contiguous:
-            raise ValueError(f"apply_into {name} must be C-contiguous")
-    if not output_state.flags.writeable:
-        raise ValueError("apply_into output must be writable")
-    if np.shares_memory(input_state, output_state):
-        raise ValueError("apply_into input and output must not overlap")
-    return input_state, output_state
-
-
-def _apply_generic_entries(
-    generic_entries: Any,
-    state: Union[Sequence[complex], np.ndarray[Any, Any]],
-    max_bytes: Optional[int],
-) -> np.ndarray[Any, Any]:
-    dimensions, rows, columns, coefficients = generic_entries
-    dimension = _checked_dimension(tuple(int(value) for value in dimensions), 0)
-    _check_allocation(dimension * 16, max_bytes, "structured MVP output")
-    values = np.asarray(state, dtype=np.complex128)
-    if values.ndim != 1 or values.shape[0] != dimension:
-        raise ValueError(f"state must have shape ({dimension},), got {values.shape}")
-    output: np.ndarray[Any, Any] = np.zeros(dimension, dtype=np.complex128)
-    np.add.at(
-        output, rows.astype(np.intp), coefficients * values[columns.astype(np.intp)]
-    )
-    return output
 
 
 def _matrix_mask(

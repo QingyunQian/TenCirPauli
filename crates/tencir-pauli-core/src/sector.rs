@@ -2,9 +2,9 @@
 
 use std::{mem::size_of, sync::Arc};
 
-use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
+use crate::csr::{CsrApplyPolicy, CsrGraph};
 use crate::error::PauliError;
 use crate::operator::{PauliOperator, PauliTerm};
 use crate::scalar::{is_exact_zero, Complex64};
@@ -36,9 +36,7 @@ pub struct PackedU1Basis {
 #[derive(Clone, Debug, PartialEq)]
 pub struct U1MvpPlan {
     sector: U1Sector,
-    indptr: Arc<[usize]>,
-    columns: Arc<[usize]>,
-    values: Arc<[Complex64]>,
+    graph: Arc<CsrGraph<usize>>,
 }
 
 /// A compact matrix-free plan for a fixed-Hamming-weight Pauli operator.
@@ -428,9 +426,7 @@ impl U1RestrictedOperator {
         Ok(Self {
             plan: U1MvpPlan {
                 sector,
-                indptr: Arc::from(indptr.into_boxed_slice()),
-                columns: Arc::from(columns.into_boxed_slice()),
-                values: Arc::from(values.into_boxed_slice()),
+                graph: Arc::new(CsrGraph::try_new(dimension, indptr, columns, values)?),
             },
         })
     }
@@ -478,11 +474,11 @@ impl U1RestrictedOperator {
         check_allocation(bytes, max_bytes)?;
         let mut values = vec![Complex64::default(); entries];
         for destination in 0..dimension {
-            let start = self.plan.indptr[destination];
-            let stop = self.plan.indptr[destination + 1];
+            let start = self.plan.graph.indptr()[destination];
+            let stop = self.plan.graph.indptr()[destination + 1];
             for index in start..stop {
-                values[destination * dimension + self.plan.columns[index]] +=
-                    self.plan.values[index];
+                values[destination * dimension + self.plan.graph.columns()[index]] +=
+                    self.plan.graph.values()[index];
             }
         }
         Ok((dimension, values))
@@ -490,33 +486,14 @@ impl U1RestrictedOperator {
 
     pub fn coo(&self, max_bytes: u128) -> Result<U1CooMatrix, PauliError> {
         let dimension = self.dimension();
-        let entry_count = self.plan.values.len();
+        let entry_count = self.plan.graph.transition_count();
         let output_bytes = (entry_count as u128)
             .checked_mul((2 * size_of::<u64>() + size_of::<Complex64>()) as u128)
             .ok_or(PauliError::Overflow {
                 context: "estimating U1 COO output memory",
             })?;
         check_allocation(output_bytes, max_bytes)?;
-        let mut rows = Vec::with_capacity(entry_count);
-        let mut columns = Vec::with_capacity(entry_count);
-        let mut values = Vec::with_capacity(entry_count);
-        for destination in 0..dimension {
-            let start = self.plan.indptr[destination];
-            let stop = self.plan.indptr[destination + 1];
-            for index in start..stop {
-                rows.push(
-                    u64::try_from(destination).map_err(|_| PauliError::Overflow {
-                        context: "converting U1 COO row index",
-                    })?,
-                );
-                columns.push(u64::try_from(self.plan.columns[index]).map_err(|_| {
-                    PauliError::Overflow {
-                        context: "converting U1 COO column index",
-                    }
-                })?);
-                values.push(self.plan.values[index]);
-            }
-        }
+        let (rows, columns, values) = self.plan.graph.to_coo_u64(max_bytes)?;
         Ok(U1CooMatrix {
             dimension,
             rows,
@@ -667,11 +644,11 @@ impl U1MvpPlan {
     }
 
     pub fn dimension(&self) -> usize {
-        self.indptr.len() - 1
+        self.graph.dimension()
     }
 
     pub fn transition_count(&self) -> usize {
-        self.values.len()
+        self.graph.transition_count()
     }
 
     pub fn apply(
@@ -702,65 +679,22 @@ impl U1MvpPlan {
         state: &[Complex64],
         output: &mut [Complex64],
     ) -> Result<(), PauliError> {
-        if state.len() != self.dimension() {
-            return Err(PauliError::InvalidStructureLength {
-                expected: self.dimension(),
-                actual: state.len(),
-            });
-        }
-        if output.len() != self.dimension() {
-            return Err(PauliError::InvalidStructureLength {
-                expected: self.dimension(),
-                actual: output.len(),
-            });
-        }
-        output.fill(Complex64::default());
-        if self.values.len() < U1_PARALLEL_TRANSITION_THRESHOLD {
-            for (destination, result) in output.iter_mut().enumerate() {
-                let mut value = Complex64::default();
-                for index in self.indptr[destination]..self.indptr[destination + 1] {
-                    value += self.values[index] * state[self.columns[index]];
-                }
-                *result = value;
-            }
-        } else {
-            self.indptr
-                .par_windows(2)
-                .zip(output.par_iter_mut())
-                .for_each(|(window, result)| {
-                    let mut value = Complex64::default();
-                    for index in window[0]..window[1] {
-                        value += self.values[index] * state[self.columns[index]];
-                    }
-                    *result = value;
-                });
-        }
-        Ok(())
+        self.graph.apply_into(
+            state,
+            output,
+            CsrApplyPolicy::parallel(U1_PARALLEL_TRANSITION_THRESHOLD),
+        )
     }
 
     fn clone_with_budget(&self, max_bytes: u128) -> Result<Self, PauliError> {
-        let bytes = (self.indptr.len() as u128)
-            .checked_mul(size_of::<usize>() as u128)
-            .and_then(|pointers| {
-                (self.columns.len() as u128)
-                    .checked_mul(size_of::<usize>() as u128)
-                    .and_then(|columns| pointers.checked_add(columns))
-            })
-            .and_then(|bytes| {
-                (self.values.len() as u128)
-                    .checked_mul(size_of::<Complex64>() as u128)
-                    .and_then(|values| bytes.checked_add(values))
-            })
-            .ok_or(PauliError::Overflow {
-                context: "estimating U1 MVP plan memory",
-            })?;
+        let bytes = self.graph.estimated_bytes()?;
         check_allocation(bytes, max_bytes)?;
         Ok(self.clone())
     }
 
     fn csr(&self, max_bytes: u128) -> Result<U1CsrMatrix, PauliError> {
         let dimension = self.dimension();
-        let entries = self.values.len();
+        let entries = self.graph.transition_count();
         let bytes = (dimension as u128 + 1)
             .checked_mul(size_of::<u64>() as u128)
             .and_then(|pointers| {
@@ -772,29 +706,12 @@ impl U1MvpPlan {
                 context: "estimating U1 CSR memory",
             })?;
         check_allocation(bytes, max_bytes)?;
-        let indptr = self
-            .indptr
-            .iter()
-            .map(|value| {
-                u64::try_from(*value).map_err(|_| PauliError::Overflow {
-                    context: "converting U1 CSR offset",
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let columns = self
-            .columns
-            .iter()
-            .map(|value| {
-                u64::try_from(*value).map_err(|_| PauliError::Overflow {
-                    context: "converting U1 CSR column index",
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let (indptr, columns, values) = self.graph.to_u64_arrays(max_bytes)?;
         Ok(U1CsrMatrix {
             dimension,
             indptr,
             columns,
-            values: self.values.to_vec(),
+            values,
         })
     }
 }

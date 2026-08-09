@@ -5,9 +5,401 @@ use std::collections::BinaryHeap;
 use std::time::Instant;
 
 use crate::{Complex64, PauliError};
+use rayon::prelude::*;
 
 type CsrArrays = (Vec<u64>, Vec<u64>, Vec<Complex64>, usize);
+pub type CsrU64Arrays = (Vec<u64>, Vec<u64>, Vec<Complex64>);
 pub(crate) const CSR_CHUNK_CAPACITY: usize = 16 * 1024;
+const LEGACY_CHARGE_CSR_PARALLEL_THRESHOLD: usize = 1 << 14;
+
+mod private {
+    pub trait Sealed {}
+
+    impl Sealed for usize {}
+    impl Sealed for u64 {}
+}
+
+/// A column-index representation supported by the validated CSR graph.
+///
+/// The trait is sealed so graph execution remains monomorphized for the two
+/// representations used by the library. It is never used through `dyn`.
+pub trait CsrIndex: private::Sealed + Copy + Send + Sync + 'static {
+    #[doc(hidden)]
+    fn checked_usize(self) -> Option<usize>;
+    #[doc(hidden)]
+    fn trusted_usize(self) -> usize;
+    #[doc(hidden)]
+    fn to_u64(self) -> Result<u64, PauliError>;
+    #[doc(hidden)]
+    fn into_u64_vec(values: Vec<Self>) -> Result<Vec<u64>, PauliError>;
+}
+
+impl CsrIndex for usize {
+    #[inline]
+    fn checked_usize(self) -> Option<usize> {
+        Some(self)
+    }
+
+    #[inline]
+    fn trusted_usize(self) -> usize {
+        self
+    }
+
+    #[inline]
+    fn to_u64(self) -> Result<u64, PauliError> {
+        u64::try_from(self).map_err(|_| PauliError::Overflow {
+            context: "converting CSR column to u64",
+        })
+    }
+
+    fn into_u64_vec(values: Vec<Self>) -> Result<Vec<u64>, PauliError> {
+        values.into_iter().map(|value| value.to_u64()).collect()
+    }
+}
+
+impl CsrIndex for u64 {
+    #[inline]
+    fn checked_usize(self) -> Option<usize> {
+        usize::try_from(self).ok()
+    }
+
+    #[inline]
+    fn trusted_usize(self) -> usize {
+        self as usize
+    }
+
+    #[inline]
+    fn to_u64(self) -> Result<u64, PauliError> {
+        Ok(self)
+    }
+
+    fn into_u64_vec(values: Vec<Self>) -> Result<Vec<u64>, PauliError> {
+        Ok(values)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+/// One validated destination-major CSR graph for repeated execution.
+pub struct CsrGraph<I: CsrIndex> {
+    dimension: usize,
+    indptr: Vec<usize>,
+    columns: Vec<I>,
+    values: Vec<Complex64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CsrRowArithmetic {
+    ManualRealImag,
+}
+
+#[derive(Clone, Copy, Debug)]
+/// Fixed execution policy selected by the producer before any row scheduling.
+pub struct CsrApplyPolicy {
+    pub parallel: bool,
+    pub min_parallel_entries: usize,
+    row_arithmetic: CsrRowArithmetic,
+}
+
+impl CsrApplyPolicy {
+    pub const fn serial() -> Self {
+        Self {
+            parallel: false,
+            min_parallel_entries: usize::MAX,
+            row_arithmetic: CsrRowArithmetic::ManualRealImag,
+        }
+    }
+
+    pub const fn parallel(min_parallel_entries: usize) -> Self {
+        Self {
+            parallel: true,
+            min_parallel_entries,
+            row_arithmetic: CsrRowArithmetic::ManualRealImag,
+        }
+    }
+}
+
+impl<I: CsrIndex> CsrGraph<I> {
+    /// Take ownership of and validate a complete CSR graph once.
+    pub fn try_new(
+        dimension: usize,
+        indptr: Vec<usize>,
+        columns: Vec<I>,
+        values: Vec<Complex64>,
+    ) -> Result<Self, PauliError> {
+        let expected_indptr = dimension.checked_add(1).ok_or(PauliError::Overflow {
+            context: "sizing CSR graph pointers",
+        })?;
+        if indptr.len() != expected_indptr
+            || columns.len() != values.len()
+            || indptr.first().copied() != Some(0)
+            || indptr.last().copied() != Some(columns.len())
+            || indptr.windows(2).any(|window| window[0] > window[1])
+            || columns.iter().any(|&column| {
+                column
+                    .checked_usize()
+                    .is_none_or(|value| value >= dimension)
+            })
+        {
+            return Err(PauliError::InvalidSector {
+                context: "invalid CSR graph",
+            });
+        }
+        Ok(Self {
+            dimension,
+            indptr,
+            columns,
+            values,
+        })
+    }
+
+    #[inline]
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    #[inline]
+    pub fn transition_count(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn estimated_bytes(&self) -> Result<u128, PauliError> {
+        ((self.indptr.len() as u128).checked_mul(std::mem::size_of::<usize>() as u128))
+            .and_then(|value| {
+                value.checked_add(
+                    (self.columns.len() as u128).checked_mul(std::mem::size_of::<I>() as u128)?,
+                )
+            })
+            .and_then(|value| {
+                value.checked_add(
+                    (self.values.len() as u128)
+                        .checked_mul(std::mem::size_of::<Complex64>() as u128)?,
+                )
+            })
+            .ok_or(PauliError::Overflow {
+                context: "estimating CSR graph storage",
+            })
+    }
+
+    pub fn indptr(&self) -> &[usize] {
+        &self.indptr
+    }
+
+    pub fn columns(&self) -> &[I] {
+        &self.columns
+    }
+
+    pub fn values(&self) -> &[Complex64] {
+        &self.values
+    }
+
+    /// Execute the graph without allocation or graph validation in the row loop.
+    pub fn apply_into(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+        policy: CsrApplyPolicy,
+    ) -> Result<(), PauliError> {
+        if state.len() != self.dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.dimension,
+                actual: state.len(),
+            });
+        }
+        if output.len() != self.dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.dimension,
+                actual: output.len(),
+            });
+        }
+        let apply_row = |window: &[usize], result: &mut Complex64| match policy.row_arithmetic {
+            CsrRowArithmetic::ManualRealImag => {
+                let mut value = Complex64::default();
+                for index in window[0]..window[1] {
+                    let coefficient = self.values[index];
+                    let input = state[self.columns[index].trusted_usize()];
+                    value.re += coefficient.re * input.re - coefficient.im * input.im;
+                    value.im += coefficient.re * input.im + coefficient.im * input.re;
+                }
+                *result = value;
+            }
+        };
+        if policy.parallel
+            && rayon::current_num_threads() > 1
+            && self.values.len() >= policy.min_parallel_entries
+        {
+            self.indptr
+                .par_windows(2)
+                .zip(output.par_iter_mut())
+                .for_each(|(window, result)| apply_row(window, result));
+        } else {
+            for (window, result) in self.indptr.windows(2).zip(output.iter_mut()) {
+                apply_row(window, result);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn to_u64_arrays(&self, max_bytes: u128) -> Result<CsrU64Arrays, PauliError> {
+        let required = ((self.indptr.len() as u128)
+            .checked_mul(std::mem::size_of::<u64>() as u128))
+        .and_then(|value| {
+            value.checked_add(
+                (self.columns.len() as u128).checked_mul(std::mem::size_of::<u64>() as u128)?,
+            )
+        })
+        .and_then(|value| {
+            value.checked_add(
+                (self.values.len() as u128).checked_mul(std::mem::size_of::<Complex64>() as u128)?,
+            )
+        })
+        .ok_or(PauliError::Overflow {
+            context: "estimating CSR graph read-back",
+        })?;
+        if required > max_bytes {
+            return Err(PauliError::MemoryLimit {
+                requested: required,
+                limit: max_bytes,
+            });
+        }
+        let indptr = self
+            .indptr
+            .iter()
+            .copied()
+            .map(|value| {
+                u64::try_from(value).map_err(|_| PauliError::Overflow {
+                    context: "converting CSR row pointer to u64",
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let columns = self
+            .columns
+            .iter()
+            .copied()
+            .map(CsrIndex::to_u64)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((indptr, columns, self.values.clone()))
+    }
+
+    pub fn into_u64_arrays(self, max_bytes: u128) -> Result<CsrU64Arrays, PauliError> {
+        let required = ((self.indptr.len() as u128)
+            .checked_mul(std::mem::size_of::<u64>() as u128))
+        .and_then(|value| {
+            value.checked_add(
+                (self.columns.len() as u128).checked_mul(std::mem::size_of::<u64>() as u128)?,
+            )
+        })
+        .and_then(|value| {
+            value.checked_add(
+                (self.values.len() as u128).checked_mul(std::mem::size_of::<Complex64>() as u128)?,
+            )
+        })
+        .ok_or(PauliError::Overflow {
+            context: "estimating CSR graph read-back",
+        })?;
+        if required > max_bytes {
+            return Err(PauliError::MemoryLimit {
+                requested: required,
+                limit: max_bytes,
+            });
+        }
+        let indptr = self
+            .indptr
+            .into_iter()
+            .map(|value| {
+                u64::try_from(value).map_err(|_| PauliError::Overflow {
+                    context: "converting CSR row pointer to u64",
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((indptr, I::into_u64_vec(self.columns)?, self.values))
+    }
+
+    pub fn to_coo_u64(&self, max_bytes: u128) -> Result<CsrU64Arrays, PauliError> {
+        let required = (self.values.len() as u128)
+            .checked_mul(32)
+            .ok_or(PauliError::Overflow {
+                context: "estimating CSR COO read-back",
+            })?;
+        if required > max_bytes {
+            return Err(PauliError::MemoryLimit {
+                requested: required,
+                limit: max_bytes,
+            });
+        }
+        let mut rows = Vec::with_capacity(self.values.len());
+        for (row, window) in self.indptr.windows(2).enumerate() {
+            let row = u64::try_from(row).map_err(|_| PauliError::Overflow {
+                context: "converting CSR row to u64",
+            })?;
+            rows.extend(std::iter::repeat_n(row, window[1] - window[0]));
+        }
+        let columns = self
+            .columns
+            .iter()
+            .copied()
+            .map(CsrIndex::to_u64)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((rows, columns, self.values.clone()))
+    }
+}
+
+impl CsrGraph<usize> {
+    pub fn try_from_u64(
+        dimension: usize,
+        indptr: Vec<u64>,
+        columns: Vec<u64>,
+        values: Vec<Complex64>,
+    ) -> Result<Self, PauliError> {
+        let indptr = indptr
+            .into_iter()
+            .map(|value| {
+                usize::try_from(value).map_err(|_| PauliError::Overflow {
+                    context: "converting CSR row pointer to native index",
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let columns = columns
+            .into_iter()
+            .map(|value| {
+                usize::try_from(value).map_err(|_| PauliError::Overflow {
+                    context: "converting CSR column to native index",
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::try_new(dimension, indptr, columns, values)
+    }
+}
+
+/// Compatibility execution for callers that still own validated CSR slices.
+///
+/// Reusable plans must retain [`CsrGraph`] directly; this helper exists only
+/// for the legacy slice-shaped public surface and delegates all row arithmetic
+/// and scheduling to the same graph implementation.
+pub(crate) fn apply_slices<I: CsrIndex>(
+    dimension: usize,
+    indptr: &[usize],
+    columns: &[I],
+    values: &[Complex64],
+    state: &[Complex64],
+    output: &mut [Complex64],
+    parallel: bool,
+) -> Result<(), PauliError> {
+    CsrGraph::try_new(
+        dimension,
+        indptr.to_vec(),
+        columns.to_vec(),
+        values.to_vec(),
+    )?
+    .apply_into(
+        state,
+        output,
+        if parallel {
+            CsrApplyPolicy::parallel(LEGACY_CHARGE_CSR_PARALLEL_THRESHOLD)
+        } else {
+            CsrApplyPolicy::serial()
+        },
+    )
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CsrBuildStats {

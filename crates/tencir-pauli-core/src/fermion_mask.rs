@@ -2,12 +2,45 @@
 
 use crate::{Complex64, PauliError};
 
+/// A one-word Fermion action expressed directly in public basis-index bits.
+///
+/// Logical Fermion mode zero is the least-significant bit in the descriptor,
+/// while public axis zero is the most-significant bit of a contiguous binary
+/// basis index.  This view performs that reversal once during lowering so the
+/// scalable full-space and Fermion-prefix kernels need neither source packing
+/// nor a per-call cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FermionMaskSingleWord {
-    required_occupied: u64,
-    required_empty: u64,
-    flip_mask: u64,
-    source_parity_mask: u64,
+pub(crate) struct ContiguousFermionAction {
+    required_occupied: usize,
+    required_empty: usize,
+    flip_mask: usize,
+    source_parity_mask: usize,
+    fixed_sign: i8,
+}
+
+impl ContiguousFermionAction {
+    #[inline]
+    pub(crate) fn source_for_destination(self, destination: usize) -> usize {
+        destination ^ self.flip_mask
+    }
+
+    #[inline]
+    pub(crate) fn amplitude(self, source: usize, coefficient: Complex64) -> Option<Complex64> {
+        if source & self.required_occupied != self.required_occupied
+            || source & self.required_empty != 0
+        {
+            return None;
+        }
+        let mut amplitude = if self.fixed_sign < 0 {
+            -coefficient
+        } else {
+            coefficient
+        };
+        if ((source & self.source_parity_mask).count_ones() & 1) != 0 {
+            amplitude = -amplitude;
+        }
+        Some(amplitude)
+    }
 }
 
 /// A canonical source-state Fermion action.
@@ -25,7 +58,7 @@ pub(crate) struct FermionMaskDescriptor {
     pub(crate) source_parity_mask: Box<[u64]>,
     pub(crate) fixed_sign: i8,
     pub(crate) mode_axes: Box<[usize]>,
-    single_word: Option<FermionMaskSingleWord>,
+    contiguous_public: Option<ContiguousFermionAction>,
 }
 
 impl FermionMaskDescriptor {
@@ -67,20 +100,31 @@ impl FermionMaskDescriptor {
             }
             flip_mask[word] ^= bit;
         }
-        let single_word = (word_count == 1).then_some(FermionMaskSingleWord {
-            required_occupied: required_occupied[0],
-            required_empty: required_empty[0],
-            flip_mask: flip_mask[0],
-            source_parity_mask: source_parity_mask[0],
+        let fixed_sign = if fixed_parity { -1 } else { 1 };
+        let contiguous_public = (word_count == 1
+            && mode_axes.len() <= usize::BITS as usize
+            && mode_axes
+                .iter()
+                .enumerate()
+                .all(|(mode, &axis)| mode == axis))
+        .then(|| {
+            let public_mask = |mask: u64| (mask.reverse_bits() >> (64 - mode_axes.len())) as usize;
+            ContiguousFermionAction {
+                required_occupied: public_mask(required_occupied[0]),
+                required_empty: public_mask(required_empty[0]),
+                flip_mask: public_mask(flip_mask[0]),
+                source_parity_mask: public_mask(source_parity_mask[0]),
+                fixed_sign,
+            }
         });
         Some(Self {
             required_occupied: required_occupied.into_boxed_slice(),
             required_empty: required_empty.into_boxed_slice(),
             flip_mask: flip_mask.into_boxed_slice(),
             source_parity_mask: source_parity_mask.into_boxed_slice(),
-            fixed_sign: if fixed_parity { -1 } else { 1 },
+            fixed_sign,
             mode_axes: mode_axes.to_vec().into_boxed_slice(),
-            single_word,
+            contiguous_public,
         })
     }
 
@@ -245,9 +289,9 @@ impl FermionMaskDescriptor {
         source: u64,
         coefficient: Complex64,
     ) -> Option<Complex64> {
-        let single = self.single_word?;
-        if source & single.required_occupied != single.required_occupied
-            || source & single.required_empty != 0
+        if self.required_occupied.len() != 1
+            || source & self.required_occupied[0] != self.required_occupied[0]
+            || source & self.required_empty[0] != 0
         {
             return None;
         }
@@ -256,10 +300,15 @@ impl FermionMaskDescriptor {
         } else {
             coefficient
         };
-        if ((source & single.source_parity_mask).count_ones() & 1) != 0 {
+        if ((source & self.source_parity_mask[0]).count_ones() & 1) != 0 {
             amplitude = -amplitude;
         }
         Some(amplitude)
+    }
+
+    #[inline]
+    pub(crate) fn contiguous_public_action(&self) -> Option<ContiguousFermionAction> {
+        self.contiguous_public
     }
 
     pub(crate) fn apply_to_words(
@@ -312,28 +361,12 @@ impl FermionMaskDescriptor {
         &self,
         index: usize,
     ) -> Result<usize, PauliError> {
-        let mode_count = self.mode_axes.len();
-        if mode_count > usize::BITS as usize {
-            return Err(PauliError::InvalidIndex {
-                context: "FermionMask contiguous binary index",
-            });
-        }
-        let Some(single) = self.single_word else {
+        let Some(action) = self.contiguous_public_action() else {
             return Err(PauliError::InvalidIndex {
                 context: "FermionMask contiguous binary index",
             });
         };
-        debug_assert!(self
-            .mode_axes
-            .iter()
-            .enumerate()
-            .all(|(mode, &axis)| mode == axis));
-        let source_mask = if mode_count == 0 {
-            0
-        } else {
-            (single.flip_mask.reverse_bits() >> (64 - mode_count)) as usize
-        };
-        Ok(index ^ source_mask)
+        Ok(action.source_for_destination(index))
     }
 }
 
@@ -369,6 +402,50 @@ mod tests {
             .unwrap();
         assert_eq!(destination[0], 1_u64 << 8);
         assert_eq!(amplitude, Complex64::new(2.0, -1.0));
+    }
+
+    #[test]
+    fn contiguous_public_action_matches_packed_descriptor_orientation_and_phase() {
+        for mode_count in [1_usize, 8, usize::BITS as usize] {
+            let axes = (0..mode_count).collect::<Vec<_>>();
+            let mask = FermionMaskDescriptor::from_steps(&axes, &[(0, true)]).unwrap();
+            let action = mask.contiguous_public_action().unwrap();
+            let flipped_public_bit = 1_usize << (mode_count - 1);
+            assert_eq!(action.source_for_destination(flipped_public_bit), 0);
+            assert_eq!(
+                action.amplitude(0, Complex64::new(2.0, -1.0)),
+                Some(Complex64::new(2.0, -1.0))
+            );
+            assert_eq!(
+                action.amplitude(flipped_public_bit, Complex64::new(1.0, 0.0)),
+                None
+            );
+        }
+
+        let axes = (0..8).collect::<Vec<_>>();
+        let mask =
+            FermionMaskDescriptor::from_steps(&axes, &[(1, false), (2, false), (0, true)]).unwrap();
+        let action = mask.contiguous_public_action().unwrap();
+        for public_index in 0..256 {
+            let mut packed = [0_u64];
+            mask.pack_contiguous_binary_index(public_index, &mut packed)
+                .unwrap();
+            let coefficient = Complex64::new(0.25, -0.5);
+            assert_eq!(
+                action.amplitude(public_index, coefficient),
+                mask.amplitude_from_single_word(packed[0], coefficient),
+            );
+            assert_eq!(
+                action.source_for_destination(public_index),
+                mask.apply_flip_to_contiguous_binary_index(public_index)
+                    .unwrap(),
+            );
+        }
+
+        assert!(FermionMaskDescriptor::from_steps(&[1, 0], &[(0, true)])
+            .unwrap()
+            .contiguous_public_action()
+            .is_none());
     }
 
     #[test]

@@ -17,7 +17,7 @@ from .hamiltonian import (
     _effective_max_bytes,
     _validate_max_bytes,
 )
-from .pauli import PauliOperator, PauliWord
+from .pauli import PauliOperator
 from .symmetry import U1Sector
 
 
@@ -133,27 +133,6 @@ def _pauli_codes(
                 raise ValueError("Pauli x/y/z index sets overlap")
             codes_list[index] = code
     return tuple(codes_list)
-
-
-def _normalize_ps(value: object, nqubits: int) -> tuple[int, ...]:
-    if isinstance(value, PauliWord):
-        if value.nqubits != nqubits:
-            raise ValueError("observable has the wrong nqubits")
-        return value.to_codes()
-    if isinstance(value, str):
-        word = PauliWord.from_string(value)
-        if word.nqubits != nqubits:
-            raise ValueError("observable has the wrong nqubits")
-        return word.to_codes()
-    if isinstance(value, Mapping):
-        return _pauli_codes(
-            nqubits,
-            cast(Optional[Sequence[int]], value.get("x")),
-            cast(Optional[Sequence[int]], value.get("y")),
-            cast(Optional[Sequence[int]], value.get("z")),
-            None,
-        )
-    return _pauli_codes(nqubits, None, None, None, cast(Sequence[int], value))
 
 
 @dataclass(frozen=True)

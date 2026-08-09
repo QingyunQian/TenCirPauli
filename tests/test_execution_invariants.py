@@ -404,7 +404,7 @@ def test_structured_fermion_metadata_and_counters_are_wired() -> None:
     assert metadata[2] == 0
 
 
-def test_raw_fermion_source_packing_is_shared_across_schedule_members() -> None:
+def test_raw_fermion_direct_masks_match_mapped_and_profile_batched_extraction() -> None:
     operator = tcp.FermionOperator.from_terms(
         4,
         [
