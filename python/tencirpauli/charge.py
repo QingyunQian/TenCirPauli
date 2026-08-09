@@ -1037,13 +1037,14 @@ class ChargeMvpPlan(_NativeMvpFacade):
 
     def _csr_arrays(
         self,
+        *,
+        max_bytes: Optional[int] = None,
     ) -> Tuple[
         np.ndarray[Any, Any],
         np.ndarray[Any, Any],
         np.ndarray[Any, Any],
     ]:
-        matrix = _read_csr_arrays(self._execution, self.dimension, None)
-        return matrix.indptr, matrix.indices, matrix.data
+        return _read_csr_arrays(self._execution, max_bytes)
 
     def _coo_arrays(
         self,
@@ -1054,8 +1055,7 @@ class ChargeMvpPlan(_NativeMvpFacade):
         np.ndarray[Any, Any],
         np.ndarray[Any, Any],
     ]:
-        matrix = _read_coo_arrays(self._execution, self.dimension, max_bytes)
-        return matrix.row, matrix.column, matrix.data
+        return _read_coo_arrays(self._execution, max_bytes)
 
     @property
     def indptr(self) -> np.ndarray[Any, Any]:
@@ -1546,12 +1546,7 @@ class ChargeRestrictedOperator:
         """
         _validate_max_bytes(max_bytes)
         plan = self._ensure_eager_for_target(max_bytes, "coo")
-        rows, columns, coefficients = plan._coo_arrays(max_bytes=max_bytes)
-        _check_allocation(
-            int(rows.nbytes + columns.nbytes + coefficients.nbytes),
-            max_bytes,
-            "charge COO matrix",
-        )
+        rows, columns, coefficients = _read_coo_arrays(plan._execution, max_bytes)
         return COOMatrix(
             rows,
             columns,
@@ -1568,12 +1563,7 @@ class ChargeRestrictedOperator:
         """
         _validate_max_bytes(max_bytes)
         plan = self._ensure_eager_for_target(max_bytes, "csr")
-        indptr, columns, coefficients = plan._csr_arrays()
-        _check_allocation(
-            int(indptr.nbytes + columns.nbytes + coefficients.nbytes),
-            max_bytes,
-            "charge CSR matrix",
-        )
+        indptr, columns, coefficients = _read_csr_arrays(plan._execution, max_bytes)
         return CSRMatrix(
             indptr,
             columns,

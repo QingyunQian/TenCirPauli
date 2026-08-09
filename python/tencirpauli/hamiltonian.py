@@ -308,9 +308,13 @@ class NativeMVPPlan(_NativeMvpFacade):
         """Materialize the retained eager graph as deterministic CSR."""
         if self.storage != "eager" or not hasattr(self._execution, "csr"):
             raise ValueError("CSR materialization requires an eager native plan")
-        return cast(
-            CSRMatrix,
-            _read_csr_arrays(self._execution, self.dimension, max_bytes),
+        _validate_max_bytes(max_bytes)
+        indptr, indices, data = _read_csr_arrays(self._execution, max_bytes)
+        return CSRMatrix(
+            indptr,
+            indices,
+            data,
+            (self.dimension, self.dimension),
         )
 
 

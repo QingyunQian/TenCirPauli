@@ -250,11 +250,15 @@ class _NativeMvpFacade:
         return to_scipy_linear_operator(self, max_bytes=max_bytes)
 
 
-def _read_csr_arrays(execution: Any, dimension: int, max_bytes: Optional[int]) -> Any:
-    """Read one eager native plan's flat CSR arrays into the public container."""
-    from .hamiltonian import CSRMatrix
+def _read_csr_arrays(
+    execution: Any, max_bytes: Optional[int]
+) -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    """Read one eager native plan's flat, read-only CSR arrays.
 
-    _validate_max_bytes(max_bytes)
+    The caller owns construction of the public ``CSRMatrix`` container.  Keeping
+    this helper at the flat-array ABI prevents an eager charge plan from
+    constructing a temporary sparse container merely to unpack it again.
+    """
     indptr, columns, values = execution.csr()
     indptr_array = np.asarray(indptr, dtype=np.uint64)
     columns_array = np.asarray(columns, dtype=np.uint64)
@@ -266,14 +270,17 @@ def _read_csr_arrays(execution: Any, dimension: int, max_bytes: Optional[int]) -
     )
     for array in (indptr_array, columns_array, values_array):
         array.setflags(write=False)
-    return CSRMatrix(indptr_array, columns_array, values_array, (dimension, dimension))
+    return indptr_array, columns_array, values_array
 
 
-def _read_coo_arrays(execution: Any, dimension: int, max_bytes: Optional[int]) -> Any:
-    """Read one eager native plan's flat COO arrays into the public container."""
-    from .hamiltonian import COOMatrix
+def _read_coo_arrays(
+    execution: Any, max_bytes: Optional[int]
+) -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    """Read one eager native plan's flat, read-only COO arrays.
 
-    _validate_max_bytes(max_bytes)
+    The caller owns construction of the public ``COOMatrix`` container for the
+    same reason as :func:`_read_csr_arrays`.
+    """
     rows, columns, values = execution.coo(_effective_max_bytes(max_bytes))
     rows_array = np.asarray(rows, dtype=np.uint64)
     columns_array = np.asarray(columns, dtype=np.uint64)
@@ -285,4 +292,4 @@ def _read_coo_arrays(execution: Any, dimension: int, max_bytes: Optional[int]) -
     )
     for array in (rows_array, columns_array, values_array):
         array.setflags(write=False)
-    return COOMatrix(rows_array, columns_array, values_array, (dimension, dimension))
+    return rows_array, columns_array, values_array
