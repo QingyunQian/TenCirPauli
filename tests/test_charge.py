@@ -50,6 +50,12 @@ def _independent_charge_value(
             total += charge.boson_weights[index] * value
         elif domain == "qubit":
             total += charge.qubit_levels[index][value]
+        elif domain == "qudit":
+            dimension = charge.space.qudits[index]
+            if dimension % 2:
+                total += charge.qudit_weights[index] * ((dimension - 1) // 2 - value)
+            else:
+                total += charge.qudit_weights[index] * (dimension - 1 - 2 * value)
     return total
 
 
@@ -67,6 +73,13 @@ def _independent_sector_basis(
             for charge, target in constraints
         )
     ]
+
+
+def _mixed_radix_index(values: tuple[int, ...], dimensions: tuple[int, ...]) -> int:
+    result = 0
+    for value, dimension in zip(values, dimensions):
+        result = result * dimension + value
+    return result
 
 
 def test_charge_equality_ignores_name_and_sector_rank_unrank() -> None:
@@ -111,6 +124,21 @@ def test_wide_small_generic_charge_sector_avoids_full_space_index_limit(
             .dense()
         )
         np.testing.assert_allclose(generic, specialized)
+
+        coupled_hopping = space.fermion.create(1) * space.fermion.annihilate(
+            2
+        ) + space.fermion.create(2) * space.fermion.annihilate(1)
+        wide_sector = tcp.ChargeSector(((number, 1), (marked, 0)))
+        wide_plan = coupled_hopping.restrict_charge(wide_sector).mvp_plan()
+        assert wide_plan.execution_family == "generic"
+        state = np.arange(wide_plan.dimension, dtype=np.complex128)
+        output = wide_plan.apply(state)
+        assert np.isfinite(output).all()
+        counters = tuple(wide_plan._native_execution.debug_counters())
+        assert len(counters) == 8
+        assert counters[:4] == (0, 0, 0, 0)
+        assert counters[5] > 0
+        assert counters[6] > 0
     assert sector.basis_ordering == "operator_space_axis0_msb_mixed_radix"
 
 
@@ -157,6 +185,76 @@ def test_inferred_boson_sector_and_zero_charge_qudit_spectator() -> None:
     unbounded = tcp.AdditiveCharge(tcp.OperatorSpace(bosons=1))
     with pytest.raises(ValueError, match="finiteness"):
         unbounded.sector(0)
+
+
+@pytest.mark.parametrize(
+    ("dimension", "spectrum"),
+    [(3, (1, 0, -1)), (4, (3, 1, -1, -3)), (5, (2, 1, 0, -1, -2))],
+)
+def test_qudit_spin_z_charge_fourier_matches_independent_diagonal(
+    dimension: int, spectrum: tuple[int, ...]
+) -> None:
+    space = tcp.OperatorSpace(qudits=(dimension,))
+    charge = tcp.AdditiveCharge(space, qudits={0: 1})
+    dense = charge.as_operator().compile("dense")
+    np.testing.assert_allclose(dense, np.diag(spectrum), rtol=1e-12, atol=1e-12)
+    sector = tcp.ChargeSector(((charge, 0),))
+    expected = [
+        occupations
+        for occupations in itertools.product(range(dimension))
+        if occupations[0] in range(dimension)
+        and _independent_charge_value(charge, occupations) == 0
+    ]
+    assert [sector.unrank(index) for index in range(sector.dimension)] == expected
+    assert all(sector.rank(state) == index for index, state in enumerate(expected))
+
+
+@pytest.mark.parametrize("dimension", [3, 4, 5])
+def test_qudit_weyl_wrap_is_source_dependent_and_leakage_is_strict(
+    dimension: int,
+) -> None:
+    space = tcp.OperatorSpace(qudits=(dimension,))
+    charge = tcp.AdditiveCharge(space, qudits={0: 1})
+    shift = space.qudit.weyl(0, 1, 0)
+    assert not shift.conserves(charge)
+    highest = charge.sector(
+        (dimension - 1) if dimension % 2 == 0 else (dimension - 1) // 2
+    )
+    with pytest.raises(ValueError, match="conserved"):
+        shift.restrict_charge(highest)
+    diagonal = space.qudit.weyl(0, 0, 1)
+    target = (dimension - 1) // 2 - 1 if dimension % 2 else dimension - 1 - 2
+    restricted = diagonal.restrict_charge(charge.sector(target))
+    state = np.ones(restricted.dimension, dtype=np.complex128)
+    np.testing.assert_allclose(
+        restricted.apply(state), np.exp(2j * np.pi / dimension) * state
+    )
+
+
+def test_qudit_charge_analysis_keeps_exact_cancellation() -> None:
+    space = tcp.OperatorSpace(qudits=(3,))
+    charge = tcp.AdditiveCharge(space, qudits={0: 1})
+    canceled = space.qudit.weyl(0, 1, 0) - space.qudit.weyl(0, 1, 0)
+    analysis = canceled.analyze_charge(charge)
+    assert analysis.is_conserved
+    restricted = canceled.restrict_charge(charge.sector(0))
+    np.testing.assert_array_equal(
+        restricted.apply(np.ones(restricted.dimension, dtype=np.complex128)),
+        np.zeros(restricted.dimension, dtype=np.complex128),
+    )
+
+
+def test_qudit_charge_metadata_participates_in_mixed_product_sector() -> None:
+    space = tcp.OperatorSpace(fermions=1, qudits=(3,))
+    charge = tcp.AdditiveCharge(space, qudits={0: 1})
+    sector = charge.sector(0)
+    assert sector.dimension == 2
+    assert _selected_basis(sector) == [(0, 1), (1, 1)]
+    diagonal = space.fermion.create(0) * space.fermion.annihilate(0)
+    restricted = diagonal.restrict_charge(sector)
+    np.testing.assert_allclose(
+        restricted.dense(), np.diag([0.0, 1.0]).astype(np.complex128)
+    )
 
 
 def test_simultaneous_charge_constraints_and_layout_validation() -> None:
@@ -259,6 +357,210 @@ def test_restricted_compiler_aggregates_leaking_terms_before_sector_check() -> N
     assert lazy.mvp_plan().storage == "lazy"
     np.testing.assert_array_equal(lazy.apply(np.asarray([1.0 + 0j])), np.zeros(1))
     np.testing.assert_array_equal(lazy.dense(), np.zeros((1, 1)))
+
+
+def test_qubit_product_factor_with_boson_spectator_matches_dense() -> None:
+    space = tcp.OperatorSpace(bosons=1, qubits=4)
+    charge = tcp.AdditiveCharge(
+        space, qubits={index: (0, 1) for index in range(space.qubits)}
+    )
+    operator = (
+        space.qubit.x(0) * space.qubit.x(1)
+        + space.qubit.y(0) * space.qubit.y(1)
+        + 0.4 * space.boson.create(0) * space.boson.annihilate(0)
+    )
+    sector = charge.sector(2, boson_cutoffs={0: 2})
+    restricted = operator.restrict_charge(sector)
+    plan = restricted.mvp_plan()
+    assert plan.execution_family == "product"
+    state = np.arange(sector.dimension, dtype=np.complex128) + 0.3j
+    output = np.empty_like(state)
+    plan.apply_into(state, output, max_bytes=0)
+    np.testing.assert_allclose(output, restricted.dense() @ state)
+
+
+def test_product_lazy_matches_independent_full_dense_and_retains_no_graph() -> None:
+    space = tcp.OperatorSpace(bosons=1, qubits=3)
+    charge = tcp.AdditiveCharge(
+        space, qubits={index: (0, 1) for index in range(space.qubits)}
+    )
+    operator = (
+        0.7 * space.qubit.z(0)
+        + 0.2 * space.qubit.z(1)
+        + 0.4 * space.boson.create(0) * space.boson.annihilate(0)
+    )
+    sector = charge.sector(1, boson_cutoffs={0: 2})
+    restricted = operator.restrict_charge(sector)
+    plan = restricted.mvp_plan()
+    assert plan.execution_family == "product"
+    assert plan.transition_count is None
+    full = operator.compile("dense", boson_cutoffs={0: 2})
+    basis = _selected_basis(sector)
+    dimensions = tuple(sector.local_dimensions)
+    indices = [_mixed_radix_index(state, dimensions) for state in basis]
+    independent = full[np.ix_(indices, indices)]
+    state = np.arange(sector.dimension, dtype=np.complex128) + 0.13j
+    np.testing.assert_allclose(plan.apply(state), independent @ state)
+    # The lazy plan retains descriptors and factor metadata, not a D-by-T
+    # transition graph; its accounting stays far below a dense transition
+    # payload for this deliberately small differential case.
+    assert plan.estimated_retained_bytes < sector.dimension * sector.dimension * 16 * 4
+
+
+def test_qubit_product_factor_supports_zero_charge_same_domain_spectators() -> None:
+    space = tcp.OperatorSpace(qubits=4)
+    charge = tcp.AdditiveCharge(
+        space,
+        qubits={0: (0, 1), 1: (0, 1), 2: (0, 0), 3: (0, 0)},
+    )
+    operator = space.qubit.x(0) * space.qubit.x(1) + space.qubit.y(0) * space.qubit.y(1)
+    sector = charge.sector(1)
+    restricted = operator.restrict_charge(sector)
+    assert restricted.mvp_plan().execution_family == "product"
+    state = np.arange(sector.dimension, dtype=np.complex128) + 0.1j
+    np.testing.assert_allclose(restricted.apply(state), restricted.dense() @ state)
+
+
+def test_qubit_product_factor_supports_interleaved_same_domain_spectators() -> None:
+    space = tcp.OperatorSpace(qubits=3)
+    charge = tcp.AdditiveCharge(space, qubits={0: (0, 1), 1: (0, 0), 2: (0, 1)})
+    operator = space.qubit.x(0) * space.qubit.x(2) + space.qubit.y(0) * space.qubit.y(2)
+    restricted = operator.restrict_charge(charge.sector(1))
+    assert restricted.mvp_plan().execution_family == "product"
+    state = np.arange(restricted.dimension, dtype=np.complex128) + 0.15j
+    np.testing.assert_allclose(restricted.apply(state), restricted.dense() @ state)
+
+
+def test_qudit_product_factor_with_cartesian_spectator_matches_dense() -> None:
+    space = tcp.OperatorSpace(bosons=1, qudits=(4, 4))
+    charge = tcp.AdditiveCharge(space, qudits={0: 1, 1: 1})
+    operator = (
+        0.7 * space.qudit.weyl(0, 0, 1)
+        + 0.2 * space.qudit.weyl(1, 0, 2)
+        + 0.4 * space.boson.create(0) * space.boson.annihilate(0)
+    )
+    sector = charge.sector(0, boson_cutoffs={0: 2})
+    restricted = operator.restrict_charge(sector)
+    plan = restricted.mvp_plan()
+    assert plan.execution_family == "product"
+    state = np.arange(sector.dimension, dtype=np.complex128) - 0.2j
+    output = np.empty_like(state)
+    plan.apply_into(state, output, max_bytes=0)
+    np.testing.assert_allclose(output, restricted.dense() @ state)
+
+
+def test_qudit_product_factor_supports_zero_charge_same_domain_spectators() -> None:
+    space = tcp.OperatorSpace(qudits=(3, 3))
+    charge = tcp.AdditiveCharge(space, qudits={0: 1, 1: 0})
+    operator = space.qudit.weyl(0, 0, 1)
+    sector = charge.sector(0)
+    restricted = operator.restrict_charge(sector)
+    assert restricted.mvp_plan().execution_family == "product"
+    state = np.arange(sector.dimension, dtype=np.complex128) + 0.2j
+    np.testing.assert_allclose(restricted.apply(state), restricted.dense() @ state)
+
+
+def test_boson_product_factor_with_fermion_spectator_matches_dense() -> None:
+    space = tcp.OperatorSpace(fermions=2, bosons=2, qubits=1)
+    charge = tcp.AdditiveCharge(space, bosons={0: 1, 1: 1})
+    operator = (
+        space.boson.create(0) * space.boson.annihilate(1)
+        + space.boson.create(1) * space.boson.annihilate(0)
+        + 0.3 * space.fermion.create(0) * space.fermion.annihilate(1)
+        + 0.2 * space.qubit.z(0)
+    )
+    sector = charge.sector(2, boson_cutoffs={0: 2, 1: 2})
+    restricted = operator.restrict_charge(sector)
+    plan = restricted.mvp_plan()
+    assert plan.execution_family == "product"
+    state = np.arange(sector.dimension, dtype=np.complex128) + 0.4j
+    output = np.empty_like(state)
+    plan.apply_into(state, output, max_bytes=0)
+    np.testing.assert_allclose(output, restricted.dense() @ state)
+
+
+def test_boson_product_factor_supports_zero_charge_same_domain_spectators() -> None:
+    space = tcp.OperatorSpace(bosons=2)
+    charge = tcp.AdditiveCharge(space, bosons={0: 1, 1: 0})
+    operator = space.boson.create(0) * space.boson.annihilate(0)
+    sector = charge.sector(1, boson_cutoffs={0: 2, 1: 2})
+    restricted = operator.restrict_charge(sector)
+    assert restricted.mvp_plan().execution_family == "product"
+    state = np.arange(sector.dimension, dtype=np.complex128) - 0.1j
+    np.testing.assert_allclose(restricted.apply(state), restricted.dense() @ state)
+
+
+def test_native_family_metadata_reports_product_for_independent_factor_product() -> (
+    None
+):
+    """Independent compact constraints use the native Product descriptor."""
+    space = tcp.OperatorSpace(qubits=2, bosons=1)
+    qubit_charge = tcp.AdditiveCharge(space, qubits={0: (0, 1), 1: (0, 1)})
+    boson_charge = tcp.AdditiveCharge(space, bosons={0: 1})
+    sector = tcp.ChargeSector(
+        ((qubit_charge, 1), (boson_charge, 0)), boson_cutoffs={0: 1}
+    )
+    operator = (
+        space.qubit.x(0) * space.qubit.x(1)
+        + space.qubit.y(0) * space.qubit.y(1)
+        + space.boson.create(0) * space.boson.annihilate(0)
+    )
+    restricted = operator.restrict_charge(sector)
+    plan = restricted.mvp_plan()
+    assert plan.execution_family == "product"
+    state = np.arange(sector.dimension, dtype=np.complex128) + 0.1j
+    np.testing.assert_allclose(plan.apply(state), restricted.dense() @ state)
+
+
+def test_native_family_metadata_reports_generic_for_coupled_charge() -> None:
+    space = tcp.OperatorSpace(qubits=1, bosons=1)
+    coupled = tcp.AdditiveCharge(space, qubits={0: (0, 1)}, bosons={0: 1})
+    sector = coupled.sector(1, boson_cutoffs={0: 1})
+    restricted = (
+        space.qubit.z(0) + space.boson.create(0) * space.boson.annihilate(0)
+    ).restrict_charge(sector)
+    assert restricted.mvp_plan().execution_family == "generic"
+
+
+def test_interleaved_spinful_product_factor_matches_dense() -> None:
+    sites = 3
+    space = tcp.OperatorSpace(fermions=2 * sites, bosons=sites)
+    total = tcp.AdditiveCharge(space, fermions={mode: 1 for mode in range(2 * sites)})
+    balance = tcp.AdditiveCharge(
+        space,
+        fermions={
+            2 * site + spin: (1 if spin == 0 else -1)
+            for site in range(sites)
+            for spin in range(2)
+        },
+    )
+    operator: Any = 0.4 * space.boson.create(0) * space.boson.annihilate(0)
+    for site in range(sites - 1):
+        for spin in range(2):
+            left = 2 * site + spin
+            right = 2 * (site + 1) + spin
+            operator = operator + space.fermion.create(left) * space.fermion.annihilate(
+                right
+            )
+            operator = operator + space.fermion.create(
+                right
+            ) * space.fermion.annihilate(left)
+    for site in range(sites):
+        operator = operator + 0.3 * (
+            space.fermion.create(2 * site)
+            * space.fermion.annihilate(2 * site)
+            * space.fermion.create(2 * site + 1)
+            * space.fermion.annihilate(2 * site + 1)
+        )
+    sector = tcp.ChargeSector(
+        ((total, 2), (balance, 0)),
+        boson_cutoffs={site: 1 for site in range(sites)},
+    )
+    restricted = operator.restrict_charge(sector)
+    plan = restricted.mvp_plan()
+    assert plan.execution_family == "product"
+    state = np.arange(sector.dimension, dtype=np.complex128) + 0.2j
+    np.testing.assert_allclose(plan.apply(state), restricted.dense() @ state)
 
 
 def test_restricted_fermion_and_boson_transitions_are_exact() -> None:
@@ -386,7 +688,9 @@ def test_spinful_fermion_fast_path_matches_generic_and_eager_across_fillings(
     state = np.arange(fast.dimension, dtype=np.float64).astype(np.complex128)
     state += 0.125j * state[::-1]
     output = np.empty_like(state)
-    fast.mvp_plan().apply_into(state, output, max_bytes=0)
+    fast_plan = fast.mvp_plan()
+    assert fast_plan.native_variant == "fermion"
+    fast_plan.apply_into(state, output, max_bytes=0)
     np.testing.assert_allclose(output, generic.apply(state))
     np.testing.assert_allclose(output, eager.apply(state))
 
@@ -423,6 +727,31 @@ def test_qudit_spectator_is_retained_in_restricted_execution() -> None:
     assert restricted.dimension == 6
     expected = np.kron(np.diag([0, 1]), np.roll(np.eye(3), 1, axis=0))
     np.testing.assert_allclose(restricted.dense(), expected)
+
+
+def test_specialized_fermion_factor_reuses_boson_spectators() -> None:
+    space = tcp.OperatorSpace(fermions=4, bosons=1)
+    total = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(4)})
+    balance = tcp.AdditiveCharge(space, fermions={0: 1, 1: 1, 2: -1, 3: -1})
+    operator = (
+        space.fermion.create(0) * space.fermion.annihilate(1)
+        + space.fermion.create(1) * space.fermion.annihilate(0)
+        + space.boson.create(0) * space.boson.annihilate(0)
+        + 0.3
+        * (space.fermion.create(0) * space.fermion.annihilate(0))
+        * (space.boson.create(0) + space.boson.annihilate(0))
+    )
+    sector = tcp.ChargeSector(((total, 2), (balance, 0)), boson_cutoffs={0: 2})
+    restricted = operator.restrict_charge(sector)
+    lazy = restricted.mvp_plan()
+    eager = restricted.mvp_plan(storage="eager")
+    assert lazy.execution_family == "product"
+    assert lazy.native_variant == "fermion"
+    assert eager.native_variant == "fermion"
+    assert eager.retained_format == "csr"
+    state = np.arange(restricted.dimension, dtype=np.complex128) + 0.2j
+    np.testing.assert_allclose(lazy.apply(state), restricted.dense() @ state)
+    np.testing.assert_allclose(eager.apply(state), lazy.apply(state))
 
 
 def test_restriction_rejects_leakage_and_memory_guards() -> None:

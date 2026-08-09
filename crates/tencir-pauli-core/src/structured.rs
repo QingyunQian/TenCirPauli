@@ -1,9 +1,18 @@
 //! Native finite-basis kernels shared by structured Python operators.
 
-use std::collections::{hash_map::Entry, BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet};
+use std::hint::black_box;
 use std::mem::size_of;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 
+use crate::csr::{CsrSink, CSR_CHUNK_CAPACITY};
+use crate::fermion_mask::FermionMaskDescriptor;
+use crate::hamiltonian::MvpPlan;
+use crate::operator::PauliOperator;
 use crate::{Complex64, PauliError};
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 type FermionKey = (Vec<u32>, Vec<u32>);
@@ -271,15 +280,20 @@ pub fn analyze_hybrid_charge(
     fermion_weights: &[f64],
     boson_weights: &[f64],
     qubit_levels: &[(f64, f64)],
+    qudit_weights: &[f64],
     max_bytes: u128,
 ) -> Result<(bool, usize), PauliError> {
     if fermion_weights.len() != layout.n_modes
         || boson_weights.len() != layout.n_bosons
         || qubit_levels.len() != layout.nqubits
+        || qudit_weights.len() != layout.n_qudit_sites
     {
         return Err(PauliError::InvalidStructureLength {
-            expected: layout.n_modes + layout.n_bosons + layout.nqubits,
-            actual: fermion_weights.len() + boson_weights.len() + qubit_levels.len(),
+            expected: layout.n_modes + layout.n_bosons + layout.nqubits + layout.n_qudit_sites,
+            actual: fermion_weights.len()
+                + boson_weights.len()
+                + qubit_levels.len()
+                + qudit_weights.len(),
         });
     }
     if batch.mapped_present.iter().any(|&present| present) {
@@ -294,6 +308,7 @@ pub fn analyze_hybrid_charge(
         "estimating additive-charge analysis",
     )?;
     let mut aggregate: FxHashMap<HybridKey, Vec<Complex64>> = FxHashMap::default();
+    let mut nonconserving_qudit: FxHashMap<HybridKey, Vec<Complex64>> = FxHashMap::default();
     let mut total_values = 0usize;
     for index in 0..batch.coefficients.len() {
         let fermion_key = if batch.fermion_present[index] {
@@ -341,6 +356,19 @@ pub fn analyze_hybrid_charge(
                 })
                 .sum::<f64>();
         }
+        if batch.qudit_present[index]
+            && batch.qudit_triples[index]
+                .iter()
+                .any(|&(site, a, _)| a != 0 && qudit_weights[site as usize] != 0.0)
+        {
+            push_aggregate(
+                &mut nonconserving_qudit,
+                base_key.clone(),
+                batch.coefficients[index],
+                &mut total_values,
+                max_bytes,
+            )?;
+        }
         if raw_delta != 0.0 {
             push_aggregate(
                 &mut aggregate,
@@ -379,6 +407,7 @@ pub fn analyze_hybrid_charge(
     }
     let nonzero = aggregate
         .into_values()
+        .chain(nonconserving_qudit.into_values())
         .filter_map(|mut values| {
             values.sort_by_key(|value| (value.re.to_bits(), value.im.to_bits()));
             let value = deterministic_sum(values);
@@ -395,18 +424,30 @@ pub fn hybrid_terms_conserve_charge(
     fermion_weights: &[f64],
     boson_weights: &[f64],
     qubit_levels: &[(f64, f64)],
+    qudit_weights: &[f64],
 ) -> Result<bool, PauliError> {
     if fermion_weights.len() != layout.n_modes
         || boson_weights.len() != layout.n_bosons
         || qubit_levels.len() != layout.nqubits
+        || qudit_weights.len() != layout.n_qudit_sites
     {
         return Err(PauliError::InvalidStructureLength {
-            expected: layout.n_modes + layout.n_bosons + layout.nqubits,
-            actual: fermion_weights.len() + boson_weights.len() + qubit_levels.len(),
+            expected: layout.n_modes + layout.n_bosons + layout.nqubits + layout.n_qudit_sites,
+            actual: fermion_weights.len()
+                + boson_weights.len()
+                + qubit_levels.len()
+                + qudit_weights.len(),
         });
     }
     for index in 0..batch.coefficients.len() {
         if batch.mapped_present[index] {
+            return Ok(false);
+        }
+        if batch.qudit_present[index]
+            && batch.qudit_triples[index]
+                .iter()
+                .any(|&(site, a, _)| a != 0 && qudit_weights[site as usize] != 0.0)
+        {
             return Ok(false);
         }
         let mut delta = 0.0;
@@ -2415,12 +2456,368 @@ fn pauli_code_product(left: u8, right: u8) -> (u8, Complex64) {
 
 /// One local finite-basis operation in a canonical structured term.
 /// `kind=0` is Pauli, `kind=1` is a boson block, and `kind=2` is direct Weyl.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StructuredOperation {
     pub axis: usize,
     pub kind: u8,
     pub p: u32,
     pub q: u32,
+}
+
+#[derive(Clone)]
+struct CompiledStructuredOperation {
+    axis: usize,
+    kind: u8,
+    p: usize,
+    q: usize,
+    stride: usize,
+    dimension: usize,
+    local_table: Vec<Complex64>,
+}
+
+#[derive(Clone)]
+struct CompiledNetAction {
+    axis: usize,
+    stride: usize,
+    dimension: usize,
+    forward_destinations: Box<[usize]>,
+    forward_amplitudes: Box<[Complex64]>,
+    inverse_sources: Box<[usize]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CompiledScheduleKey {
+    /// Destination digits for each non-Fermion active axis.  Amplitudes are
+    /// intentionally absent: source-dependent phases and ladder factors are
+    /// evaluated once per grouped source configuration below.
+    net_axes: Vec<(usize, Vec<usize>)>,
+    fermion_axes: Vec<usize>,
+    fermion_flip: Vec<u64>,
+    fallback_shape: Vec<(usize, u8, usize, usize)>,
+}
+
+struct StructuredScheduleGroup {
+    members: Box<[usize]>,
+    suffix_stride: usize,
+    contiguous_source_flip_mask: Option<usize>,
+}
+
+#[derive(Default)]
+struct StructuredApplyCounters {
+    schedule_group_evaluations: AtomicUsize,
+    segment_applications: AtomicUsize,
+    fermion_mask_applications: AtomicUsize,
+    nonfermion_fallback_invocations: AtomicUsize,
+}
+
+impl StructuredApplyCounters {
+    fn snapshot(&self) -> (usize, usize, usize, usize) {
+        (
+            self.schedule_group_evaluations.load(Ordering::Relaxed),
+            self.segment_applications.load(Ordering::Relaxed),
+            self.fermion_mask_applications.load(Ordering::Relaxed),
+            self.nonfermion_fallback_invocations.load(Ordering::Relaxed),
+        )
+    }
+}
+
+fn compile_net_actions(
+    term: &[StructuredOperation],
+    local_dimensions: &[usize],
+    strides: &[usize],
+) -> Result<Option<Box<[CompiledNetAction]>>, PauliError> {
+    let nonfermion_term = term
+        .iter()
+        .copied()
+        .filter(|operation| operation.kind != 3)
+        .collect::<Vec<_>>();
+    let key = structured_net_key(&nonfermion_term, local_dimensions)?;
+    let mut actions = Vec::with_capacity(key.len());
+    for (axis, rows) in key {
+        let dimension = *local_dimensions.get(axis).ok_or(PauliError::InvalidIndex {
+            context: "structured net-action axis",
+        })?;
+        if rows.len() != dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: dimension,
+                actual: rows.len(),
+            });
+        }
+        let stride = *strides.get(axis).ok_or(PauliError::InvalidIndex {
+            context: "structured net-action stride",
+        })?;
+        let mut forward_destinations = Vec::with_capacity(dimension);
+        let mut forward_amplitudes = Vec::with_capacity(dimension);
+        let mut inverse_sources = vec![usize::MAX; dimension];
+        for (source, &(destination, real, imag)) in rows.iter().enumerate() {
+            let amplitude = Complex64::new(f64::from_bits(real), f64::from_bits(imag));
+            forward_destinations.push(if is_exact_zero(amplitude) {
+                usize::MAX
+            } else {
+                destination
+            });
+            forward_amplitudes.push(amplitude);
+            if !is_exact_zero(amplitude) {
+                if destination >= dimension || inverse_sources[destination] != usize::MAX {
+                    return Err(PauliError::InvalidStructureLength {
+                        expected: dimension,
+                        actual: destination,
+                    });
+                }
+                inverse_sources[destination] = source;
+            }
+        }
+        actions.push(CompiledNetAction {
+            axis,
+            stride,
+            dimension,
+            forward_destinations: forward_destinations.into_boxed_slice(),
+            forward_amplitudes: forward_amplitudes.into_boxed_slice(),
+            inverse_sources: inverse_sources.into_boxed_slice(),
+        });
+    }
+    Ok(Some(actions.into_boxed_slice()))
+}
+
+fn compiled_schedule_key(
+    term: &[CompiledStructuredOperation],
+    actions: Option<&[CompiledNetAction]>,
+    fermion: Option<&FermionMaskDescriptor>,
+) -> CompiledScheduleKey {
+    let net_axes = actions
+        .map(|actions| {
+            actions
+                .iter()
+                .map(|action| (action.axis, action.forward_destinations.to_vec()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let (fermion_axes, fermion_flip) = fermion
+        .map(|descriptor| (descriptor.mode_axes.to_vec(), descriptor.flip_mask.to_vec()))
+        .unwrap_or_default();
+    let fallback_shape = if actions.is_none() {
+        term.iter()
+            .map(|operation| (operation.axis, operation.kind, operation.p, operation.q))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    CompiledScheduleKey {
+        net_axes,
+        fermion_axes,
+        fermion_flip,
+        fallback_shape,
+    }
+}
+
+fn schedule_suffix_stride(
+    active_axes: impl Iterator<Item = usize>,
+    strides: &[usize],
+    dimension: usize,
+) -> usize {
+    active_axes
+        .max()
+        .and_then(|axis| strides.get(axis).copied())
+        .unwrap_or(dimension)
+}
+
+fn compile_schedule_groups(
+    terms: &[Vec<CompiledStructuredOperation>],
+    net_actions: &[Option<Box<[CompiledNetAction]>>],
+    fermion_masks: &[Option<FermionMaskDescriptor>],
+    strides: &[usize],
+    dimension: usize,
+) -> Result<Box<[StructuredScheduleGroup]>, PauliError> {
+    if terms.len() != net_actions.len() || terms.len() != fermion_masks.len() {
+        return Err(PauliError::InvalidStructureLength {
+            expected: terms.len(),
+            actual: net_actions.len().max(fermion_masks.len()),
+        });
+    }
+    let mut grouped = BTreeMap::<CompiledScheduleKey, Vec<usize>>::new();
+    for index in 0..terms.len() {
+        let key = compiled_schedule_key(
+            &terms[index],
+            net_actions[index].as_deref(),
+            fermion_masks[index].as_ref(),
+        );
+        grouped.entry(key).or_default().push(index);
+    }
+    grouped
+        .into_values()
+        .map(|members| {
+            let representative = members[0];
+            let mut active_axes = BTreeSet::new();
+            if let Some(actions) = net_actions[representative].as_deref() {
+                active_axes.extend(actions.iter().map(|action| action.axis));
+            } else {
+                active_axes.extend(terms[representative].iter().map(|operation| operation.axis));
+            }
+            if let Some(descriptor) = fermion_masks[representative].as_ref() {
+                // The descriptor's parity mask spans lower modes, so the full
+                // mode-axis map is the conservative active shape.  This still
+                // leaves trailing Cartesian spectator blocks reusable, which is
+                // the dominant Fermion×Boson layout.
+                active_axes.extend(descriptor.mode_axes.iter().copied());
+            }
+            let suffix_stride = schedule_suffix_stride(active_axes.into_iter(), strides, dimension);
+            Ok(StructuredScheduleGroup {
+                members: members.into_boxed_slice(),
+                suffix_stride,
+                contiguous_source_flip_mask: None,
+            })
+        })
+        .collect::<Result<Vec<_>, PauliError>>()
+        .map(Vec::into_boxed_slice)
+}
+
+fn apply_compiled_net_forward(
+    actions: &[CompiledNetAction],
+    source: usize,
+    coefficient: Complex64,
+) -> Result<(usize, Complex64, bool), PauliError> {
+    let mut destination = source;
+    let mut amplitude = coefficient;
+    for action in actions {
+        let digit = (source / action.stride) % action.dimension;
+        let new_digit = action.forward_destinations[digit];
+        if new_digit == usize::MAX {
+            return Ok((source, amplitude, false));
+        }
+        let old_digit = digit;
+        if new_digit >= old_digit {
+            destination = destination
+                .checked_add((new_digit - old_digit).checked_mul(action.stride).ok_or(
+                    PauliError::Overflow {
+                        context: "computing structured net destination",
+                    },
+                )?)
+                .ok_or(PauliError::Overflow {
+                    context: "computing structured net destination",
+                })?;
+        } else {
+            destination = destination
+                .checked_sub((old_digit - new_digit).checked_mul(action.stride).ok_or(
+                    PauliError::Overflow {
+                        context: "computing structured net destination",
+                    },
+                )?)
+                .ok_or(PauliError::Overflow {
+                    context: "computing structured net destination",
+                })?;
+        }
+        amplitude *= action.forward_amplitudes[digit];
+    }
+    Ok((destination, amplitude, true))
+}
+
+fn apply_compiled_net_inverse(
+    actions: &[CompiledNetAction],
+    destination: usize,
+    coefficient: Complex64,
+) -> Result<(usize, Complex64, bool), PauliError> {
+    let mut source = destination;
+    for action in actions.iter().rev() {
+        let digit = (source / action.stride) % action.dimension;
+        let old_digit = action.inverse_sources[digit];
+        if old_digit == usize::MAX {
+            return Ok((destination, coefficient, false));
+        }
+        if old_digit >= digit {
+            source = source
+                .checked_add((old_digit - digit).checked_mul(action.stride).ok_or(
+                    PauliError::Overflow {
+                        context: "computing structured net source",
+                    },
+                )?)
+                .ok_or(PauliError::Overflow {
+                    context: "computing structured net source",
+                })?;
+        } else {
+            source = source
+                .checked_sub((digit - old_digit).checked_mul(action.stride).ok_or(
+                    PauliError::Overflow {
+                        context: "computing structured net source",
+                    },
+                )?)
+                .ok_or(PauliError::Overflow {
+                    context: "computing structured net source",
+                })?;
+        }
+    }
+    // Re-evaluate amplitudes in the canonical forward action order. The
+    // source derivation above must run backwards, but multiplying the local
+    // factors backwards would change the last bit of complex128 results for
+    // multi-axis schedules relative to dense/source-major execution.
+    let mut amplitude = coefficient;
+    let mut check_destination = source;
+    for action in actions {
+        let digit = (check_destination / action.stride) % action.dimension;
+        let new_digit = action.forward_destinations[digit];
+        if new_digit == usize::MAX {
+            return Ok((destination, amplitude, false));
+        }
+        amplitude *= action.forward_amplitudes[digit];
+        if new_digit >= digit {
+            check_destination = check_destination
+                .checked_add((new_digit - digit).checked_mul(action.stride).ok_or(
+                    PauliError::Overflow {
+                        context: "computing structured net destination",
+                    },
+                )?)
+                .ok_or(PauliError::Overflow {
+                    context: "computing structured net destination",
+                })?;
+        } else {
+            check_destination = check_destination
+                .checked_sub((digit - new_digit).checked_mul(action.stride).ok_or(
+                    PauliError::Overflow {
+                        context: "computing structured net destination",
+                    },
+                )?)
+                .ok_or(PauliError::Overflow {
+                    context: "computing structured net destination",
+                })?;
+        }
+    }
+    Ok((source, amplitude, true))
+}
+
+fn compile_fermion_mask_descriptor(
+    term: &[CompiledStructuredOperation],
+    fermion_positions: &[usize],
+) -> Option<FermionMaskDescriptor> {
+    let fermion_term = term
+        .iter()
+        .filter(|operation| operation.kind == 3)
+        .collect::<Vec<_>>();
+    if fermion_term.is_empty() {
+        return None;
+    }
+    let mode_count = if fermion_positions.is_empty() {
+        fermion_term.iter().map(|operation| operation.p + 1).max()?
+    } else {
+        fermion_positions.len()
+    };
+    let mode_axes = if fermion_positions.is_empty() {
+        (0..mode_count).collect::<Vec<_>>()
+    } else {
+        fermion_positions.to_vec()
+    };
+    let steps = fermion_term
+        .iter()
+        .map(|operation| {
+            (
+                if fermion_positions.is_empty() {
+                    operation.axis
+                } else {
+                    operation.p
+                },
+                operation.q == 1,
+            )
+        })
+        .collect::<Vec<_>>();
+    FermionMaskDescriptor::from_steps(&mode_axes, &steps)
 }
 
 /// Compact reusable matrix-free plan for finite structured operators.
@@ -2430,19 +2827,199 @@ pub struct StructuredOperation {
 /// table or a sparse matrix.
 pub struct StructuredMvpPlan {
     dimension: usize,
-    local_dimensions: Vec<usize>,
-    terms: Vec<Vec<StructuredOperation>>,
+    strides: Vec<usize>,
+    terms: Vec<Vec<CompiledStructuredOperation>>,
+    net_actions: Vec<Option<Box<[CompiledNetAction]>>>,
+    fermion_masks: Vec<Option<FermionMaskDescriptor>>,
+    groups: Box<[StructuredScheduleGroup]>,
     coefficients: Vec<Complex64>,
+    source_term_count: usize,
     estimated_bytes: u128,
+    execution_family: StructuredExecutionFamily,
+    inner: StructuredPlanInner,
+    counters: Arc<StructuredApplyCounters>,
+    fermion_schedule_count: usize,
+    fermion_mask_schedule_count: usize,
+    descriptor_ineligible_schedule_count: usize,
+    contiguous_fermion_source_mode_count: Option<usize>,
 }
 
-impl StructuredMvpPlan {
+/// Batched native phase measurements for the shared FermionMask descriptor.
+///
+/// This diagnostic is intentionally separate from normal MVP execution. It
+/// times each phase over a complete source/descriptor batch, avoiding a clock
+/// read inside individual Fermion contributions.
+pub struct FermionMaskPhaseProfile {
+    pub descriptor_count: usize,
+    pub sample_count: usize,
+    pub packed_source_unit_count: usize,
+    pub schedule_member_evaluations: usize,
+    pub packed_extraction_nanos: u128,
+    pub parity_nanos: u128,
+    pub index_update_nanos: u128,
+    pub input_output_nanos: u128,
+}
+
+enum StructuredPlanInner {
+    Pauli(MvpPlan),
+    Compiled,
+}
+
+struct StructuredCsrResult {
+    dimension: usize,
+    indptr: Vec<u64>,
+    columns: Vec<u64>,
+    values: Vec<Complex64>,
+    estimated_bytes: u128,
+    estimated_construction_peak_bytes: u128,
+    schedule_count: usize,
+}
+
+/// Reusable finite structured MVP plan backed by a duplicate-aggregated CSR graph.
+pub struct StructuredEagerMvpPlan {
+    dimension: usize,
+    indptr: Vec<u64>,
+    columns: Vec<u64>,
+    values: Vec<Complex64>,
+    estimated_bytes: u128,
+    estimated_construction_peak_bytes: u128,
+    source_term_count: usize,
+    schedule_count: usize,
+    execution_family: StructuredExecutionFamily,
+    native_variant: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StructuredExecutionFamily {
+    Pauli,
+    Cartesian,
+    Generic,
+}
+
+impl StructuredExecutionFamily {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pauli => "pauli",
+            Self::Cartesian => "cartesian",
+            Self::Generic => "generic",
+        }
+    }
+}
+
+fn classify_structured_execution(
+    local_dimensions: &[usize],
+    terms: &[Vec<CompiledStructuredOperation>],
+    fermion_masks: &[Option<FermionMaskDescriptor>],
+    net_actions: &[Option<Box<[CompiledNetAction]>>],
+) -> StructuredExecutionFamily {
+    if local_dimensions.iter().all(|&dimension| dimension == 2)
+        && terms.iter().flatten().all(|operation| operation.kind == 0)
+    {
+        StructuredExecutionFamily::Pauli
+    } else if net_actions.iter().any(Option::is_none)
+        || terms.iter().enumerate().any(|(index, term)| {
+            term.iter().any(|operation| operation.kind == 3)
+                && fermion_masks.get(index).and_then(Option::as_ref).is_none()
+                && net_actions.get(index).and_then(Option::as_deref).is_none()
+        })
+    {
+        StructuredExecutionFamily::Generic
+    } else {
+        StructuredExecutionFamily::Cartesian
+    }
+}
+
+fn compile_packed_pauli_operator(
+    local_dimensions: &[usize],
+    terms: &[Vec<StructuredOperation>],
+    coefficients: &[Complex64],
+) -> Result<Option<PauliOperator>, PauliError> {
+    if !local_dimensions.iter().all(|&dimension| dimension == 2)
+        || terms.iter().flatten().any(|operation| operation.kind != 0)
+    {
+        return Ok(None);
+    }
+    let mut structures = Vec::with_capacity(terms.len());
+    let mut packed_coefficients = Vec::with_capacity(coefficients.len());
+    for (term, &coefficient) in terms.iter().zip(coefficients) {
+        let mut codes = vec![0_u8; local_dimensions.len()];
+        let mut phase = Complex64::new(1.0, 0.0);
+        for operation in term {
+            let axis = operation.axis;
+            let current = codes.get(axis).copied().ok_or(PauliError::InvalidIndex {
+                context: "packed Structured Pauli axis",
+            })?;
+            let (code, local_phase) = pauli_code_product(operation.p as u8, current);
+            codes[axis] = code;
+            phase *= local_phase;
+        }
+        structures.push(codes);
+        packed_coefficients.push(coefficient * phase);
+    }
+    let operator =
+        PauliOperator::from_terms(local_dimensions.len(), &structures, &packed_coefficients)?;
+    Ok(Some(operator))
+}
+
+fn compile_packed_pauli_plan(
+    local_dimensions: &[usize],
+    terms: &[Vec<StructuredOperation>],
+    coefficients: &[Complex64],
+) -> Result<Option<MvpPlan>, PauliError> {
+    compile_packed_pauli_operator(local_dimensions, terms, coefficients)?
+        .as_ref()
+        .map(MvpPlan::from_operator)
+        .transpose()
+}
+
+impl StructuredEagerMvpPlan {
     pub fn dimension(&self) -> usize {
         self.dimension
     }
 
     pub fn estimated_bytes(&self) -> u128 {
         self.estimated_bytes
+    }
+
+    pub fn estimated_construction_peak_bytes(&self) -> u128 {
+        self.estimated_construction_peak_bytes
+    }
+
+    pub fn source_term_count(&self) -> usize {
+        self.source_term_count
+    }
+
+    pub fn schedule_count(&self) -> usize {
+        self.schedule_count
+    }
+
+    pub fn execution_family(&self) -> &'static str {
+        self.execution_family.label()
+    }
+
+    pub fn native_variant(&self) -> &'static str {
+        self.native_variant
+    }
+
+    pub fn retained_format(&self) -> &'static str {
+        "csr"
+    }
+
+    pub fn transition_count(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn csr(&self) -> (Vec<u64>, Vec<u64>, Vec<Complex64>) {
+        (
+            self.indptr.clone(),
+            self.columns.clone(),
+            self.values.clone(),
+        )
+    }
+
+    /// Move the retained CSR arrays to a native materialization boundary.
+    pub fn into_csr(self) -> (usize, Vec<u64>, Vec<u64>, Vec<Complex64>) {
+        (self.dimension, self.indptr, self.columns, self.values)
     }
 
     pub fn apply(
@@ -2459,22 +3036,11 @@ impl StructuredMvpPlan {
         let output_bytes = (self.dimension as u128)
             .checked_mul(size_of::<Complex64>() as u128)
             .ok_or(PauliError::Overflow {
-                context: "estimating structured MVP output",
+                context: "estimating structured eager MVP output",
             })?;
-        let scratch_bytes = (self.local_dimensions.len() as u128)
-            .checked_mul(size_of::<usize>() as u128)
-            .and_then(|value| value.checked_mul(2))
-            .ok_or(PauliError::Overflow {
-                context: "estimating structured MVP scratch",
-            })?;
-        let requested = output_bytes
-            .checked_add(scratch_bytes)
-            .ok_or(PauliError::Overflow {
-                context: "estimating structured MVP workspace",
-            })?;
-        if requested > max_bytes {
+        if output_bytes > max_bytes {
             return Err(PauliError::MemoryLimit {
-                requested,
+                requested: output_bytes,
                 limit: max_bytes,
             });
         }
@@ -2483,7 +3049,6 @@ impl StructuredMvpPlan {
         Ok(output)
     }
 
-    /// Apply the compact plan into caller-owned output storage.
     pub fn apply_into(
         &self,
         state: &[Complex64],
@@ -2502,46 +3067,798 @@ impl StructuredMvpPlan {
                 actual: output.len(),
             });
         }
-        let scratch_bytes = (self.local_dimensions.len() as u128)
-            .checked_mul(size_of::<usize>() as u128)
-            .and_then(|value| value.checked_mul(2))
+        let output_bytes = (self.dimension as u128)
+            .checked_mul(size_of::<Complex64>() as u128)
             .ok_or(PauliError::Overflow {
-                context: "estimating structured MVP scratch",
+                context: "estimating structured eager MVP output",
             })?;
-        if scratch_bytes > max_bytes {
+        if output_bytes > max_bytes {
             return Err(PauliError::MemoryLimit {
-                requested: scratch_bytes,
+                requested: output_bytes,
                 limit: max_bytes,
             });
         }
         output.fill(Complex64::default());
-        let mut digits = vec![0usize; self.local_dimensions.len()];
-        let mut output_digits = vec![0usize; self.local_dimensions.len()];
-        for (column, state_value) in state.iter().enumerate() {
-            decode_index(column, &self.local_dimensions, &mut digits);
-            for (term, &coefficient) in self.terms.iter().zip(&self.coefficients) {
-                output_digits.copy_from_slice(&digits);
-                let mut amplitude = coefficient;
-                let mut valid = true;
-                for operation in term {
-                    if !apply_structured_operation(
-                        operation,
-                        &self.local_dimensions,
-                        &mut output_digits,
-                        &mut amplitude,
-                    )? {
-                        valid = false;
-                        break;
-                    }
+        for (row, output_value) in output.iter_mut().enumerate() {
+            let start = usize::try_from(self.indptr[row]).map_err(|_| PauliError::Overflow {
+                context: "converting structured eager MVP row pointer",
+            })?;
+            let stop = usize::try_from(self.indptr[row + 1]).map_err(|_| PauliError::Overflow {
+                context: "converting structured eager MVP row pointer",
+            })?;
+            let mut value = Complex64::default();
+            for index in start..stop {
+                let column =
+                    usize::try_from(self.columns[index]).map_err(|_| PauliError::Overflow {
+                        context: "converting structured eager MVP column",
+                    })?;
+                value += self.values[index] * state[column];
+            }
+            *output_value = value;
+        }
+        Ok(())
+    }
+}
+
+fn mixed_radix_strides(local_dimensions: &[usize]) -> Result<Vec<usize>, PauliError> {
+    let mut strides = vec![1_usize; local_dimensions.len()];
+    let mut stride = 1_usize;
+    for position in (0..local_dimensions.len()).rev() {
+        strides[position] = stride;
+        stride = stride
+            .checked_mul(local_dimensions[position])
+            .ok_or(PauliError::Overflow {
+                context: "computing structured mixed-radix strides",
+            })?;
+    }
+    Ok(strides)
+}
+
+fn validate_mvp_operation(
+    operation: &StructuredOperation,
+    local_dimensions: &[usize],
+    fermion_positions: &[usize],
+) -> Result<usize, PauliError> {
+    let dimension =
+        local_dimensions
+            .get(operation.axis)
+            .copied()
+            .ok_or(PauliError::InvalidIndex {
+                context: "structured MVP operation axis",
+            })?;
+    match operation.kind {
+        0 => {
+            if dimension != 2 {
+                return Err(PauliError::InvalidIndex {
+                    context: "Pauli operation requires a two-level axis",
+                });
+            }
+            if operation.p > 3 {
+                return Err(PauliError::InvalidCode {
+                    code: operation.p as u8,
+                    index: operation.axis,
+                });
+            }
+            Ok(0)
+        }
+        1 | 2 => Ok(dimension),
+        3 => {
+            if dimension != 2 {
+                return Err(PauliError::InvalidIndex {
+                    context: "Fermion operation requires a two-level axis",
+                });
+            }
+            if !fermion_positions.is_empty() {
+                let mode = usize::try_from(operation.p).map_err(|_| PauliError::Overflow {
+                    context: "converting structured Fermion mode",
+                })?;
+                let position =
+                    fermion_positions
+                        .get(mode)
+                        .copied()
+                        .ok_or(PauliError::InvalidIndex {
+                            context: "structured MVP Fermion mode",
+                        })?;
+                if position != operation.axis {
+                    return Err(PauliError::InvalidIndex {
+                        context: "structured MVP Fermion axis",
+                    });
                 }
-                if !valid {
+            }
+            if operation.q > 1 {
+                return Err(PauliError::InvalidCode {
+                    code: operation.q as u8,
+                    index: operation.axis,
+                });
+            }
+            Ok(0)
+        }
+        _ => Err(PauliError::InvalidCode {
+            code: operation.kind,
+            index: operation.axis,
+        }),
+    }
+}
+
+fn compile_mvp_operations(
+    local_dimensions: &[usize],
+    terms: &[Vec<StructuredOperation>],
+    fermion_positions: &[usize],
+    strides: &[usize],
+) -> Result<Vec<Vec<CompiledStructuredOperation>>, PauliError> {
+    let mut compiled_terms = Vec::with_capacity(terms.len());
+    for term in terms {
+        let mut compiled = Vec::with_capacity(term.len());
+        for operation in term {
+            let table_len = validate_mvp_operation(operation, local_dimensions, fermion_positions)?;
+            let p = usize::try_from(operation.p).map_err(|_| PauliError::Overflow {
+                context: "converting structured operation parameter",
+            })?;
+            let q = usize::try_from(operation.q).map_err(|_| PauliError::Overflow {
+                context: "converting structured operation parameter",
+            })?;
+            let mut local_table = Vec::new();
+            if table_len != 0 {
+                local_table = vec![Complex64::default(); table_len];
+                match operation.kind {
+                    1 => {
+                        let creation = p;
+                        let annihilation = q;
+                        for (digit, value) in local_table.iter_mut().enumerate() {
+                            if digit < annihilation {
+                                continue;
+                            }
+                            let Some(destination) = digit
+                                .checked_sub(annihilation)
+                                .and_then(|value| value.checked_add(creation))
+                            else {
+                                continue;
+                            };
+                            if destination >= table_len {
+                                continue;
+                            }
+                            let mut ladder_amplitude = 1.0;
+                            for offset in 0..annihilation {
+                                ladder_amplitude *= ((digit - offset) as f64).sqrt();
+                            }
+                            let remaining = digit - annihilation;
+                            for offset in 0..creation {
+                                ladder_amplitude *= ((remaining + offset + 1) as f64).sqrt();
+                            }
+                            *value = Complex64::new(ladder_amplitude, 0.0);
+                        }
+                    }
+                    2 => {
+                        let a = p % table_len;
+                        for (digit, value) in local_table.iter_mut().enumerate() {
+                            let b_digit = (q as u128 * digit as u128) % table_len as u128;
+                            let angle =
+                                2.0 * std::f64::consts::PI * b_digit as f64 / table_len as f64;
+                            *value = Complex64::from_polar(1.0, angle);
+                        }
+                        let _ = a;
+                    }
+                    _ => unreachable!("only Boson and Weyl operations have local tables"),
+                }
+            }
+            compiled.push(CompiledStructuredOperation {
+                axis: operation.axis,
+                kind: operation.kind,
+                p,
+                q,
+                stride: strides[operation.axis],
+                dimension: local_dimensions[operation.axis],
+                local_table,
+            });
+        }
+        compiled_terms.push(compiled);
+    }
+    Ok(compiled_terms)
+}
+
+fn update_compiled_destination(
+    destination: &mut usize,
+    digit: usize,
+    new_digit: usize,
+    operation: &CompiledStructuredOperation,
+) -> Result<(), PauliError> {
+    if new_digit >= operation.dimension {
+        return Err(PauliError::InvalidIndex {
+            context: "structured operation destination",
+        });
+    }
+    if new_digit >= digit {
+        let delta =
+            (new_digit - digit)
+                .checked_mul(operation.stride)
+                .ok_or(PauliError::Overflow {
+                    context: "computing structured operation destination",
+                })?;
+        *destination = destination.checked_add(delta).ok_or(PauliError::Overflow {
+            context: "computing structured operation destination",
+        })?;
+    } else {
+        let delta =
+            (digit - new_digit)
+                .checked_mul(operation.stride)
+                .ok_or(PauliError::Overflow {
+                    context: "computing structured operation destination",
+                })?;
+        *destination = destination.checked_sub(delta).ok_or(PauliError::Overflow {
+            context: "computing structured operation destination",
+        })?;
+    }
+    Ok(())
+}
+
+fn compiled_digit(destination: usize, operation: &CompiledStructuredOperation) -> usize {
+    (destination / operation.stride) % operation.dimension
+}
+
+fn apply_compiled_nonfermion_operation(
+    operation: &CompiledStructuredOperation,
+    destination: &mut usize,
+    amplitude: &mut Complex64,
+) -> Result<bool, PauliError> {
+    let digit = compiled_digit(*destination, operation);
+    match operation.kind {
+        0 => match operation.p {
+            0 => {}
+            1 => update_compiled_destination(destination, digit, 1 - digit, operation)?,
+            2 => {
+                update_compiled_destination(destination, digit, 1 - digit, operation)?;
+                *amplitude *= if digit == 0 {
+                    Complex64::new(0.0, 1.0)
+                } else {
+                    Complex64::new(0.0, -1.0)
+                };
+            }
+            3 => {
+                if digit == 1 {
+                    *amplitude = -*amplitude;
+                }
+            }
+            _ => unreachable!("MVP Pauli operation was validated during compilation"),
+        },
+        1 => {
+            let factor = operation.local_table[digit];
+            if factor.re == 0.0 && factor.im == 0.0 {
+                return Ok(false);
+            }
+            let creation = operation.p;
+            let annihilation = operation.q;
+            let new_digit = digit
+                .checked_sub(annihilation)
+                .and_then(|value| value.checked_add(creation))
+                .ok_or(PauliError::Overflow {
+                    context: "computing structured boson destination",
+                })?;
+            update_compiled_destination(destination, digit, new_digit, operation)?;
+            *amplitude *= factor;
+        }
+        2 => {
+            *amplitude *= operation.local_table[digit];
+            let shift = operation.p % operation.dimension;
+            let new_digit = if shift == 0 {
+                digit
+            } else if digit < operation.dimension - shift {
+                digit + shift
+            } else {
+                digit - (operation.dimension - shift)
+            };
+            update_compiled_destination(destination, digit, new_digit, operation)?;
+        }
+        _ => unreachable!("MVP operation was validated during compilation"),
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+fn apply_compiled_structured_operation(
+    operation: &CompiledStructuredOperation,
+    local_dimensions: &[usize],
+    strides: &[usize],
+    fermion_positions: &[usize],
+    destination: &mut usize,
+    amplitude: &mut Complex64,
+) -> Result<bool, PauliError> {
+    if operation.kind != 3 {
+        return apply_compiled_nonfermion_operation(operation, destination, amplitude);
+    }
+    let digit = compiled_digit(*destination, operation);
+    let mode = operation.p;
+    let parity = if fermion_positions.is_empty() {
+        (0..operation.axis)
+            .map(|axis| (*destination / strides[axis]) % local_dimensions[axis])
+            .sum::<usize>()
+            & 1
+    } else {
+        fermion_positions[..mode]
+            .iter()
+            .map(|&axis| (*destination / strides[axis]) % local_dimensions[axis])
+            .sum::<usize>()
+            & 1
+    };
+    if parity != 0 {
+        *amplitude = -*amplitude;
+    }
+    match operation.q {
+        0 if digit == 0 => Ok(false),
+        0 => {
+            update_compiled_destination(destination, digit, 0, operation)?;
+            Ok(true)
+        }
+        1 if digit != 0 => Ok(false),
+        1 => {
+            update_compiled_destination(destination, digit, 1, operation)?;
+            Ok(true)
+        }
+        _ => unreachable!("MVP Fermion operation was validated during compilation"),
+    }
+}
+
+impl StructuredMvpPlan {
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    pub fn estimated_bytes(&self) -> u128 {
+        self.estimated_bytes
+    }
+
+    pub fn source_term_count(&self) -> usize {
+        self.source_term_count
+    }
+
+    pub fn schedule_count(&self) -> usize {
+        self.terms.len()
+    }
+
+    pub fn execution_family(&self) -> &'static str {
+        self.execution_family.label()
+    }
+
+    pub fn native_variant(&self) -> &'static str {
+        match &self.inner {
+            StructuredPlanInner::Pauli(_) => "pauli",
+            StructuredPlanInner::Compiled => "compiled",
+        }
+    }
+
+    pub fn retained_format(&self) -> &'static str {
+        "compiled_actions"
+    }
+
+    pub fn estimated_construction_peak_bytes(&self) -> u128 {
+        self.estimated_bytes
+    }
+
+    /// Return test/benchmark counters for the compiled Cartesian executor.
+    /// The counters are deliberately diagnostic metadata; they do not affect
+    /// the public numerical result.
+    pub fn debug_counters(&self) -> (usize, usize, usize, usize) {
+        self.counters.snapshot()
+    }
+
+    pub fn debug_metadata(&self) -> (usize, usize, usize) {
+        (
+            self.fermion_schedule_count,
+            self.fermion_mask_schedule_count,
+            self.descriptor_ineligible_schedule_count,
+        )
+    }
+
+    /// Measure batched descriptor phases for a raw-Fermion Cartesian plan.
+    ///
+    /// The sample count is capped to keep this diagnostic bounded; it is not
+    /// part of normal plan application or public execution semantics.
+    pub fn fermion_mask_phase_profile(
+        &self,
+        requested_samples: usize,
+    ) -> Result<Option<FermionMaskPhaseProfile>, PauliError> {
+        let descriptors = self
+            .fermion_masks
+            .iter()
+            .filter_map(Option::as_ref)
+            .collect::<Vec<_>>();
+        if descriptors.is_empty() || self.dimension == 0 {
+            return Ok(None);
+        }
+        let sample_count = requested_samples.max(1).min(self.dimension).min(65_536);
+        let descriptor_words = descriptors
+            .iter()
+            .map(|descriptor| descriptor.required_occupied.len())
+            .collect::<Vec<_>>();
+        let contiguous_source_layout = self.contiguous_fermion_source_mode_count.is_some();
+        let (word_offsets, total_words, packed_source_unit_count) = if contiguous_source_layout {
+            let words = descriptor_words[0];
+            (
+                vec![0; descriptor_words.len()],
+                words
+                    .checked_mul(sample_count)
+                    .ok_or(PauliError::Overflow {
+                        context: "sizing FermionMask profile words",
+                    })?,
+                sample_count,
+            )
+        } else {
+            let mut word_offsets = Vec::with_capacity(descriptor_words.len());
+            let mut total_words = 0usize;
+            for &words in &descriptor_words {
+                word_offsets.push(total_words);
+                total_words =
+                    total_words
+                        .checked_add(words.checked_mul(sample_count).ok_or(
+                            PauliError::Overflow {
+                                context: "sizing FermionMask profile words",
+                            },
+                        )?)
+                        .ok_or(PauliError::Overflow {
+                            context: "sizing FermionMask profile words",
+                        })?;
+            }
+            (
+                word_offsets,
+                total_words,
+                descriptors.len().saturating_mul(sample_count),
+            )
+        };
+        let mut packed = vec![0_u64; total_words];
+        let extraction_start = Instant::now();
+        if contiguous_source_layout {
+            let words = descriptor_words[0];
+            for source in 0..sample_count {
+                let start = source * words;
+                descriptors[0]
+                    .pack_contiguous_binary_index(source, &mut packed[start..start + words])?;
+            }
+        } else {
+            for (descriptor_index, descriptor) in descriptors.iter().enumerate() {
+                let words = descriptor_words[descriptor_index];
+                let offset = word_offsets[descriptor_index];
+                for source in 0..sample_count {
+                    let start = offset + source * words;
+                    descriptor.pack_index(
+                        source,
+                        &self.strides,
+                        &mut packed[start..start + words],
+                    )?;
+                }
+            }
+        }
+        let packed_extraction_nanos = extraction_start.elapsed().as_nanos();
+
+        let parity_start = Instant::now();
+        for (descriptor_index, descriptor) in descriptors.iter().enumerate() {
+            let words = descriptor_words[descriptor_index];
+            let offset = word_offsets[descriptor_index];
+            for source in 0..sample_count {
+                let start = offset + source * words;
+                if contiguous_source_layout {
+                    black_box(
+                        descriptor
+                            .amplitude_from_single_word(packed[start], Complex64::new(1.0, -0.25)),
+                    );
+                } else {
+                    black_box(descriptor.amplitude_from_words(
+                        &packed[start..start + words],
+                        Complex64::new(1.0, -0.25),
+                    ));
+                }
+            }
+        }
+        let parity_nanos = parity_start.elapsed().as_nanos();
+
+        let index_start = Instant::now();
+        for descriptor in &descriptors {
+            for source in 0..sample_count {
+                if contiguous_source_layout {
+                    black_box(descriptor.apply_flip_to_contiguous_binary_index(source)?);
+                } else {
+                    black_box(descriptor.apply_flip_to_index(source, &self.strides)?);
+                }
+            }
+        }
+        let index_update_nanos = index_start.elapsed().as_nanos();
+
+        let state = vec![Complex64::new(0.5, -0.25); sample_count];
+        let mut output = vec![Complex64::default(); sample_count];
+        let input_output_start = Instant::now();
+        for descriptor_index in 0..descriptors.len() {
+            for (source, &input) in state.iter().enumerate() {
+                let destination = (source + descriptor_index) % sample_count;
+                output[destination] += input * Complex64::new(1.0, -0.25);
+            }
+        }
+        black_box(&output);
+        let input_output_nanos = input_output_start.elapsed().as_nanos();
+        Ok(Some(FermionMaskPhaseProfile {
+            descriptor_count: descriptors.len(),
+            sample_count,
+            packed_source_unit_count,
+            schedule_member_evaluations: descriptors.len().saturating_mul(sample_count),
+            packed_extraction_nanos,
+            parity_nanos,
+            index_update_nanos,
+            input_output_nanos,
+        }))
+    }
+
+    pub fn transition_count(&self) -> Option<usize> {
+        None
+    }
+
+    pub fn apply(
+        &self,
+        state: &[Complex64],
+        max_bytes: u128,
+    ) -> Result<Vec<Complex64>, PauliError> {
+        if state.len() != self.dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.dimension,
+                actual: state.len(),
+            });
+        }
+        let output_bytes = (self.dimension as u128)
+            .checked_mul(size_of::<Complex64>() as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating structured MVP output",
+            })?;
+        if output_bytes > max_bytes {
+            return Err(PauliError::MemoryLimit {
+                requested: output_bytes,
+                limit: max_bytes,
+            });
+        }
+        let mut output = vec![Complex64::default(); self.dimension];
+        self.apply_into(state, &mut output, max_bytes)?;
+        Ok(output)
+    }
+
+    #[inline]
+    fn contiguous_fermion_destination_value(
+        &self,
+        destination: usize,
+        packed_sources: &[u64],
+        state: &[Complex64],
+    ) -> Complex64 {
+        let mut value = Complex64::default();
+        for group in &self.groups {
+            let source = destination
+                ^ group
+                    .contiguous_source_flip_mask
+                    .expect("contiguous Fermion group has a source flip mask");
+            let mut aggregate = Complex64::default();
+            for &term_index in &group.members {
+                let descriptor = self.fermion_masks[term_index]
+                    .as_ref()
+                    .expect("contiguous Fermion member has a descriptor");
+                let Some(amplitude) = descriptor.amplitude_from_single_word(
+                    packed_sources[source],
+                    self.coefficients[term_index],
+                ) else {
+                    continue;
+                };
+                aggregate += amplitude;
+            }
+            if aggregate.re != 0.0 || aggregate.im != 0.0 {
+                value += aggregate * state[source];
+            }
+        }
+        value
+    }
+
+    fn apply_contiguous_fermion_cached_gather_into(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+    ) -> Result<(), PauliError> {
+        let descriptor = self.fermion_masks.iter().find_map(Option::as_ref).ok_or(
+            PauliError::InvalidStructureLength {
+                expected: 1,
+                actual: 0,
+            },
+        )?;
+        let mut packed_sources = vec![0_u64; self.dimension];
+        for (source, packed) in packed_sources.iter_mut().enumerate() {
+            descriptor.pack_contiguous_binary_index(source, std::slice::from_mut(packed))?;
+        }
+        let work = self.terms.len().saturating_mul(self.dimension);
+        if work >= 1 << 16 {
+            output
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(destination, output_value)| {
+                    *output_value = self.contiguous_fermion_destination_value(
+                        destination,
+                        &packed_sources,
+                        state,
+                    );
+                });
+        } else {
+            for (destination, output_value) in output.iter_mut().enumerate() {
+                *output_value =
+                    self.contiguous_fermion_destination_value(destination, &packed_sources, state);
+            }
+        }
+        let group_evaluations = self.dimension.saturating_mul(self.groups.len());
+        let fermion_mask_applications = self.dimension.saturating_mul(self.terms.len());
+        self.counters
+            .schedule_group_evaluations
+            .fetch_add(group_evaluations, Ordering::Relaxed);
+        self.counters
+            .fermion_mask_applications
+            .fetch_add(fermion_mask_applications, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Apply the compact plan into caller-owned output storage.
+    pub fn apply_into(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+        _max_bytes: u128,
+    ) -> Result<(), PauliError> {
+        if state.len() != self.dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.dimension,
+                actual: state.len(),
+            });
+        }
+        if output.len() != self.dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.dimension,
+                actual: output.len(),
+            });
+        }
+        if let StructuredPlanInner::Pauli(plan) = &self.inner {
+            return plan.apply_into(state, output, _max_bytes);
+        }
+        output.fill(Complex64::default());
+        if self.contiguous_fermion_source_mode_count.is_some() {
+            return self.apply_contiguous_fermion_cached_gather_into(state, output);
+        }
+        let fermion_word_count = self
+            .fermion_masks
+            .iter()
+            .filter_map(Option::as_ref)
+            .map(|descriptor| descriptor.required_occupied.len())
+            .max()
+            .unwrap_or(0);
+        let mut fermion_mask_scratch = vec![0_u64; fermion_word_count];
+        let mut member_context = CompiledScheduleApplyContext {
+            strides: &self.strides,
+            fermion_mask_scratch: &mut fermion_mask_scratch,
+            counters: &self.counters,
+        };
+        for group in &self.groups {
+            let suffix_stride = group.suffix_stride;
+            for block_start in (0..self.dimension).step_by(suffix_stride) {
+                self.counters
+                    .schedule_group_evaluations
+                    .fetch_add(1, Ordering::Relaxed);
+                let mut destination = None;
+                let mut aggregate = Complex64::default();
+                for &term_index in &group.members {
+                    let contribution = apply_compiled_schedule_member(
+                        &self.terms[term_index],
+                        self.fermion_masks[term_index].as_ref(),
+                        self.net_actions[term_index].as_deref(),
+                        self.coefficients[term_index],
+                        block_start,
+                        &mut member_context,
+                    )?;
+                    let Some((member_destination, member_amplitude)) = contribution else {
+                        continue;
+                    };
+                    if let Some(expected_destination) = destination {
+                        if expected_destination != member_destination {
+                            // This can only occur for a non-injective fallback
+                            // schedule. Keep its members semantically separate
+                            // rather than applying a wrong shared segment.
+                            for offset in 0..suffix_stride {
+                                output[member_destination + offset] +=
+                                    member_amplitude * state[block_start + offset];
+                            }
+                            continue;
+                        }
+                    } else {
+                        destination = Some(member_destination);
+                    }
+                    aggregate += member_amplitude;
+                }
+                let Some(destination) = destination else {
+                    continue;
+                };
+                if aggregate.re == 0.0 && aggregate.im == 0.0 {
                     continue;
                 }
-                let row = encode_index(&output_digits, &self.local_dimensions);
-                output[row] += amplitude * *state_value;
+                for offset in 0..suffix_stride {
+                    output[destination + offset] += aggregate * state[block_start + offset];
+                }
+                if suffix_stride > 1 {
+                    self.counters
+                        .segment_applications
+                        .fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
         Ok(())
+    }
+}
+
+fn apply_compiled_nonfermion_fallback(
+    term: &[CompiledStructuredOperation],
+    destination: &mut usize,
+    amplitude: &mut Complex64,
+) -> Result<bool, PauliError> {
+    debug_assert!(term.iter().all(|operation| operation.kind != 3));
+    for operation in term.iter().filter(|operation| operation.kind != 3) {
+        if !apply_compiled_nonfermion_operation(operation, destination, amplitude)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+struct CompiledScheduleApplyContext<'a> {
+    strides: &'a [usize],
+    fermion_mask_scratch: &'a mut [u64],
+    counters: &'a StructuredApplyCounters,
+}
+
+fn apply_compiled_schedule_member(
+    term: &[CompiledStructuredOperation],
+    descriptor: Option<&FermionMaskDescriptor>,
+    actions: Option<&[CompiledNetAction]>,
+    coefficient: Complex64,
+    source: usize,
+    context: &mut CompiledScheduleApplyContext<'_>,
+) -> Result<Option<(usize, Complex64)>, PauliError> {
+    let (mut destination, mut amplitude) = if let Some(descriptor) = descriptor {
+        context
+            .counters
+            .fermion_mask_applications
+            .fetch_add(1, Ordering::Relaxed);
+        let words = descriptor.required_occupied.len();
+        descriptor.pack_index(
+            source,
+            context.strides,
+            &mut context.fermion_mask_scratch[..words],
+        )?;
+        let Some(amplitude) =
+            descriptor.amplitude_from_words(&context.fermion_mask_scratch[..words], coefficient)
+        else {
+            return Ok(None);
+        };
+        (
+            descriptor.apply_flip_to_index(source, context.strides)?,
+            amplitude,
+        )
+    } else {
+        (source, coefficient)
+    };
+    let valid = if let Some(actions) = actions {
+        let (new_destination, new_amplitude, valid) =
+            apply_compiled_net_forward(actions, destination, amplitude)?;
+        destination = new_destination;
+        amplitude = new_amplitude;
+        valid
+    } else {
+        // A supported non-Fermion local action is normally represented by a
+        // compiled net action.  Keep this narrow fallback for a non-injective
+        // boundary schedule, but never re-enter the legacy Fermion sign
+        // interpreter: FermionMask has already handled the Fermion factor.
+        context
+            .counters
+            .nonfermion_fallback_invocations
+            .fetch_add(1, Ordering::Relaxed);
+        apply_compiled_nonfermion_fallback(term, &mut destination, &mut amplitude)?
+    };
+    if valid {
+        Ok(Some((destination, amplitude)))
+    } else {
+        Ok(None)
     }
 }
 
@@ -2552,24 +3869,62 @@ pub fn structured_mvp_plan(
     coefficients: Vec<Complex64>,
     max_bytes: u128,
 ) -> Result<StructuredMvpPlan, PauliError> {
+    structured_mvp_plan_with_fermion_positions(
+        local_dimensions,
+        terms,
+        coefficients,
+        &[],
+        max_bytes,
+    )
+}
+
+/// Build a compact MVP plan with an explicit public-axis map for raw Fermion
+/// actions. The map is indexed by Fermion mode and stores its public axis.
+pub fn structured_mvp_plan_with_fermion_positions(
+    local_dimensions: Vec<usize>,
+    terms: Vec<Vec<StructuredOperation>>,
+    coefficients: Vec<Complex64>,
+    fermion_positions: &[usize],
+    max_bytes: u128,
+) -> Result<StructuredMvpPlan, PauliError> {
     validate_structured_inputs(&local_dimensions, &terms, &coefficients)?;
+    let source_term_count = terms.len();
+    let (terms, coefficients) = group_structured_terms(&terms, &coefficients, &local_dimensions)?;
     let dimension = mixed_radix_dimension(&local_dimensions)?;
+    let strides = mixed_radix_strides(&local_dimensions)?;
     let operation_count: usize = terms.iter().try_fold(0usize, |count, term| {
         count.checked_add(term.len()).ok_or(PauliError::Overflow {
             context: "estimating structured MVP plan",
         })
     })?;
+    let table_entries = terms.iter().try_fold(0usize, |count, term| {
+        term.iter().try_fold(count, |count, operation| {
+            let table_len =
+                validate_mvp_operation(operation, &local_dimensions, fermion_positions)?;
+            count.checked_add(table_len).ok_or(PauliError::Overflow {
+                context: "estimating structured MVP local tables",
+            })
+        })
+    })?;
     let estimated_bytes = (local_dimensions.len() as u128)
         .checked_mul(size_of::<usize>() as u128)
         .and_then(|value| {
+            value.checked_add((strides.len() as u128).checked_mul(size_of::<usize>() as u128)?)
+        })
+        .and_then(|value| {
             value.checked_add(
-                (terms.len() as u128).checked_mul(size_of::<Vec<StructuredOperation>>() as u128)?,
+                (terms.len() as u128)
+                    .checked_mul(size_of::<Vec<CompiledStructuredOperation>>() as u128)?,
             )
         })
         .and_then(|value| {
             value.checked_add(
-                (operation_count as u128).checked_mul(size_of::<StructuredOperation>() as u128)?,
+                (operation_count as u128)
+                    .checked_mul(size_of::<CompiledStructuredOperation>() as u128)?,
             )
+        })
+        .and_then(|value| {
+            value.checked_add((table_entries as u128).checked_mul(size_of::<Complex64>() as u128)?)
         })
         .and_then(|value| {
             value.checked_add(
@@ -2577,6 +3932,11 @@ pub fn structured_mvp_plan(
             )
         })
         .and_then(|value| value.checked_add(64))
+        .and_then(|value| {
+            value.checked_add(
+                (fermion_positions.len() as u128).checked_mul(size_of::<usize>() as u128)?,
+            )
+        })
         .ok_or(PauliError::Overflow {
             context: "estimating structured MVP plan",
         })?;
@@ -2586,12 +3946,257 @@ pub fn structured_mvp_plan(
             limit: max_bytes,
         });
     }
+    let compiled_terms =
+        compile_mvp_operations(&local_dimensions, &terms, fermion_positions, &strides)?;
+    let fermion_masks = compiled_terms
+        .iter()
+        .map(|term| compile_fermion_mask_descriptor(term, fermion_positions))
+        .collect::<Vec<_>>();
+    let fermion_schedule_count = compiled_terms
+        .iter()
+        .filter(|term| term.iter().any(|operation| operation.kind == 3))
+        .count();
+    let fermion_mask_schedule_count = fermion_masks.iter().filter(|mask| mask.is_some()).count();
+    let descriptor_ineligible_schedule_count =
+        fermion_schedule_count.saturating_sub(fermion_mask_schedule_count);
+    let net_actions = terms
+        .iter()
+        .map(|term| compile_net_actions(term, &local_dimensions, &strides))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut groups = compile_schedule_groups(
+        &compiled_terms,
+        &net_actions,
+        &fermion_masks,
+        &strides,
+        dimension,
+    )?;
+    let contiguous_fermion_source_mode_count = fermion_masks
+        .iter()
+        .find_map(Option::as_ref)
+        .and_then(|descriptor| {
+            (local_dimensions
+                .iter()
+                .all(|&local_dimension| local_dimension == 2)
+                && fermion_masks.iter().all(Option::is_some)
+                && net_actions
+                    .iter()
+                    .all(|actions| matches!(actions.as_deref(), Some([])))
+                && groups.iter().all(|group| group.suffix_stride == 1)
+                && descriptor.mode_axes.len() == local_dimensions.len()
+                && descriptor.required_occupied.len() == 1
+                && descriptor
+                    .mode_axes
+                    .iter()
+                    .enumerate()
+                    .all(|(mode, &axis)| mode == axis))
+            .then_some(descriptor.mode_axes.len())
+        });
+    if contiguous_fermion_source_mode_count.is_some() {
+        for group in groups.iter_mut() {
+            let descriptor = fermion_masks[group.members[0]]
+                .as_ref()
+                .expect("contiguous Fermion group has a descriptor");
+            group.contiguous_source_flip_mask =
+                Some(descriptor.apply_flip_to_contiguous_binary_index(0)?);
+        }
+    }
+    let net_action_bytes = net_actions.iter().try_fold(0_u128, |total, actions| {
+        let action_bytes =
+            actions
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .try_fold(0_u128, |subtotal, action| {
+                    let table_bytes = (action.dimension as u128)
+                        .checked_mul((2 * size_of::<usize>() + size_of::<Complex64>()) as u128)
+                        .ok_or(PauliError::Overflow {
+                            context: "estimating structured net-action tables",
+                        })?;
+                    subtotal
+                        .checked_add(size_of::<CompiledNetAction>() as u128)
+                        .and_then(|value| value.checked_add(table_bytes))
+                        .ok_or(PauliError::Overflow {
+                            context: "estimating structured net-action tables",
+                        })
+                })?;
+        total.checked_add(action_bytes).ok_or(PauliError::Overflow {
+            context: "estimating structured net-action tables",
+        })
+    })?;
+    let fermion_mask_bytes = fermion_masks.iter().try_fold(0_u128, |total, descriptor| {
+        let Some(descriptor) = descriptor.as_ref() else {
+            return Ok(total);
+        };
+        let words = descriptor.required_occupied.len();
+        let payload = words
+            .checked_mul(4)
+            .and_then(|value| value.checked_mul(size_of::<u64>()))
+            .and_then(|value| {
+                descriptor
+                    .mode_axes
+                    .len()
+                    .checked_mul(size_of::<usize>())
+                    .and_then(|axes_bytes| value.checked_add(axes_bytes))
+            })
+            .and_then(|value| value.checked_add(size_of::<FermionMaskDescriptor>()))
+            .ok_or(PauliError::Overflow {
+                context: "estimating FermionMask descriptors",
+            })? as u128;
+        total.checked_add(payload).ok_or(PauliError::Overflow {
+            context: "estimating FermionMask descriptors",
+        })
+    })?;
+    let estimated_bytes = estimated_bytes
+        .checked_add(net_action_bytes)
+        .and_then(|value| value.checked_add(fermion_mask_bytes))
+        .and_then(|value| {
+            value.checked_add(
+                groups
+                    .iter()
+                    .map(|group| {
+                        size_of::<StructuredScheduleGroup>()
+                            + group.members.len() * size_of::<usize>()
+                    })
+                    .sum::<usize>() as u128,
+            )
+        })
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured MVP net actions",
+        })?;
+    if estimated_bytes > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested: estimated_bytes,
+            limit: max_bytes,
+        });
+    }
+    let packed_pauli = compile_packed_pauli_plan(&local_dimensions, &terms, &coefficients)?;
+    let (execution_family, inner) = if let Some(plan) = packed_pauli {
+        (
+            StructuredExecutionFamily::Pauli,
+            StructuredPlanInner::Pauli(plan),
+        )
+    } else {
+        (
+            classify_structured_execution(
+                &local_dimensions,
+                &compiled_terms,
+                &fermion_masks,
+                &net_actions,
+            ),
+            StructuredPlanInner::Compiled,
+        )
+    };
     Ok(StructuredMvpPlan {
         dimension,
+        strides,
+        terms: compiled_terms,
+        net_actions,
+        fermion_masks,
+        groups,
+        coefficients,
+        source_term_count,
+        estimated_bytes,
+        execution_family,
+        inner,
+        counters: Arc::new(StructuredApplyCounters::default()),
+        fermion_schedule_count,
+        fermion_mask_schedule_count,
+        descriptor_ineligible_schedule_count,
+        contiguous_fermion_source_mode_count,
+    })
+}
+
+/// Build a finite structured MVP plan with a precomputed CSR transition graph.
+pub fn structured_eager_mvp_plan(
+    local_dimensions: &[usize],
+    terms: &[Vec<StructuredOperation>],
+    coefficients: &[Complex64],
+    max_bytes: u128,
+) -> Result<StructuredEagerMvpPlan, PauliError> {
+    structured_eager_mvp_plan_with_fermion_positions(
         local_dimensions,
         terms,
         coefficients,
-        estimated_bytes,
+        &[],
+        max_bytes,
+    )
+}
+
+/// Build an eager MVP plan with an explicit public-axis map for raw Fermion
+/// actions.
+pub fn structured_eager_mvp_plan_with_fermion_positions(
+    local_dimensions: &[usize],
+    terms: &[Vec<StructuredOperation>],
+    coefficients: &[Complex64],
+    fermion_positions: &[usize],
+    max_bytes: u128,
+) -> Result<StructuredEagerMvpPlan, PauliError> {
+    let (grouped_terms, grouped_coefficients) =
+        group_structured_terms(terms, coefficients, local_dimensions)?;
+    if let Some(operator) =
+        compile_packed_pauli_operator(local_dimensions, &grouped_terms, &grouped_coefficients)?
+    {
+        let csr = operator.csr_matrix(max_bytes)?;
+        let retained_bytes = ((csr.indptr.len() * size_of::<u64>()) as u128)
+            .checked_add((csr.columns.len() * size_of::<u64>()) as u128)
+            .and_then(|value| {
+                value.checked_add((csr.values.len() * size_of::<Complex64>()) as u128)
+            })
+            .ok_or(PauliError::Overflow {
+                context: "estimating packed Pauli CSR retention",
+            })?;
+        return Ok(StructuredEagerMvpPlan {
+            dimension: csr.dimension,
+            indptr: csr.indptr,
+            columns: csr.columns,
+            values: csr.values,
+            estimated_bytes: retained_bytes,
+            estimated_construction_peak_bytes: retained_bytes.saturating_mul(2),
+            source_term_count: terms.len(),
+            schedule_count: operator.terms().len(),
+            execution_family: StructuredExecutionFamily::Pauli,
+            native_variant: "pauli",
+        });
+    }
+    let csr = structured_csr_matrix_with_fermion_positions(
+        local_dimensions,
+        terms,
+        coefficients,
+        fermion_positions,
+        max_bytes,
+    )?;
+    let strides = mixed_radix_strides(local_dimensions)?;
+    let compiled_terms = compile_mvp_operations(
+        local_dimensions,
+        &grouped_terms,
+        fermion_positions,
+        &strides,
+    )?;
+    let fermion_masks = compiled_terms
+        .iter()
+        .map(|term| compile_fermion_mask_descriptor(term, fermion_positions))
+        .collect::<Vec<_>>();
+    let net_actions = grouped_terms
+        .iter()
+        .map(|term| compile_net_actions(term, local_dimensions, &strides))
+        .collect::<Result<Vec<_>, _>>()?;
+    let execution_family = classify_structured_execution(
+        local_dimensions,
+        &compiled_terms,
+        &fermion_masks,
+        &net_actions,
+    );
+    Ok(StructuredEagerMvpPlan {
+        dimension: csr.dimension,
+        indptr: csr.indptr,
+        columns: csr.columns,
+        values: csr.values,
+        estimated_bytes: csr.estimated_bytes,
+        estimated_construction_peak_bytes: csr.estimated_construction_peak_bytes,
+        source_term_count: terms.len(),
+        schedule_count: csr.schedule_count,
+        execution_family,
+        native_variant: "compiled",
     })
 }
 
@@ -2600,6 +4205,198 @@ pub struct StructuredSparseResult {
     pub rows: Vec<u64>,
     pub columns: Vec<u64>,
     pub values: Vec<Complex64>,
+}
+
+fn structured_csr_memory_estimate(
+    dimension: usize,
+    term_count: usize,
+    buffered_entries: usize,
+) -> Result<(u128, u128), PauliError> {
+    let pointer_count = dimension.checked_add(1).ok_or(PauliError::Overflow {
+        context: "estimating structured CSR row pointers",
+    })?;
+    let pointer_bytes = (pointer_count as u128)
+        .checked_mul(size_of::<u64>() as u128)
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured CSR row pointers",
+        })?;
+    let chunk_count = buffered_entries
+        .checked_add(CSR_CHUNK_CAPACITY - 1)
+        .and_then(|value| value.checked_div(CSR_CHUNK_CAPACITY))
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured CSR chunk count",
+        })?;
+    let chunk_headers = (chunk_count as u128)
+        .checked_mul(size_of::<Vec<(usize, u64, Complex64)>>() as u128)
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured CSR chunk headers",
+        })?;
+    let entry_bytes = (buffered_entries as u128)
+        .checked_mul(size_of::<(usize, u64, Complex64)>() as u128)
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured CSR row buffers",
+        })?;
+    let final_entry_bytes = (buffered_entries as u128)
+        .checked_mul((size_of::<u64>() + size_of::<Complex64>()) as u128)
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured CSR retained graph",
+        })?;
+    let scratch_bytes = (term_count as u128)
+        .checked_mul(64)
+        .and_then(|value| value.checked_add(2 * size_of::<usize>() as u128))
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured CSR row scratch",
+        })?;
+    let retained_bytes =
+        pointer_bytes
+            .checked_add(final_entry_bytes)
+            .ok_or(PauliError::Overflow {
+                context: "estimating structured CSR retained graph",
+            })?;
+    let construction_peak_bytes = pointer_bytes
+        .checked_add(chunk_headers)
+        .and_then(|value| value.checked_add(entry_bytes))
+        .and_then(|value| value.checked_add(pointer_bytes))
+        .and_then(|value| value.checked_add(final_entry_bytes))
+        .and_then(|value| value.checked_add(scratch_bytes))
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured CSR construction peak",
+        })?;
+    Ok((retained_bytes, construction_peak_bytes))
+}
+
+fn structured_csr_memory_preflight(
+    dimension: usize,
+    term_count: usize,
+    max_bytes: u128,
+) -> Result<u128, PauliError> {
+    let raw_entries = dimension
+        .checked_mul(term_count)
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured CSR candidate transitions",
+        })?;
+    let (_, construction_peak_bytes) =
+        structured_csr_memory_estimate(dimension, term_count, raw_entries)?;
+    if construction_peak_bytes > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested: construction_peak_bytes,
+            limit: max_bytes,
+        });
+    }
+    Ok(construction_peak_bytes)
+}
+
+fn structured_csr_matrix_with_fermion_positions(
+    local_dimensions: &[usize],
+    terms: &[Vec<StructuredOperation>],
+    coefficients: &[Complex64],
+    fermion_positions: &[usize],
+    max_bytes: u128,
+) -> Result<StructuredCsrResult, PauliError> {
+    validate_structured_inputs(local_dimensions, terms, coefficients)?;
+    let (terms, coefficients) = group_structured_terms(terms, coefficients, local_dimensions)?;
+    let schedule_count = terms.len();
+    let dimension = mixed_radix_dimension(local_dimensions)?;
+    let strides = mixed_radix_strides(local_dimensions)?;
+    let compiled_terms =
+        compile_mvp_operations(local_dimensions, &terms, fermion_positions, &strides)?;
+    let fermion_masks = compiled_terms
+        .iter()
+        .map(|term| compile_fermion_mask_descriptor(term, fermion_positions))
+        .collect::<Vec<_>>();
+    let net_actions = terms
+        .iter()
+        .map(|term| compile_net_actions(term, local_dimensions, &strides))
+        .collect::<Result<Vec<_>, _>>()?;
+    let construction_peak_bytes =
+        structured_csr_memory_preflight(dimension, terms.len(), max_bytes)?;
+    let mut sink = CsrSink::new_row_ordered(dimension)?;
+    let mut sources: FxHashMap<usize, Complex64> =
+        FxHashMap::with_capacity_and_hasher(terms.len(), Default::default());
+    let mut row_entries = Vec::<(u64, Complex64)>::with_capacity(terms.len());
+    let fermion_word_count = fermion_masks
+        .iter()
+        .filter_map(Option::as_ref)
+        .map(|descriptor| descriptor.required_occupied.len())
+        .max()
+        .unwrap_or(0);
+    let mut fermion_mask_scratch = vec![0_u64; fermion_word_count];
+    for row in 0..dimension {
+        sources.clear();
+        for (term_index, ((_term, fermion_descriptor), &coefficient)) in compiled_terms
+            .iter()
+            .zip(&fermion_masks)
+            .zip(&coefficients)
+            .enumerate()
+        {
+            if let Some(descriptor) = fermion_descriptor.as_ref() {
+                let words = descriptor.required_occupied.len();
+                descriptor.pack_index(row, &strides, &mut fermion_mask_scratch[..words])?;
+                for (source, &flip) in fermion_mask_scratch[..words]
+                    .iter_mut()
+                    .zip(&descriptor.flip_mask)
+                {
+                    *source ^= flip;
+                }
+                if let Some(amplitude) =
+                    descriptor.amplitude_from_words(&fermion_mask_scratch[..words], coefficient)
+                {
+                    let source = descriptor.apply_flip_to_index(row, &strides)?;
+                    let actions = net_actions[term_index]
+                        .as_deref()
+                        .expect("compiled structured net action");
+                    let (source, amplitude, valid) =
+                        apply_compiled_net_inverse(actions, source, amplitude)?;
+                    if valid {
+                        sources
+                            .entry(source)
+                            .and_modify(|value| *value += amplitude)
+                            .or_insert(amplitude);
+                    }
+                }
+                continue;
+            }
+            let actions = net_actions[term_index]
+                .as_deref()
+                .expect("compiled structured net action");
+            let (source, amplitude, valid) = apply_compiled_net_inverse(actions, row, coefficient)?;
+            if valid {
+                sources
+                    .entry(source)
+                    .and_modify(|value| *value += amplitude)
+                    .or_insert(amplitude);
+            }
+        }
+        let mut ordered_sources = sources.drain().collect::<Vec<_>>();
+        ordered_sources.sort_unstable_by_key(|&(source, _)| source);
+        row_entries.clear();
+        for (source, value) in ordered_sources {
+            if value.re == 0.0 && value.im == 0.0 {
+                continue;
+            }
+            row_entries.push((
+                u64::try_from(source).map_err(|_| PauliError::Overflow {
+                    context: "converting structured CSR column index",
+                })?,
+                value,
+            ));
+        }
+        sink.finish_row(row, &row_entries)?;
+    }
+
+    let buffered_entries = sink.len();
+    let (retained_bytes, actual_peak_bytes) =
+        structured_csr_memory_estimate(dimension, terms.len(), buffered_entries)?;
+    let (indptr, columns, values, _) = sink.into_csr()?;
+    Ok(StructuredCsrResult {
+        dimension,
+        indptr,
+        columns,
+        values,
+        estimated_bytes: retained_bytes,
+        estimated_construction_peak_bytes: construction_peak_bytes.max(actual_peak_bytes),
+        schedule_count,
+    })
 }
 
 /// Compile canonical structured terms into deterministic sparse COO arrays.
@@ -2612,65 +4409,70 @@ pub fn structured_sparse_matrix(
     coefficients: &[Complex64],
     max_bytes: u128,
 ) -> Result<StructuredSparseResult, PauliError> {
-    validate_structured_inputs(local_dimensions, terms, coefficients)?;
-    let dimension = mixed_radix_dimension(local_dimensions)?;
-    let mut entries: FxHashMap<(usize, usize), Complex64> = FxHashMap::default();
-    let mut digits = vec![0usize; local_dimensions.len()];
-    let mut output_digits = vec![0usize; local_dimensions.len()];
-    for column in 0..dimension {
-        decode_index(column, local_dimensions, &mut digits);
-        for (term, &coefficient) in terms.iter().zip(coefficients) {
-            output_digits.copy_from_slice(&digits);
-            let mut amplitude = coefficient;
-            let mut valid = true;
-            for operation in term {
-                if !apply_structured_operation(
-                    operation,
-                    local_dimensions,
-                    &mut output_digits,
-                    &mut amplitude,
-                )? {
-                    valid = false;
-                    break;
-                }
-            }
-            if !valid {
-                continue;
-            }
-            let row = encode_index(&output_digits, local_dimensions);
-            let key = (row, column);
-            let next_entry_count = entries.len().saturating_add(1);
-            match entries.entry(key) {
-                Entry::Occupied(mut entry) => {
-                    *entry.get_mut() += amplitude;
-                }
-                Entry::Vacant(entry) => {
-                    check_sparse_entry_bytes(next_entry_count, max_bytes)?;
-                    entry.insert(amplitude);
-                }
-            }
-        }
+    structured_sparse_matrix_with_fermion_positions(
+        local_dimensions,
+        terms,
+        coefficients,
+        &[],
+        max_bytes,
+    )
+}
+
+/// Compile structured terms into sparse arrays with an explicit raw-Fermion
+/// public-axis map.
+pub fn structured_sparse_matrix_with_fermion_positions(
+    local_dimensions: &[usize],
+    terms: &[Vec<StructuredOperation>],
+    coefficients: &[Complex64],
+    fermion_positions: &[usize],
+    max_bytes: u128,
+) -> Result<StructuredSparseResult, PauliError> {
+    let csr = structured_csr_matrix_with_fermion_positions(
+        local_dimensions,
+        terms,
+        coefficients,
+        fermion_positions,
+        max_bytes,
+    )?;
+    let count = csr.values.len();
+    let output_bytes = (count as u128)
+        .checked_mul((size_of::<u64>() * 2 + size_of::<Complex64>()) as u128)
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured COO output",
+        })?;
+    let peak_with_output = csr
+        .estimated_construction_peak_bytes
+        .checked_add(output_bytes)
+        .ok_or(PauliError::Overflow {
+            context: "estimating structured COO construction",
+        })?;
+    if peak_with_output > max_bytes {
+        return Err(PauliError::MemoryLimit {
+            requested: peak_with_output,
+            limit: max_bytes,
+        });
     }
-    let mut ordered: Vec<_> = entries.into_iter().collect();
-    ordered.sort_by_key(|(key, _)| *key);
-    let mut rows = Vec::with_capacity(ordered.len());
-    let mut columns = Vec::with_capacity(ordered.len());
-    let mut values = Vec::with_capacity(ordered.len());
-    for ((row, column), value) in ordered {
-        if value.re == 0.0 && value.im == 0.0 {
-            continue;
+    let mut rows = Vec::with_capacity(count);
+    let mut columns = Vec::with_capacity(count);
+    let mut values = Vec::with_capacity(count);
+    for row in 0..csr.dimension {
+        let start = usize::try_from(csr.indptr[row]).map_err(|_| PauliError::Overflow {
+            context: "converting structured COO row pointer",
+        })?;
+        let stop = usize::try_from(csr.indptr[row + 1]).map_err(|_| PauliError::Overflow {
+            context: "converting structured COO row pointer",
+        })?;
+        for index in start..stop {
+            rows.push(u64::try_from(row).map_err(|_| PauliError::Overflow {
+                context: "converting structured COO row index",
+            })?);
+            columns.push(csr.columns[index]);
+            values.push(csr.values[index]);
         }
-        rows.push(u64::try_from(row).map_err(|_| PauliError::Overflow {
-            context: "converting structured sparse row index",
-        })?);
-        columns.push(u64::try_from(column).map_err(|_| PauliError::Overflow {
-            context: "converting structured sparse column index",
-        })?);
-        values.push(value);
     }
     check_sparse_output_bytes(rows.len(), max_bytes)?;
     Ok(StructuredSparseResult {
-        dimension,
+        dimension: csr.dimension,
         rows,
         columns,
         values,
@@ -2684,8 +4486,38 @@ pub fn structured_dense_matrix(
     coefficients: &[Complex64],
     max_bytes: u128,
 ) -> Result<(usize, Vec<Complex64>), PauliError> {
+    structured_dense_matrix_with_fermion_positions(
+        local_dimensions,
+        terms,
+        coefficients,
+        &[],
+        max_bytes,
+    )
+}
+
+/// Compile structured terms into dense storage with an explicit raw-Fermion
+/// public-axis map.
+pub fn structured_dense_matrix_with_fermion_positions(
+    local_dimensions: &[usize],
+    terms: &[Vec<StructuredOperation>],
+    coefficients: &[Complex64],
+    fermion_positions: &[usize],
+    max_bytes: u128,
+) -> Result<(usize, Vec<Complex64>), PauliError> {
     validate_structured_inputs(local_dimensions, terms, coefficients)?;
+    let (terms, coefficients) = group_structured_terms(terms, coefficients, local_dimensions)?;
     let dimension = mixed_radix_dimension(local_dimensions)?;
+    let strides = mixed_radix_strides(local_dimensions)?;
+    let compiled_terms =
+        compile_mvp_operations(local_dimensions, &terms, fermion_positions, &strides)?;
+    let net_actions = terms
+        .iter()
+        .map(|term| compile_net_actions(term, local_dimensions, &strides))
+        .collect::<Result<Vec<_>, _>>()?;
+    let fermion_masks = compiled_terms
+        .iter()
+        .map(|term| compile_fermion_mask_descriptor(term, fermion_positions))
+        .collect::<Vec<_>>();
     let entries = dimension
         .checked_mul(dimension)
         .ok_or(PauliError::Overflow {
@@ -2703,60 +4535,51 @@ pub fn structured_dense_matrix(
         });
     }
     let mut matrix = vec![Complex64::default(); entries];
-    let mut digits = vec![0usize; local_dimensions.len()];
-    let mut output_digits = vec![0usize; local_dimensions.len()];
+    let fermion_word_count = fermion_masks
+        .iter()
+        .filter_map(Option::as_ref)
+        .map(|descriptor| descriptor.required_occupied.len())
+        .max()
+        .unwrap_or(0);
+    let mut fermion_mask_scratch = vec![0_u64; fermion_word_count];
     for column in 0..dimension {
-        decode_index(column, local_dimensions, &mut digits);
-        for (term, &coefficient) in terms.iter().zip(coefficients) {
-            output_digits.copy_from_slice(&digits);
-            let mut amplitude = coefficient;
-            let mut valid = true;
-            for operation in term {
-                if !apply_structured_operation(
-                    operation,
-                    local_dimensions,
-                    &mut output_digits,
-                    &mut amplitude,
-                )? {
-                    valid = false;
-                    break;
+        for (term_index, ((_term, fermion_descriptor), &coefficient)) in compiled_terms
+            .iter()
+            .zip(&fermion_masks)
+            .zip(&coefficients)
+            .enumerate()
+        {
+            if let Some(descriptor) = fermion_descriptor.as_ref() {
+                let words = descriptor.required_occupied.len();
+                descriptor.pack_index(column, &strides, &mut fermion_mask_scratch[..words])?;
+                if let Some(amplitude) =
+                    descriptor.amplitude_from_words(&fermion_mask_scratch[..words], coefficient)
+                {
+                    let destination = descriptor.apply_flip_to_index(column, &strides)?;
+                    let actions = net_actions[term_index]
+                        .as_deref()
+                        .expect("compiled structured net action");
+                    let (destination, amplitude, valid) =
+                        apply_compiled_net_forward(actions, destination, amplitude)?;
+                    if valid {
+                        let entry = &mut matrix[destination * dimension + column];
+                        *entry += amplitude;
+                    }
                 }
+                continue;
             }
+            let actions = net_actions[term_index]
+                .as_deref()
+                .expect("compiled structured net action");
+            let (destination, amplitude, valid) =
+                apply_compiled_net_forward(actions, column, coefficient)?;
             if valid {
-                let row = encode_index(&output_digits, local_dimensions);
-                let entry = &mut matrix[row * dimension + column];
+                let entry = &mut matrix[destination * dimension + column];
                 *entry += amplitude;
             }
         }
     }
     Ok((dimension, matrix))
-}
-
-fn apply_pauli(
-    code: u8,
-    digit: usize,
-    destination: &mut usize,
-    amplitude: &mut Complex64,
-) -> Result<(), PauliError> {
-    match code {
-        0 => {}
-        1 => *destination = 1 - digit,
-        2 => {
-            *destination = 1 - digit;
-            *amplitude *= if digit == 0 {
-                Complex64::new(0.0, 1.0)
-            } else {
-                Complex64::new(0.0, -1.0)
-            };
-        }
-        3 => {
-            if digit == 1 {
-                *amplitude = -*amplitude;
-            }
-        }
-        _ => return Err(PauliError::InvalidCode { code, index: 0 }),
-    }
-    Ok(())
 }
 
 fn validate_structured_inputs(
@@ -2779,27 +4602,255 @@ fn validate_structured_inputs(
     Ok(())
 }
 
+/// Group identical coefficient-free local action schedules once at plan
+/// construction.  The operation key is canonical and ordered, so schedule
+/// order never depends on hash-map iteration.
+fn group_structured_terms(
+    terms: &[Vec<StructuredOperation>],
+    coefficients: &[Complex64],
+    local_dimensions: &[usize],
+) -> Result<(Vec<Vec<StructuredOperation>>, Vec<Complex64>), PauliError> {
+    if terms.len() != coefficients.len() {
+        return Err(PauliError::InvalidStructureLength {
+            expected: terms.len(),
+            actual: coefficients.len(),
+        });
+    }
+    let mut grouped = BTreeMap::<NetKey, (Vec<StructuredOperation>, Complex64)>::new();
+    for (term, &coefficient) in terms.iter().zip(coefficients) {
+        let (term, phase) = canonicalize_structured_schedule(term, local_dimensions)?;
+        let key = structured_net_key(&term, local_dimensions)?;
+        let coefficient = coefficient * phase;
+        grouped
+            .entry(key)
+            .and_modify(|(_, value)| *value += coefficient)
+            .or_insert((term, coefficient));
+    }
+    let mut grouped_terms = Vec::with_capacity(grouped.len());
+    let mut grouped_coefficients = Vec::with_capacity(grouped.len());
+    for (_, (term, coefficient)) in grouped {
+        if !is_exact_zero(coefficient) {
+            grouped_terms.push(term);
+            grouped_coefficients.push(coefficient);
+        }
+    }
+    Ok((grouped_terms, grouped_coefficients))
+}
+
+type NetAxisRow = (usize, u64, u64);
+type NetKey = Vec<(usize, Vec<NetAxisRow>)>;
+
+/// Return a deterministic local transition fingerprint for a non-Fermion
+/// schedule.  The fingerprint includes destination digits and exact binary
+/// floating-point amplitude bits, so distinct Boson ladder polynomials or Weyl
+/// phases are never merged accidentally.  Raw Fermion schedules are excluded
+/// because their sign depends on occupations outside the local axis.
+fn structured_net_key(
+    term: &[StructuredOperation],
+    local_dimensions: &[usize],
+) -> Result<NetKey, PauliError> {
+    if term.iter().any(|operation| operation.kind == 3) {
+        return Ok(term
+            .iter()
+            .map(|operation| {
+                (
+                    operation.axis,
+                    vec![(
+                        operation.p as usize,
+                        operation.kind as u64,
+                        operation.q as u64,
+                    )],
+                )
+            })
+            .collect());
+    }
+    let mut by_axis = BTreeMap::<usize, Vec<StructuredOperation>>::new();
+    for &operation in term {
+        by_axis.entry(operation.axis).or_default().push(operation);
+    }
+    let mut key = Vec::with_capacity(by_axis.len());
+    for (axis, operations) in by_axis {
+        let dimension = *local_dimensions.get(axis).ok_or(PauliError::InvalidIndex {
+            context: "structured schedule axis",
+        })?;
+        if dimension == 0 {
+            return Err(PauliError::InvalidStructureLength {
+                expected: 1,
+                actual: 0,
+            });
+        }
+        if operations.iter().any(|operation| operation.kind == 0) && dimension != 2 {
+            return Err(PauliError::InvalidIndex {
+                context: "Pauli operation requires a two-level axis",
+            });
+        }
+        let mut rows = Vec::with_capacity(dimension);
+        for source in 0..dimension {
+            let mut digit = source;
+            let mut amplitude = Complex64::new(1.0, 0.0);
+            for operation in &operations {
+                match operation.kind {
+                    0 => match operation.p {
+                        0 => {}
+                        1 => digit = 1 - digit,
+                        2 => {
+                            let input = digit;
+                            digit = 1 - digit;
+                            amplitude *= if input == 0 {
+                                Complex64::new(0.0, 1.0)
+                            } else {
+                                Complex64::new(0.0, -1.0)
+                            };
+                        }
+                        3 => {
+                            if digit == 1 {
+                                amplitude = -amplitude;
+                            }
+                        }
+                        code => {
+                            return Err(PauliError::InvalidCode {
+                                code: code as u8,
+                                index: axis,
+                            });
+                        }
+                    },
+                    1 => {
+                        let creation =
+                            usize::try_from(operation.p).map_err(|_| PauliError::Overflow {
+                                context: "canonicalizing Boson creation count",
+                            })?;
+                        let annihilation =
+                            usize::try_from(operation.q).map_err(|_| PauliError::Overflow {
+                                context: "canonicalizing Boson annihilation count",
+                            })?;
+                        if digit < annihilation {
+                            amplitude = Complex64::default();
+                            break;
+                        }
+                        for offset in 0..annihilation {
+                            amplitude *= ((digit - offset) as f64).sqrt();
+                        }
+                        let remaining = digit - annihilation;
+                        let Some(new_digit) = remaining.checked_add(creation) else {
+                            amplitude = Complex64::default();
+                            break;
+                        };
+                        if new_digit >= dimension {
+                            amplitude = Complex64::default();
+                            break;
+                        }
+                        for offset in 0..creation {
+                            amplitude *= ((remaining + offset + 1) as f64).sqrt();
+                        }
+                        digit = new_digit;
+                    }
+                    2 => {
+                        let shift =
+                            usize::try_from(operation.p).map_err(|_| PauliError::Overflow {
+                                context: "canonicalizing Weyl shift",
+                            })? % dimension;
+                        let phase_power =
+                            usize::try_from(operation.q).map_err(|_| PauliError::Overflow {
+                                context: "canonicalizing Weyl phase",
+                            })?;
+                        let angle = 2.0 * std::f64::consts::PI * (phase_power * digit) as f64
+                            / dimension as f64;
+                        amplitude *= Complex64::from_polar(1.0, angle);
+                        digit = (digit + shift) % dimension;
+                    }
+                    kind => {
+                        return Err(PauliError::InvalidCode {
+                            code: kind,
+                            index: axis,
+                        });
+                    }
+                }
+            }
+            if is_exact_zero(amplitude) {
+                rows.push((0, 0, 0));
+            } else {
+                rows.push((digit, amplitude.re.to_bits(), amplitude.im.to_bits()));
+            }
+        }
+        key.push((axis, rows));
+    }
+    Ok(key)
+}
+
+/// Canonicalize coefficient-free net schedules for operations whose domains
+/// commute.  Pauli products and Weyl shifts are folded locally, while raw
+/// Fermion sequences remain in their original order because their parity is
+/// state dependent.  The returned phase is the exact scalar generated by the
+/// local composition.
+fn canonicalize_structured_schedule(
+    term: &[StructuredOperation],
+    local_dimensions: &[usize],
+) -> Result<(Vec<StructuredOperation>, Complex64), PauliError> {
+    if term.iter().any(|operation| operation.kind == 3) {
+        return Ok((term.to_vec(), Complex64::new(1.0, 0.0)));
+    }
+    let mut by_axis = BTreeMap::<usize, Vec<StructuredOperation>>::new();
+    for &operation in term {
+        if operation.axis >= local_dimensions.len() {
+            return Err(PauliError::InvalidIndex {
+                context: "structured schedule axis",
+            });
+        }
+        by_axis.entry(operation.axis).or_default().push(operation);
+    }
+    let mut phase = Complex64::new(1.0, 0.0);
+    let mut canonical = Vec::with_capacity(term.len());
+    for (_axis, operations) in by_axis {
+        let mut local = Vec::<StructuredOperation>::with_capacity(operations.len());
+        for operation in operations {
+            if let Some(previous) = local.last_mut() {
+                if previous.kind == 0 && operation.kind == 0 {
+                    let (code, local_phase) =
+                        pauli_code_product(operation.p as u8, previous.p as u8);
+                    previous.p = u32::from(code);
+                    phase *= local_phase;
+                    continue;
+                }
+                if previous.kind == 2 && operation.kind == 2 {
+                    let dimension = local_dimensions[operation.axis];
+                    if dimension == 0 {
+                        return Err(PauliError::InvalidStructureLength {
+                            expected: 1,
+                            actual: 0,
+                        });
+                    }
+                    let shift = (previous.p as usize + operation.p as usize) % dimension;
+                    let phase_power = (previous.q as usize + operation.q as usize) % dimension;
+                    let cross =
+                        (operation.q as usize * (previous.p as usize % dimension)) % dimension;
+                    let angle = 2.0 * std::f64::consts::PI * cross as f64 / dimension as f64;
+                    phase *= Complex64::from_polar(1.0, angle);
+                    previous.p = u32::try_from(shift).map_err(|_| PauliError::Overflow {
+                        context: "canonicalizing Weyl shift",
+                    })?;
+                    previous.q = u32::try_from(phase_power).map_err(|_| PauliError::Overflow {
+                        context: "canonicalizing Weyl phase",
+                    })?;
+                    continue;
+                }
+            }
+            if operation.kind == 0 && operation.p == 0 {
+                continue;
+            }
+            local.push(operation);
+        }
+        local.retain(|operation| !(operation.kind == 0 && operation.p == 0));
+        canonical.extend(local);
+    }
+    Ok((canonical, phase))
+}
+
 fn mixed_radix_dimension(local_dimensions: &[usize]) -> Result<usize, PauliError> {
     local_dimensions.iter().try_fold(1usize, |value, &factor| {
         value.checked_mul(factor).ok_or(PauliError::Overflow {
             context: "computing mixed-radix basis dimension",
         })
     })
-}
-
-fn check_sparse_entry_bytes(count: usize, max_bytes: u128) -> Result<(), PauliError> {
-    let requested = (count as u128)
-        .checked_mul(64)
-        .ok_or(PauliError::Overflow {
-            context: "estimating structured sparse workspace",
-        })?;
-    if requested > max_bytes {
-        return Err(PauliError::MemoryLimit {
-            requested,
-            limit: max_bytes,
-        });
-    }
-    Ok(())
 }
 
 fn check_sparse_output_bytes(count: usize, max_bytes: u128) -> Result<(), PauliError> {
@@ -2817,106 +4868,16 @@ fn check_sparse_output_bytes(count: usize, max_bytes: u128) -> Result<(), PauliE
     Ok(())
 }
 
-fn apply_structured_operation(
-    operation: &StructuredOperation,
-    local_dimensions: &[usize],
-    output_digits: &mut [usize],
-    amplitude: &mut Complex64,
-) -> Result<bool, PauliError> {
-    if operation.axis >= local_dimensions.len() {
-        return Err(PauliError::InvalidIndex {
-            context: "structured operation axis",
-        });
-    }
-    let local_dimension = local_dimensions[operation.axis];
-    let digit = output_digits[operation.axis];
-    match operation.kind {
-        0 => {
-            if local_dimension != 2 {
-                return Err(PauliError::InvalidIndex {
-                    context: "Pauli operation requires a two-level axis",
-                });
-            }
-            if operation.p > 3 {
-                return Err(PauliError::InvalidCode {
-                    code: operation.p as u8,
-                    index: operation.axis,
-                });
-            }
-            apply_pauli(
-                operation.p as u8,
-                digit,
-                &mut output_digits[operation.axis],
-                amplitude,
-            )?;
-        }
-        1 => {
-            let annihilation = operation.q as usize;
-            let creation = operation.p as usize;
-            if digit < annihilation {
-                return Ok(false);
-            }
-            let destination = digit
-                .checked_sub(annihilation)
-                .and_then(|remaining| remaining.checked_add(creation))
-                .ok_or(PauliError::Overflow {
-                    context: "computing boson transition destination",
-                })?;
-            if destination >= local_dimension {
-                return Ok(false);
-            }
-            let mut ladder_amplitude = 1.0;
-            for offset in 0..annihilation {
-                ladder_amplitude *= ((digit - offset) as f64).sqrt();
-            }
-            let remaining = digit - annihilation;
-            for offset in 0..creation {
-                ladder_amplitude *= ((remaining + offset + 1) as f64).sqrt();
-            }
-            *amplitude *= ladder_amplitude;
-            output_digits[operation.axis] = destination;
-        }
-        2 => {
-            let a = (operation.p as usize) % local_dimension;
-            let b_digit = (u128::from(operation.q) * digit as u128) % local_dimension as u128;
-            output_digits[operation.axis] = (digit + a) % local_dimension;
-            let angle = 2.0 * std::f64::consts::PI * b_digit as f64 / local_dimension as f64;
-            *amplitude *= Complex64::new(angle.cos(), angle.sin());
-        }
-        _ => {
-            return Err(PauliError::InvalidCode {
-                code: operation.kind,
-                index: operation.axis,
-            });
-        }
-    }
-    Ok(true)
-}
-
-fn decode_index(mut index: usize, dimensions: &[usize], digits: &mut [usize]) {
-    for position in (0..dimensions.len()).rev() {
-        digits[position] = index % dimensions[position];
-        index /= dimensions[position];
-    }
-}
-
-fn encode_index(digits: &[usize], dimensions: &[usize]) -> usize {
-    digits
-        .iter()
-        .zip(dimensions)
-        .fold(0usize, |value, (&digit, &dimension)| {
-            value * dimension + digit
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalize_boson_terms, canonicalize_fermion_terms, hybrid_qudit_product,
-        jordan_wigner_terms, structured_dense_matrix, structured_sparse_matrix, HybridBatch,
-        StructuredOperation,
+        apply_compiled_structured_operation, canonicalize_boson_terms, canonicalize_fermion_terms,
+        compile_fermion_mask_descriptor, compile_mvp_operations, group_structured_terms,
+        hybrid_qudit_product, jordan_wigner_terms, mixed_radix_strides, structured_dense_matrix,
+        structured_mvp_plan_with_fermion_positions, structured_sparse_matrix,
+        CompiledStructuredOperation, HybridBatch, StructuredOperation,
     };
-    use crate::Complex64;
+    use crate::{allocation_count, Complex64};
 
     #[test]
     fn compiles_pauli_boson_and_weyl_operations_in_mixed_radix_order() {
@@ -2961,6 +4922,220 @@ mod tests {
         assert!(
             (matrix[2 * dimension + 1] - Complex64::new(-0.5, 3.0_f64.sqrt() / 2.0)).norm() < 1e-12
         );
+    }
+
+    #[test]
+    fn fermion_mask_descriptor_matches_ordered_car_actions() {
+        let local_dimensions = [2, 2, 2];
+        let fermion_positions = [0, 1, 2];
+        let strides = mixed_radix_strides(&local_dimensions).unwrap();
+        let term = vec![
+            StructuredOperation {
+                axis: 1,
+                kind: 3,
+                p: 1,
+                q: 0,
+            },
+            StructuredOperation {
+                axis: 2,
+                kind: 3,
+                p: 2,
+                q: 1,
+            },
+            StructuredOperation {
+                axis: 0,
+                kind: 3,
+                p: 0,
+                q: 1,
+            },
+        ];
+        let compiled = compile_mvp_operations(
+            &local_dimensions,
+            std::slice::from_ref(&term),
+            &fermion_positions,
+            &strides,
+        )
+        .unwrap();
+        let descriptor = compile_fermion_mask_descriptor(&compiled[0], &fermion_positions)
+            .expect("raw Fermion monomial should lower to a mask");
+        for source in 0..8 {
+            let mut expected_destination = source;
+            let mut expected_amplitude = Complex64::new(1.0, 0.0);
+            let mut expected_valid = true;
+            for operation in &compiled[0] {
+                if !apply_compiled_structured_operation(
+                    operation,
+                    &local_dimensions,
+                    &strides,
+                    &fermion_positions,
+                    &mut expected_destination,
+                    &mut expected_amplitude,
+                )
+                .unwrap()
+                {
+                    expected_valid = false;
+                    break;
+                }
+            }
+            let mut source_words = vec![0_u64; descriptor.required_occupied.len()];
+            descriptor
+                .pack_index(source, &strides, &mut source_words)
+                .unwrap();
+            let lowered = descriptor
+                .amplitude_from_words(&source_words, Complex64::new(1.0, 0.0))
+                .map(|amplitude| {
+                    (
+                        descriptor.apply_flip_to_index(source, &strides).unwrap(),
+                        amplitude,
+                    )
+                });
+            match (expected_valid, lowered) {
+                (false, None) => {}
+                (true, Some((destination, amplitude))) => {
+                    assert_eq!(destination, expected_destination);
+                    assert_eq!(amplitude, expected_amplitude);
+                }
+                mismatch => panic!("FermionMask mismatch for source {source}: {mismatch:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn wide_fermion_mask_descriptor_handles_mode_128() {
+        let positions = (0..130).collect::<Vec<_>>();
+        let term = vec![CompiledStructuredOperation {
+            axis: 128,
+            kind: 3,
+            p: 128,
+            q: 1,
+            stride: 1,
+            dimension: 2,
+            local_table: Vec::new(),
+        }];
+        let descriptor = compile_fermion_mask_descriptor(&term, &positions)
+            .expect("wide Fermion monomial should lower");
+        let source = vec![0_u64, 0_u64, 0_u64];
+        let mut destination = vec![0_u64; source.len()];
+        let amplitude = descriptor
+            .apply_to_words(&source, &mut destination, Complex64::new(2.0, -1.0))
+            .expect("creation accepts an empty source mode");
+        assert_eq!(destination[2] & (1_u64 << 0), 1);
+        assert_eq!(amplitude, Complex64::new(2.0, -1.0));
+        let occupied = vec![0_u64, 0_u64, 1_u64];
+        assert!(descriptor
+            .amplitude_from_words(&occupied, Complex64::new(1.0, 0.0))
+            .is_none());
+    }
+
+    #[test]
+    fn compiled_fermion_apply_has_constant_per_call_allocation() {
+        let make_plan = |terms: Vec<Vec<StructuredOperation>>| {
+            let coefficients = vec![Complex64::new(1.0, 0.0); terms.len()];
+            structured_mvp_plan_with_fermion_positions(
+                vec![2, 2, 2],
+                terms,
+                coefficients,
+                &[0, 1, 2],
+                u128::MAX,
+            )
+            .unwrap()
+        };
+        let hopping_forward = vec![
+            StructuredOperation {
+                axis: 0,
+                kind: 3,
+                p: 0,
+                q: 1,
+            },
+            StructuredOperation {
+                axis: 1,
+                kind: 3,
+                p: 1,
+                q: 0,
+            },
+        ];
+        let hopping_backward = vec![
+            StructuredOperation {
+                axis: 1,
+                kind: 3,
+                p: 1,
+                q: 1,
+            },
+            StructuredOperation {
+                axis: 2,
+                kind: 3,
+                p: 2,
+                q: 0,
+            },
+        ];
+        let single = make_plan(vec![hopping_forward.clone()]);
+        let multiple = make_plan(vec![hopping_forward, hopping_backward]);
+        let state = vec![Complex64::new(0.5, -0.25); 8];
+        let mut output = vec![Complex64::default(); 8];
+        single.apply_into(&state, &mut output, 0).unwrap();
+        let (_, single_allocations) = allocation_count(|| {
+            single.apply_into(&state, &mut output, 0).unwrap();
+        });
+        let (_, multiple_allocations) = allocation_count(|| {
+            multiple.apply_into(&state, &mut output, 0).unwrap();
+        });
+        assert_eq!(single_allocations, multiple_allocations);
+        assert_eq!(single_allocations, 1);
+    }
+
+    #[test]
+    fn groups_commuting_net_schedules_with_exact_local_phases() {
+        let x = StructuredOperation {
+            axis: 0,
+            kind: 0,
+            p: 1,
+            q: 0,
+        };
+        let y = StructuredOperation {
+            axis: 0,
+            kind: 0,
+            p: 2,
+            q: 0,
+        };
+        let (terms, coefficients) = group_structured_terms(
+            &[vec![x, y], vec![y, x]],
+            &[Complex64::new(1.0, 0.0), Complex64::new(1.0, 0.0)],
+            &[2],
+        )
+        .unwrap();
+        assert!(terms.is_empty());
+        assert!(coefficients.is_empty());
+
+        let shift = StructuredOperation {
+            axis: 0,
+            kind: 2,
+            p: 1,
+            q: 1,
+        };
+        let (terms, coefficients) =
+            group_structured_terms(&[vec![shift, shift]], &[Complex64::new(1.0, 0.0)], &[3])
+                .unwrap();
+        assert_eq!(terms[0][0].p, 2);
+        assert_eq!(terms[0][0].q, 2);
+        assert!((coefficients[0] - Complex64::new(-0.5, 3.0_f64.sqrt() / 2.0)).norm() < 1e-12);
+
+        let create = StructuredOperation {
+            axis: 0,
+            kind: 1,
+            p: 1,
+            q: 0,
+        };
+        let (terms, coefficients) = group_structured_terms(
+            &[
+                vec![create, create],
+                vec![StructuredOperation { p: 2, ..create }],
+            ],
+            &[Complex64::new(1.0, 0.0), Complex64::new(-1.0, 0.0)],
+            &[5],
+        )
+        .unwrap();
+        assert!(terms.is_empty());
+        assert!(coefficients.is_empty());
     }
 
     #[test]
@@ -3083,19 +5258,23 @@ mod tests {
 
     #[test]
     fn direct_weyl_phase_reduces_before_float_conversion() {
-        let dimension = 1usize << 28;
+        let dimension = 1usize << 20;
         let operation = StructuredOperation {
             axis: 0,
             kind: 2,
             p: 0,
             q: (dimension - 1) as u32,
         };
-        let mut digits = vec![dimension - 1];
+        let compiled =
+            super::compile_mvp_operations(&[dimension], &[vec![operation]], &[], &[1]).unwrap();
+        let mut destination = dimension - 1;
         let mut amplitude = Complex64::new(1.0, 0.0);
-        assert!(super::apply_structured_operation(
-            &operation,
+        assert!(super::apply_compiled_structured_operation(
+            &compiled[0][0],
             &[dimension],
-            &mut digits,
+            &[1],
+            &[],
+            &mut destination,
             &mut amplitude,
         )
         .unwrap());

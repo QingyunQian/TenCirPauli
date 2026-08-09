@@ -186,6 +186,163 @@ impl ChargeSectorPlan {
         Ok(())
     }
 
+    /// Build the exact selected-space plan for one independent factor.
+    ///
+    /// The caller supplies public-axis positions belonging to a factor.  Every
+    /// active constraint must be wholly contained in that factor; otherwise
+    /// the global sector is coupled and cannot use Product execution.
+    pub(crate) fn independent_factor_plan(
+        &self,
+        positions: &[usize],
+        max_bytes: u128,
+    ) -> Result<Option<Self>, PauliError> {
+        if positions.is_empty()
+            || positions
+                .iter()
+                .any(|&position| position >= self.local_dimensions.len())
+            || positions.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Ok(None);
+        }
+        let mut included = vec![false; self.local_dimensions.len()];
+        for &position in positions {
+            included[position] = true;
+        }
+        let mut active_constraints = Vec::new();
+        for constraint in 0..self.target.len() {
+            let mut active_inside = false;
+            let mut active_outside = false;
+            for (position, contribution_table) in self.contributions.iter().enumerate() {
+                let active = contribution_table
+                    .iter()
+                    .any(|contribution| contribution[constraint] != 0);
+                if active {
+                    if included[position] {
+                        active_inside = true;
+                    } else {
+                        active_outside = true;
+                    }
+                }
+            }
+            if active_inside && active_outside {
+                return Ok(None);
+            }
+            if active_inside {
+                active_constraints.push(constraint);
+            }
+        }
+        if active_constraints.is_empty() {
+            return Ok(None);
+        }
+        let local_dimensions = positions
+            .iter()
+            .map(|&position| self.local_dimensions[position])
+            .collect::<Vec<_>>();
+        let contributions = positions
+            .iter()
+            .map(|&position| {
+                self.contributions[position]
+                    .iter()
+                    .map(|levels| {
+                        active_constraints
+                            .iter()
+                            .map(|&constraint| levels[constraint])
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let target = active_constraints
+            .iter()
+            .map(|&constraint| self.target[constraint])
+            .collect::<Vec<_>>();
+        build_charge_sector_plan(local_dimensions, contributions, target, max_bytes).map(Some)
+    }
+
+    /// Fill factor-local prefix counts for one selected configuration.
+    ///
+    /// `completion_counts[k]` is the number of local selected configurations
+    /// sharing the first `k` digits of `values`. `prefix_offsets[k]` is the
+    /// local lexicographic contribution made by the digit at axis `k`. These
+    /// compact tables let a Product plan recover public mixed-axis rank without
+    /// a selected-space-sized public/component permutation or a global ranker
+    /// in its apply loop.
+    pub(crate) fn prefix_metadata_into<'a>(
+        &self,
+        values: &[u64],
+        completion_counts: &mut [usize],
+        prefix_offsets: &mut [usize],
+        mut remaining: &'a mut [i128],
+        mut candidate_remaining: &'a mut [i128],
+    ) -> Result<(), PauliError> {
+        if values.len() != self.local_dimensions.len()
+            || completion_counts.len() != values.len() + 1
+            || prefix_offsets.len() != values.len()
+            || remaining.len() != self.target.len()
+            || candidate_remaining.len() != self.target.len()
+        {
+            return Err(PauliError::InvalidStructureLength {
+                expected: self.local_dimensions.len(),
+                actual: values.len(),
+            });
+        }
+        remaining.copy_from_slice(&self.target);
+        completion_counts[0] = self.dimension;
+        for (position, &raw_value) in values.iter().enumerate() {
+            let value = usize::try_from(raw_value).map_err(|_| PauliError::InvalidIndex {
+                context: "factor occupation is outside the finite sector layout",
+            })?;
+            if value >= self.local_dimensions[position] {
+                return Err(PauliError::InvalidIndex {
+                    context: "factor occupation is outside the finite sector layout",
+                });
+            }
+            let mut offset = 0_u128;
+            for candidate in 0..value {
+                subtract_contribution_into(
+                    remaining,
+                    &self.contributions[position][candidate],
+                    candidate_remaining,
+                )?;
+                offset = offset
+                    .checked_add(
+                        self.suffix_counts[position + 1]
+                            .get(&*candidate_remaining)
+                            .copied()
+                            .unwrap_or(0),
+                    )
+                    .ok_or(PauliError::Overflow {
+                        context: "computing Product factor prefix rank",
+                    })?;
+            }
+            prefix_offsets[position] =
+                usize::try_from(offset).map_err(|_| PauliError::Overflow {
+                    context: "converting Product factor prefix rank",
+                })?;
+            subtract_contribution_into(
+                remaining,
+                &self.contributions[position][value],
+                candidate_remaining,
+            )?;
+            std::mem::swap(&mut remaining, &mut candidate_remaining);
+            completion_counts[position + 1] = usize::try_from(
+                self.suffix_counts[position + 1]
+                    .get(&*remaining)
+                    .copied()
+                    .unwrap_or(0),
+            )
+            .map_err(|_| PauliError::Overflow {
+                context: "converting Product factor completion count",
+            })?;
+        }
+        if remaining.iter().any(|&value| value != 0) {
+            return Err(PauliError::InvalidSector {
+                context: "factor occupation does not satisfy every charge constraint",
+            });
+        }
+        Ok(())
+    }
+
     /// Materialize the selected occupations in one flat row-major buffer.
     pub fn basis_states(&self, max_bytes: u128) -> Result<Vec<u64>, PauliError> {
         let axis_count = self.local_dimensions.len();
@@ -382,6 +539,7 @@ pub fn build_compact_charge_sector_plan(
     fermion_weights: Vec<Vec<i128>>,
     boson_weights: Vec<Vec<i128>>,
     qubit_levels: Vec<Vec<(i128, i128)>>,
+    qudit_weights: Vec<Vec<i128>>,
     target: Vec<i128>,
     max_bytes: u128,
 ) -> Result<ChargeSectorPlan, PauliError> {
@@ -474,7 +632,36 @@ pub fn build_compact_charge_sector_plan(
                             }
                             Ok(if value == 0 { levels.0 } else { levels.1 })
                         }
-                        3 => Ok(0),
+                        3 => {
+                            let weight = qudit_weights
+                                .get(constraint)
+                                .and_then(|weights| weights.get(axis_index))
+                                .ok_or(PauliError::InvalidSector {
+                                    context: "invalid qudit charge axis",
+                                })?;
+                            let dimension = local_dimensions[position];
+                            if dimension < 3 {
+                                return Err(PauliError::InvalidSector {
+                                    context: "qudit charge axis must have dimension at least three",
+                                });
+                            }
+                            let spectrum = if dimension % 2 == 1 {
+                                i128::try_from((dimension - 1) / 2).map_err(|_| {
+                                    PauliError::Overflow {
+                                        context: "converting qudit spin-z spectrum",
+                                    }
+                                })? - value
+                            } else {
+                                i128::try_from(dimension - 1).map_err(|_| PauliError::Overflow {
+                                    context: "converting qudit spin-z spectrum",
+                                })? - value.checked_mul(2).ok_or(PauliError::Overflow {
+                                    context: "computing qudit spin-z spectrum",
+                                })?
+                            };
+                            weight.checked_mul(spectrum).ok_or(PauliError::Overflow {
+                                context: "computing qudit charge contribution",
+                            })
+                        }
                         _ => Err(PauliError::InvalidSector {
                             context: "invalid charge-sector axis kind",
                         }),

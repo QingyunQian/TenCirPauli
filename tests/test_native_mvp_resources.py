@@ -15,13 +15,31 @@ def test_pauli_storage_is_fixed_and_eager_budget_is_strict() -> None:
     operator = tcp.PauliOperator.from_terms(3, [("XZI", 1.0), ("IXX", 0.5)])
     lazy = operator.compile("native_mvp")
     assert lazy.storage == "lazy"
-    assert lazy.strategy == "term_direct"
+    assert lazy.execution_family == "pauli"
+    assert lazy.retained_format == "compiled_actions"
     with pytest.raises(MemoryError):
         operator.compile("native_mvp", storage="eager", max_bytes=1)
     eager = operator.compile("native_mvp", storage="eager", max_bytes=None)
     assert eager.storage == "eager"
-    assert eager.strategy == "x_mask_diagonal"
+    assert eager.execution_family == "pauli"
+    assert eager.retained_format == "compact_graph"
     assert lazy.storage == "lazy"
+
+
+def test_binary_structured_plan_reports_the_packed_native_variant() -> None:
+    space = tcp.OperatorSpace(qubits=2)
+    operator = space.qubit.x(0) + 0.25 * space.qubit.z(1)
+    dense = operator.compile("dense")
+    lazy = operator.compile("native_mvp")
+    eager = operator.compile("native_mvp", storage="eager")
+
+    assert lazy.execution_family == "pauli"
+    assert eager.execution_family == "pauli"
+    assert lazy._native_plan.native_variant == "pauli"
+    assert eager._native_plan.native_variant == "pauli"
+    state = np.arange(4, dtype=np.complex128) + 0.5j
+    np.testing.assert_allclose(lazy.apply(state), dense @ state)
+    np.testing.assert_allclose(eager.apply(state), dense @ state)
 
 
 def test_restricted_facade_materialization_is_cached_without_upgrading_lazy_plan() -> (
@@ -217,14 +235,19 @@ def test_u1_materialization_preflights_before_publishing_eager_cache() -> None:
     assert dense.shape == (restricted.dimension, restricted.dimension)
 
 
-def test_structured_eager_alias_uses_profile_selected_compact_representation() -> None:
+def test_structured_eager_plan_uses_precomputed_transitions() -> None:
     space = tcp.OperatorSpace(bosons=2)
     operator = space.boson.create(0) * space.boson.annihilate(1)
     lazy = operator.compile("native_mvp", storage="lazy", boson_cutoffs={0: 3, 1: 3})
     eager = operator.compile("native_mvp", storage="eager", boson_cutoffs={0: 3, 1: 3})
     assert eager.storage == "eager"
-    assert eager.estimated_bytes == lazy.estimated_bytes
-    assert eager.strategy == lazy.strategy
+    assert eager.estimated_construction_peak_bytes > eager.estimated_bytes
+    assert eager.retained_format == "csr"
+    assert eager.execution_family == "cartesian"
+    assert eager._native_plan.native_variant == "compiled"
+    assert lazy.retained_format == "compiled_actions"
+    assert lazy.execution_family == "cartesian"
+    assert lazy._native_plan.native_variant == "compiled"
     state = np.arange(lazy.dimension, dtype=np.complex128)
     np.testing.assert_allclose(lazy.apply(state), eager.apply(state))
 

@@ -1,0 +1,12 @@
+name: quspin-benchmark
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11.14
+  - numpy=2.3.5
+  - scipy=1.17.0
+  - pip
+  - pip:
+      - quspin==1.0.0
+      - quspin-extensions==0.1.6

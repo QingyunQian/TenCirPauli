@@ -113,7 +113,8 @@ def test_native_mvp_plan_reuses_compiled_masks() -> None:
     assert plan.nqubits == 4
     assert plan.term_count == len(operator.terms)
     assert plan.storage == "lazy"
-    assert plan.strategy == "term_direct"
+    assert plan.execution_family == "pauli"
+    assert plan.retained_format == "compiled_actions"
     assert plan.estimated_bytes > 0
     state = np.random.default_rng(20260801).normal(
         size=16
@@ -147,7 +148,7 @@ def test_native_mvp_plan_random_complex_differential() -> None:
         )
 
 
-def test_native_mvp_plan_reports_explicit_memory_strategy() -> None:
+def test_native_mvp_plan_reports_explicit_memory_contract() -> None:
     operator = PauliOperator.from_terms(4, (((1, 0, 0, 0), 1.0),))
     with pytest.raises(MemoryError):
         operator.native_mvp_plan(storage="eager", max_bytes=32)

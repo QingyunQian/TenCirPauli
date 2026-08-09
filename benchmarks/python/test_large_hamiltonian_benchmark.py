@@ -187,7 +187,7 @@ def test_native_20q_mvp_plan_construction(benchmark: BenchmarkFixture) -> None:
     operator, _, _, _ = make_operator(20, 64, 20260820)
     expected = operator.native_mvp_plan(max_bytes=MVP_TEST_MAX_BYTES)
     result = benchmark(operator.native_mvp_plan, max_bytes=MVP_TEST_MAX_BYTES)
-    assert result.strategy == expected.strategy == "term_direct"
+    assert result.execution_family == expected.execution_family == "pauli"
     assert result.term_count == expected.term_count == 64
 
 

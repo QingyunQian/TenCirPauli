@@ -41,7 +41,25 @@ class MVPPlan(Protocol):
     def storage(self) -> Literal["lazy", "eager"]: ...
 
     @property
-    def strategy(self) -> str: ...
+    def execution_family(self) -> str: ...
+
+    @property
+    def retained_format(self) -> str: ...
+
+    @property
+    def source_term_count(self) -> int: ...
+
+    @property
+    def schedule_count(self) -> int: ...
+
+    @property
+    def estimated_retained_bytes(self) -> int: ...
+
+    @property
+    def estimated_construction_peak_bytes(self) -> int: ...
+
+    @property
+    def transition_count(self) -> Optional[int]: ...
 
     @property
     def target(self) -> Literal["native_mvp", "backend_mvp"]: ...
@@ -124,17 +142,12 @@ class CSRMatrix:
 class NativeMVPPlan:
     """Reusable Rust-native matrix-free MVP plan.
 
-    ``strategy`` is ``"x_mask_diagonal"`` for the precomputed diagonal
-    kernel or ``"term_direct"`` when the explicit plan memory limit selects
-    the direct term kernel.
-
     The immutable metadata fields describe the target schema, canonical term
     counts, mapping, finite cutoffs, and local Weyl convention when relevant.
     """
 
     nqubits: int
     term_count: int
-    strategy: str
     storage: Literal["lazy", "eager"]
     _native_plan: Any
     local_dimensions: Tuple[int, ...]
@@ -150,13 +163,18 @@ class NativeMVPPlan:
     boson_boundary: Optional[str]
     qudit_dimension: Optional[int]
     weyl_convention: Optional[str]
+    execution_family: str
+    retained_format: str
+    schedule_count: int
+    estimated_retained_bytes: int
+    estimated_construction_peak_bytes: int
+    transition_count: Optional[int]
     _dimension_value: int = field(init=False, repr=False, compare=False)
 
     def __init__(
         self,
         nqubits: int,
         term_count: int,
-        strategy: str,
         native_plan: Any,
         *,
         storage: Literal["lazy", "eager"] = "lazy",
@@ -173,6 +191,12 @@ class NativeMVPPlan:
         boson_boundary: Optional[str] = None,
         qudit_dimension: Optional[int] = None,
         weyl_convention: Optional[str] = None,
+        execution_family: str = "generic",
+        retained_format: Optional[str] = None,
+        schedule_count: Optional[int] = None,
+        estimated_retained_bytes: Optional[int] = None,
+        estimated_construction_peak_bytes: Optional[int] = None,
+        transition_count: Optional[int] = None,
         _factory_token: object = None,
     ) -> None:
         if _factory_token is not _PLAN_FACTORY_TOKEN:
@@ -200,7 +224,6 @@ class NativeMVPPlan:
             )
         object.__setattr__(self, "nqubits", nqubits)
         object.__setattr__(self, "term_count", term_count)
-        object.__setattr__(self, "strategy", strategy)
         object.__setattr__(self, "storage", storage)
         object.__setattr__(self, "_native_plan", native_plan)
         object.__setattr__(self, "local_dimensions", dimensions)
@@ -244,6 +267,52 @@ class NativeMVPPlan:
             raise ValueError("Weyl plans require convention 'X^a Z^b'")
         object.__setattr__(self, "qudit_dimension", qudit_dimension)
         object.__setattr__(self, "weyl_convention", weyl_convention)
+        if execution_family not in {"pauli", "cartesian", "product", "generic"}:
+            raise ValueError("invalid native MVP execution family")
+        resolved_format = retained_format or (
+            "compiled_actions" if storage == "lazy" else "csr"
+        )
+        if resolved_format not in {"compiled_actions", "compact_graph", "csr"}:
+            raise ValueError("invalid native MVP retained format")
+        resolved_schedule_count = (
+            term_count if schedule_count is None else schedule_count
+        )
+        if (
+            not isinstance(resolved_schedule_count, int)
+            or isinstance(resolved_schedule_count, bool)
+            or resolved_schedule_count < 0
+        ):
+            raise ValueError("schedule_count must be a non-negative integer")
+        resolved_retained = (
+            int(estimated_bytes)
+            if estimated_retained_bytes is None
+            else estimated_retained_bytes
+        )
+        resolved_peak = (
+            resolved_retained
+            if estimated_construction_peak_bytes is None
+            else estimated_construction_peak_bytes
+        )
+        for name, value in (
+            ("estimated_retained_bytes", resolved_retained),
+            ("estimated_construction_peak_bytes", resolved_peak),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if transition_count is not None and (
+            not isinstance(transition_count, int)
+            or isinstance(transition_count, bool)
+            or transition_count < 0
+        ):
+            raise ValueError("transition_count must be a non-negative integer or None")
+        object.__setattr__(self, "execution_family", execution_family)
+        object.__setattr__(self, "retained_format", resolved_format)
+        object.__setattr__(self, "schedule_count", resolved_schedule_count)
+        object.__setattr__(self, "estimated_retained_bytes", int(resolved_retained))
+        object.__setattr__(
+            self, "estimated_construction_peak_bytes", int(resolved_peak)
+        )
+        object.__setattr__(self, "transition_count", transition_count)
         object.__setattr__(self, "_dimension_value", dimension)
 
     def apply(
@@ -306,6 +375,29 @@ class NativeMVPPlan:
         from .integrations.scipy import to_scipy_linear_operator
 
         return to_scipy_linear_operator(self, max_bytes=max_bytes)
+
+    def csr(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> CSRMatrix:
+        """Materialize the retained eager graph as deterministic CSR."""
+        if self.storage != "eager" or not hasattr(self._native_plan, "csr"):
+            raise ValueError("CSR materialization requires an eager native plan")
+        _validate_max_bytes(max_bytes)
+        indptr, columns, values = self._native_plan.csr()
+        indptr_array = np.asarray(indptr, dtype=np.uint64)
+        columns_array = np.asarray(columns, dtype=np.uint64)
+        values_array = np.asarray(values, dtype=np.complex128)
+        _check_allocation(
+            int(indptr_array.nbytes + columns_array.nbytes + values_array.nbytes),
+            max_bytes,
+            "native eager CSR materialization",
+        )
+        for array in (indptr_array, columns_array, values_array):
+            array.setflags(write=False)
+        return CSRMatrix(
+            indptr_array,
+            columns_array,
+            values_array,
+            (self.dimension, self.dimension),
+        )
 
 
 @dataclass(frozen=True)

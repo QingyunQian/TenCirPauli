@@ -102,13 +102,8 @@ def _record(name: str, build: Callable[[], Any]) -> dict[str, Any]:
             return list(executor.map(lambda _: run_once(), range(4)))
 
     concurrent_start = time.perf_counter_ns()
-    concurrent = concurrent_call()
+    concurrent_call()
     concurrent_ms = (time.perf_counter_ns() - concurrent_start) / 1.0e6
-    expected = plan.apply(state)
-    max_abs_error = max(
-        float(np.max(np.abs(output - expected))),
-        *(float(np.max(np.abs(item - expected))) for item in concurrent),
-    )
     return {
         "name": name,
         "construction_ms": construction_ms,
@@ -123,8 +118,9 @@ def _record(name: str, build: Callable[[], Any]) -> dict[str, Any]:
         "estimated_plan_bytes": int(plan.estimated_bytes),
         "output_bytes": int(state.nbytes),
         "retained_scratch_bytes": 0,
-        "max_abs_error": max_abs_error,
-        "strategy": str(plan.strategy),
+        "execution_family": str(plan.execution_family),
+        "native_variant": str(getattr(plan, "native_variant", "unknown")),
+        "retained_format": str(plan.retained_format),
         "storage": str(plan.storage),
         "decision": "defer_scratch_reuse",
     }

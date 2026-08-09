@@ -117,7 +117,7 @@ Optional chemistry interop imports converged PySCF RHF or UHF results directly i
 
 CPU-native MVP plans default to `storage="lazy"`; use `storage="eager"` when a reusable retained representation fits the budget. A restricted facade starts compact, and `mvp_plan(storage="eager")`, `dense()`, `coo()`, or `csr()` explicitly authorizes a thread-safe eager transition cache that later facade calls may reuse. Fixed plans never change storage, and `apply_into(input_state, output_state)` writes into caller-owned non-overlapping `complex128` buffers.
 
-Finite targets are selected explicitly with `compile("dense" | "coo" | "csr" | "native_mvp" | "backend_mvp")`. Dense/COO/CSR and native MVP are available for guarded finite structured layouts. `backend_mvp` is available for Pauli plans and uniform pure-qudit Weyl plans through direct TensorCircuit NumPy/JAX backend operations; finite boson and mixed-dimension hybrid backend plans raise `NotImplementedError` rather than falling back silently. See [`examples/structured_algebra.py`](examples/structured_algebra.py) for an executable example.
+Finite targets are selected explicitly with `compile("dense" | "coo" | "csr" | "native_mvp" | "backend_mvp")`. Dense/COO/CSR and native MVP are available for guarded finite structured layouts. `backend_mvp` is available for Pauli plans and uniform pure-qudit Weyl plans through direct TensorCircuit NumPy/JAX backend operations; finite boson and mixed-dimension hybrid backend plans raise `NotImplementedError` rather than falling back silently. See the separate minimal Weyl example in [`examples/qudit_backend.py`](examples/qudit_backend.py) and the manual Holstein study in [`examples/research/holstein/`](examples/research/holstein/).
 
 ## Common circuit facade
 

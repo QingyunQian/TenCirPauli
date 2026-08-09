@@ -20,19 +20,29 @@ def _record_plan_metadata(
     allocation_mode: str,
     max_abs_error: float,
 ) -> None:
-    """Record stable workload and resource metadata beside each timing."""
+    """Record stable workload and resource metadata beside each timing.
+
+    Accuracy is covered by the independent differential tests.  The optional
+    value is accepted for compatibility with existing benchmark call sites but
+    is deliberately not serialized as replay-only benchmark evidence.
+    """
+    del max_abs_error
+    transition_count = getattr(plan, "transition_count", None)
     benchmark.extra_info.update(
         {
             "dimension": int(plan.dimension),
             "term_count": int(getattr(plan, "term_count", -1)),
-            "transition_count": int(getattr(plan, "transition_count", -1)),
+            "transition_count": (
+                -1 if transition_count is None else int(transition_count)
+            ),
             "storage": str(plan.storage),
-            "strategy": str(plan.strategy),
+            "execution_family": str(plan.execution_family),
+            "native_variant": str(getattr(plan, "native_variant", "unknown")),
+            "retained_format": str(plan.retained_format),
             "state_bytes": int(state.nbytes),
             "output_bytes": int(state.nbytes),
             "retained_plan_bytes": int(plan.estimated_bytes),
             "allocation_mode": allocation_mode,
-            "max_abs_error": float(max_abs_error),
             "rayon_threads": os.environ.get("RAYON_NUM_THREADS", "unset"),
         }
     )
@@ -146,6 +156,40 @@ def test_charge_cache_and_apply_into(benchmark: BenchmarkFixture) -> None:
     operator = space.fermion.create(0) * space.fermion.annihilate(1)
     restricted = operator.restrict_charge(charge.sector(1))
     plan = restricted.mvp_plan()
+    state = np.arange(plan.dimension, dtype=np.complex128)
+    output = np.empty_like(state)
+    benchmark(plan.apply_into, state, output)
+    expected = plan.apply(state)
+    _record_plan_metadata(
+        benchmark,
+        plan,
+        state,
+        allocation_mode="caller_owned_output",
+        max_abs_error=float(np.max(np.abs(output - expected))),
+    )
+
+
+def test_product_fermion_boson_apply_into(benchmark: BenchmarkFixture) -> None:
+    """Measure the native combinatorial Fermion x Boson Product executor."""
+    space = tcp.OperatorSpace(fermions=8, bosons=2)
+    charge = tcp.AdditiveCharge(
+        space, fermions={index: 1 for index in range(space.fermions)}
+    )
+    balance = tcp.AdditiveCharge(
+        space,
+        fermions={index: (1 if index < 4 else -1) for index in range(space.fermions)},
+    )
+    displacement = space.boson.create(0) + space.boson.annihilate(0)
+    displacement = displacement + space.boson.create(1) + space.boson.annihilate(1)
+    operator = space.fermion.create(0) * space.fermion.annihilate(1)
+    operator = operator + space.fermion.create(1) * space.fermion.annihilate(0)
+    operator = (
+        operator
+        + 0.2 * (space.fermion.create(0) * space.fermion.annihilate(0)) * displacement
+    )
+    sector = tcp.ChargeSector(((charge, 4), (balance, 0)), boson_cutoffs={0: 3, 1: 3})
+    plan = operator.restrict_charge(sector).mvp_plan()
+    assert plan.execution_family == "product"
     state = np.arange(plan.dimension, dtype=np.complex128)
     output = np.empty_like(state)
     benchmark(plan.apply_into, state, output)
@@ -282,8 +326,8 @@ def test_structured_storage_apply(benchmark: BenchmarkFixture, storage: str) -> 
     assert plan.estimated_bytes > 0
 
 
-def test_generic_charge_aggregation_steady_apply(benchmark: BenchmarkFixture) -> None:
-    # The boson spectator deliberately keeps this off the packed U1 shortcut.
+def test_product_charge_aggregation_steady_apply(benchmark: BenchmarkFixture) -> None:
+    # The boson spectator exercises the independent qubit-factor path.
     # XX and YY must still cancel their nonconserving contributions before the
     # restricted transition graph is accepted.
     space = tcp.OperatorSpace(bosons=1, qubits=10)
@@ -295,7 +339,7 @@ def test_generic_charge_aggregation_steady_apply(benchmark: BenchmarkFixture) ->
     operator = space.qubit.x(0) * space.qubit.x(1) + space.qubit.y(0) * space.qubit.y(1)
     restricted = operator.restrict_charge(number.sector(5, boson_cutoffs={0: 0}))
     plan = restricted.mvp_plan()
-    assert plan.strategy == "term_direct"
+    assert plan.execution_family == "product"
     state = np.arange(plan.dimension, dtype=np.complex128)
     result = benchmark(plan.apply, state)
     _record_plan_metadata(
@@ -308,7 +352,7 @@ def test_generic_charge_aggregation_steady_apply(benchmark: BenchmarkFixture) ->
     assert result.shape == state.shape
 
 
-def test_generic_charge_prepared_layout_apply_into(
+def test_product_charge_prepared_layout_apply_into(
     benchmark: BenchmarkFixture,
 ) -> None:
     # Keep the sector small while using enough canonical descriptors to make
@@ -330,7 +374,7 @@ def test_generic_charge_prepared_layout_apply_into(
         operator = term if operator is None else operator + term
     restricted = operator.restrict_charge(number.sector(3, boson_cutoffs={0: 0}))
     plan = restricted.mvp_plan()
-    assert plan.strategy == "term_direct"
+    assert plan.execution_family == "product"
     state = np.linspace(-0.5, 0.75, plan.dimension).astype(np.complex128)
     output = np.empty_like(state)
     benchmark(plan.apply_into, state, output)
@@ -352,7 +396,7 @@ def test_generic_charge_prepared_layout_apply_into(
 
 def test_generic_charge_eager_construction(benchmark: BenchmarkFixture) -> None:
     plan = benchmark(lambda: _hubbard_restricted(1, 4).mvp_plan(storage="eager"))
-    assert plan.strategy == "destination_major_csr"
+    assert plan.retained_format == "csr"
     assert plan.transition_count > 0
 
 
@@ -381,7 +425,7 @@ def test_generic_charge_eager_steady_apply(benchmark: BenchmarkFixture) -> None:
         allocation_mode="one_owned_output",
         max_abs_error=float(np.max(np.abs(result - plan.apply(state)))),
     )
-    assert plan.strategy == "destination_major_csr"
+    assert plan.retained_format == "csr"
     assert plan.transition_count > 0
 
 

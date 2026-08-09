@@ -116,9 +116,37 @@ Motivation: discover generalized Pauli/Weyl symmetries and reduce uniform-qudit 
 
 Current design: prime local dimension permits symplectic linear algebra over a finite field. Composite dimensions such as `d=4` or `d=6` require module methods over `Z_d`, potentially Smith normal form, and cannot reuse prime-field Gaussian elimination unchanged.
 
-Reason for deferral: Phase 7.5 additive charges intentionally exclude charged qudit axes, and the current Weyl API supports both prime and composite dimensions. A partial implementation that silently treats every `Z_d` as a field would be incorrect.
+Reason for deferral: Phase 10.5 promotes canonical spin-z additive charge on Qudit axes but does not implement generalized Weyl/stabilizer symmetry discovery. The current Weyl API supports both prime and composite dimensions, and a partial implementation that silently treats every `Z_d` as a field would be incorrect.
 
 Promotion criteria: a target qudit workload, a decision on prime-only versus general composite support, a frozen stabilizer/sector convention, and independent small-dimension references.
+
+### Arbitrary diagonal additive charges on qudit axes
+
+Status: `deferred`; canonical spin-z charge was promoted to Phase 10.5.
+
+Motivation: extend the canonical Qudit spin-z charge with user-defined exact integer charge values for every local level. This would support occupation-like, model-specific, or otherwise non-spin spectra without requiring generalized Weyl/stabilizer symmetry discovery.
+
+Current design direction: a future API may accept explicit per-level metadata such as `qudits={site: (q_0, q_1, ..., q_(d-1))}` with exactly one integer per local basis level. A Weyl `X^a` shift then has the source-dependent charge change `q_((m+a) mod d) - q_m`; conservation and transition compilation must use the exact local table rather than assume one constant delta. This API is deliberately separate from Phase 10.5's concise `qudits={site: integer_weight}` canonical spin-z contract.
+
+Resolved boundary: Phase 10.5 defines `|0>` as highest spin-z, uses the smallest exact integer normalization, and expands `AdditiveCharge.as_operator()` through Weyl `Z` powers. Those decisions do not imply that arbitrary per-level tables differing by a constant offset are equivalent or canonicalized.
+
+Open questions: whether table offsets are semantic or canonicalized, whether heterogeneous local Qudit dimensions should be introduced at the same time, how arbitrary spectra participate in public charge-homogeneous decomposition, and whether a general `charge_deltas` API is justified.
+
+Promotion criteria: a concrete workload that cannot use canonical spin-z; owner approval of table and offset semantics; flat native transport; independent dense conservation and rank/unrank references; and release evidence that the added generality does not force ordinary canonical spin-z sectors through Generic execution.
+
+### Fast Block-factorized charge sectors
+
+Status: `deferred` from Phase 10.5 by owner decision D11.
+
+Motivation: accelerate finite sectors whose conserved additive charge couples otherwise separable factors and whose Hamiltonian transfers charge between them. Representative applications include Jaynes–Cummings and Tavis–Cummings excitation exchange, exciton–photon polaritons and cavity QED, atom–molecule Feshbach conversion with charges such as `N_f + 2 N_b`, and exchange terms preserving only a combined subsystem spin projection.
+
+Current design direction: represent a coupled sector as a public-order direct sum of Product blocks. Retain bounded prefix offsets over reachable outer-factor states or another bounded factor-level index, reuse the existing FermionMask, BosonLadder, PauliMask, and WeylShift actions inside each block, and compile charge-preserving terms as direct source-block to destination-block schedules. Do not materialize or apply a permutation with one entry per selected product state, and do not introduce model-name dispatch.
+
+Reason for deferral: the current Holstein performance target and ordinary mixed Hamiltonians with independent species charges are Product cases. A complete Block fast path additionally requires cross-block rank/unrank, public mixed-radix ordering, inter-block lazy gather, eager construction, simultaneous constraints, leakage semantics, and source-level-dependent qudit spin-z changes. The existing Generic sector path preserves correctness for these cases while optimized Block execution is absent.
+
+Dependencies: stable Cartesian and Product kernels, shared domain-action lowering, a frozen public-order segmented index, direct-sum dimension and memory accounting, and benchmark workloads whose combined sector materially reduces a real calculation.
+
+Promotion criteria: at least one concrete high-frequency cross-factor conversion workload; owner approval of the exact block index and supported simultaneous-constraint envelope; dense and Generic differentials for within-block and cross-block terms; deterministic public-order rank/unrank tests; lazy, eager, construction-memory, and threading benchmarks; and a faster result than every directly equivalent optimized QuSpin path under matched semantics. If no fair QuSpin representation exists, promotion requires documented internal before/after, throughput, memory, and scaling evidence instead.
 
 ### Graph-dependent fermion-to-qubit mappings
 

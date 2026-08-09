@@ -1481,7 +1481,38 @@ class _StructuredOperator:
             raise ValueError(
                 "target must be one of 'dense', 'coo', 'csr', 'native_mvp', or 'backend_mvp'"
             )
-        mapped = self.map_fermions(mapping, max_bytes=max_bytes)
+        use_raw_native_fermions = (
+            target == "native_mvp"
+            and mapping == "jordan_wigner"
+            and isinstance(self._native_handle, _native.NativeHybridOperatorHandle)
+            and bool(self._native_handle.has_raw_fermions())
+            and not bool(self._native_handle.has_mapped_fermions())
+        )
+        mapped = (
+            self
+            if use_raw_native_fermions
+            else self.map_fermions(mapping, max_bytes=max_bytes)
+        )
+        if (
+            target != "backend_mvp"
+            and isinstance(mapped, _StructuredOperator)
+            and all(axis.domain == "qubit" for axis in mapped.space._axes)
+            and isinstance(mapped._native_handle, _native.NativeHybridOperatorHandle)
+        ):
+            packed = PauliOperator._from_native_handle(
+                mapped._native_handle.to_pauli(
+                    _pauli_axis_descriptor(mapped.space),
+                    _effective_max_bytes(max_bytes),
+                )
+            )
+            packed_result = packed.compile(target, storage=storage, max_bytes=max_bytes)
+            if isinstance(packed_result, (NativeMVPPlan, BackendMVPPlan)):
+                return _with_plan_metadata(
+                    packed_result,
+                    mapping=(_mapping_name(mapping) if self.space.fermions else None),
+                    source_term_count=self.term_count,
+                )
+            return packed_result
         if isinstance(mapped, PauliOperator):
             result: CompileResult = mapped.compile(
                 target, storage=storage, max_bytes=max_bytes
@@ -1580,7 +1611,6 @@ def _with_plan_metadata(
         return NativeMVPPlan(
             plan.nqubits,
             plan.term_count,
-            plan.strategy,
             plan._native_plan,
             storage=plan.storage,
             local_dimensions=plan.local_dimensions,
@@ -1596,6 +1626,12 @@ def _with_plan_metadata(
             boson_boundary=plan.boson_boundary,
             qudit_dimension=plan.qudit_dimension,
             weyl_convention=plan.weyl_convention,
+            execution_family=plan.execution_family,
+            retained_format=plan.retained_format,
+            schedule_count=plan.schedule_count,
+            estimated_retained_bytes=plan.estimated_retained_bytes,
+            estimated_construction_peak_bytes=plan.estimated_construction_peak_bytes,
+            transition_count=plan.transition_count,
             _factory_token=_PLAN_FACTORY_TOKEN,
         )
     return replace(
@@ -2649,10 +2685,20 @@ class FermionOperator(_StructuredOperator):
         mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
-        """Map to qubits and compile to a dense, sparse, or MVP target."""
-        result: CompileResult = self.map_fermions(mapping, max_bytes=max_bytes).compile(
-            target, storage=storage, max_bytes=max_bytes
-        )
+        """Compile a Fermion operator, keeping raw masks for native MVP."""
+        if target == "native_mvp" and mapping == "jordan_wigner":
+            result = _compile_finite(
+                self,
+                target,
+                {},
+                max_bytes,
+                storage=storage,
+                mapping="jordan_wigner",
+            )
+        else:
+            result = self.map_fermions(mapping, max_bytes=max_bytes).compile(
+                target, storage=storage, max_bytes=max_bytes
+            )
         if isinstance(result, (NativeMVPPlan, BackendMVPPlan)):
             return _with_plan_metadata(
                 result,
@@ -3206,23 +3252,63 @@ def _compile_finite(
         )
     if target == "native_mvp":
         native_plan = _native_structured_mvp_plan(
-            operator, dimensions, cutoffs, max_bytes
+            operator, dimensions, cutoffs, max_bytes, storage
         )
         qudit_dimension = operator.space.qudits[0] if operator.space.qudits else None
+        basis_ordering = (
+            "qubit0_msb_matrix"
+            if operator.space.fermions
+            and not operator.space.bosons
+            and not operator.space.qubits
+            and not operator.space.qudits
+            else MIXED_RADIX_BASIS_ORDERING
+        )
+        execution_family = str(getattr(native_plan, "execution_family", "cartesian"))
+        retained_format = str(
+            getattr(
+                native_plan,
+                "retained_format",
+                "compiled_actions" if storage == "lazy" else "csr",
+            )
+        )
+        schedule_count = int(
+            getattr(native_plan, "schedule_count", operator.term_count)
+        )
+        estimated_retained_bytes = int(native_plan.estimated_bytes)
+        estimated_construction_peak_bytes = int(
+            getattr(native_plan, "estimated_construction_peak_bytes", 0)
+        )
+        native_transition_count = getattr(native_plan, "transition_count", None)
+        transition_count = (
+            int(native_transition_count)
+            if native_transition_count is not None
+            else None
+        )
         return NativeMVPPlan(
-            0,
+            (
+                operator.space.fermions
+                if not operator.space.bosons
+                and not operator.space.qubits
+                and not operator.space.qudits
+                else 0
+            ),
             operator.term_count,
-            "structured_mvp_native",
             native_plan,
             storage=storage,
             local_dimensions=dimensions,
-            basis_ordering=MIXED_RADIX_BASIS_ORDERING,
+            basis_ordering=basis_ordering,
             estimated_bytes=int(native_plan.estimated_bytes),
             mapping=mapping,
             boson_cutoffs=tuple(sorted(cutoffs.items())),
             boson_boundary="projected_fock" if cutoffs else None,
             qudit_dimension=qudit_dimension,
             weyl_convention="X^a Z^b" if qudit_dimension is not None else None,
+            execution_family=execution_family,
+            retained_format=retained_format,
+            schedule_count=schedule_count,
+            estimated_retained_bytes=estimated_retained_bytes,
+            estimated_construction_peak_bytes=estimated_construction_peak_bytes,
+            transition_count=transition_count,
             _factory_token=_PLAN_FACTORY_TOKEN,
         )
     if target == "dense":
@@ -3242,6 +3328,11 @@ def _compile_finite(
         raise NotImplementedError(
             "backend_mvp is available only for Pauli and uniform-dimension Weyl plans"
         )
+    if target == "csr":
+        native_dimension, indptr, columns, values = _native_structured_csr(
+            operator, dimensions, cutoffs, max_bytes
+        )
+        return CSRMatrix(indptr, columns, values, (native_dimension, native_dimension))
     native_dimension, rows, columns, values = _native_structured_sparse(
         operator, dimensions, cutoffs, max_bytes
     )
@@ -3252,17 +3343,6 @@ def _compile_finite(
             "COO structured matrix",
         )
         return COOMatrix(rows, columns, values, (dimension, dimension))
-    if target == "csr":
-        indptr = np.zeros(dimension + 1, dtype=np.uint64)
-        for row in rows:
-            indptr[int(row) + 1] += 1
-        np.cumsum(indptr, out=indptr)
-        _check_allocation(
-            int(indptr.nbytes + columns.nbytes + values.nbytes),
-            max_bytes,
-            "CSR structured matrix",
-        )
-        return CSRMatrix(indptr, columns, values, (dimension, dimension))
     raise AssertionError(target)
 
 
@@ -3354,16 +3434,46 @@ def _native_structured_sparse(
     )
 
 
+def _native_structured_csr(
+    operator: _StructuredOperator,
+    dimensions: Tuple[int, ...],
+    cutoffs: Mapping[int, int],
+    max_bytes: Optional[int],
+) -> Tuple[int, np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    del cutoffs
+    compile_handle = _compile_native_hybrid_handle(operator)
+    if compile_handle is None:
+        raise RuntimeError("structured operators require a native hybrid handle")
+    native_dimension, indptr, columns, values = _native.structured_csr_handle(
+        compile_handle,
+        list(dimensions),
+        _structured_axis_descriptor(operator.space),
+        _effective_max_bytes(max_bytes),
+    )
+    return (
+        native_dimension,
+        np.asarray(indptr, dtype=np.uint64),
+        np.asarray(columns, dtype=np.uint64),
+        np.asarray(values, dtype=np.complex128),
+    )
+
+
 def _native_structured_mvp_plan(
     operator: _StructuredOperator,
     dimensions: Tuple[int, ...],
     cutoffs: Mapping[int, int],
     max_bytes: Optional[int],
+    storage: Literal["lazy", "eager"],
 ) -> Any:
     compile_handle = _compile_native_hybrid_handle(operator)
     if compile_handle is None:
         raise RuntimeError("structured operators require a native hybrid handle")
-    return _native.structured_sparse_plan_handle(
+    plan_factory = (
+        _native.structured_eager_plan_handle
+        if storage == "eager"
+        else _native.structured_sparse_plan_handle
+    )
+    return plan_factory(
         compile_handle,
         list(dimensions),
         _structured_axis_descriptor(operator.space),

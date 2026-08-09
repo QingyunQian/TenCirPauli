@@ -42,11 +42,12 @@ use propagation::{
 };
 use spps::{pauli_spps_engine_tape, NativeSPPSEngine};
 use structured::{
-    structured_boson_canonicalize, structured_dense_handle, structured_fermion_canonicalize,
+    structured_boson_canonicalize, structured_csr_handle, structured_dense_handle,
+    structured_eager_plan_handle, structured_fermion_canonicalize,
     structured_fermion_integral_blocks, structured_fermion_integrals,
     structured_hybrid_canonicalize, structured_hybrid_jordan_wigner, structured_sparse_handle,
     structured_sparse_plan_handle, NativeBosonOperatorHandle, NativeFermionOperatorHandle,
-    NativeHybridOperatorHandle, StructuredMvpPlan,
+    NativeHybridOperatorHandle, StructuredEagerMvpPlan, StructuredMvpPlan,
 };
 use symmetry::{
     pauli_find_z2_symmetries_handle, pauli_restrict_u1_handle, pauli_restrict_u1_lazy_handle,
@@ -62,6 +63,7 @@ use word::{
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<StructuredMvpPlan>()?;
+    module.add_class::<StructuredEagerMvpPlan>()?;
     module.add_class::<NativeFermionOperatorHandle>()?;
     module.add_class::<NativeBosonOperatorHandle>()?;
     module.add_class::<NativeHybridOperatorHandle>()?;
@@ -126,8 +128,10 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     module.add_function(wrap_pyfunction!(pauli_spps_engine_tape, module)?)?;
     module.add_function(wrap_pyfunction!(structured_dense_handle, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_csr_handle, module)?)?;
     module.add_function(wrap_pyfunction!(structured_sparse_handle, module)?)?;
     module.add_function(wrap_pyfunction!(structured_sparse_plan_handle, module)?)?;
+    module.add_function(wrap_pyfunction!(structured_eager_plan_handle, module)?)?;
     module.add_function(wrap_pyfunction!(structured_fermion_canonicalize, module)?)?;
     module.add_function(wrap_pyfunction!(structured_fermion_integrals, module)?)?;
     module.add_function(wrap_pyfunction!(

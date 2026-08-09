@@ -72,7 +72,8 @@ def test_reusable_native_mvp_plan_construction(benchmark: BenchmarkFixture) -> N
     result = benchmark(operator.native_mvp_plan)
     assert result.nqubits == expected.nqubits
     assert result.term_count == expected.term_count
-    assert result.strategy == expected.strategy
+    assert result.execution_family == expected.execution_family
+    assert result.retained_format == expected.retained_format
 
 
 def test_unique_coo_target(benchmark: BenchmarkFixture) -> None:

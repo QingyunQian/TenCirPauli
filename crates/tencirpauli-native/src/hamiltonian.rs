@@ -1,7 +1,7 @@
 use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadwriteArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use tencir_pauli_core::{MvpPlan, MvpStrategy};
+use tencir_pauli_core::MvpPlan;
 
 use crate::convert::{map_error, numpy_complex_array};
 use crate::operator::NativePauliOperatorHandle;
@@ -147,11 +147,14 @@ impl NativeMvpPlan {
     }
 
     #[getter]
-    fn strategy(&self) -> &'static str {
-        match self.plan.strategy() {
-            MvpStrategy::XMaskDiagonal => "x_mask_diagonal",
-            MvpStrategy::TermDirect => "term_direct",
-        }
+    fn transition_count(&self) -> Option<usize> {
+        self.plan.transition_count()
+    }
+
+    /// Identify the concrete packed semantic executor behind this handle.
+    #[getter]
+    fn native_variant(&self) -> &'static str {
+        "pauli"
     }
 
     fn apply<'py>(

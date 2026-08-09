@@ -160,6 +160,23 @@ impl MvpPlan {
         self.strategy
     }
 
+    /// Return the exact number of nonzero transitions for a complete eager
+    /// diagonal graph. Lazy term plans deliberately return `None`.
+    pub fn transition_count(&self) -> Option<usize> {
+        self.diagonal_groups.as_ref().map(|groups| {
+            groups
+                .iter()
+                .map(|group| {
+                    group
+                        .diagonal
+                        .iter()
+                        .filter(|value| value.re != 0.0 || value.im != 0.0)
+                        .count()
+                })
+                .sum()
+        })
+    }
+
     /// Apply the plan without materializing a matrix.
     pub fn apply(
         &self,

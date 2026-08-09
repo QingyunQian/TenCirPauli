@@ -487,7 +487,12 @@ class U1MvpPlan:
     target: str
     _native_plan: Any
     storage: str
-    strategy: str
+    execution_family: str
+    retained_format: str
+    source_term_count: int
+    schedule_count: int
+    estimated_retained_bytes: int
+    estimated_construction_peak_bytes: int
 
     def __init__(
         self,
@@ -528,9 +533,17 @@ class U1MvpPlan:
         object.__setattr__(self, "target", "native_mvp")
         object.__setattr__(self, "_native_plan", native_plan)
         object.__setattr__(self, "storage", storage)
+        retained_bytes = int(self.estimated_bytes)
+        object.__setattr__(self, "execution_family", "product")
         object.__setattr__(
-            self, "strategy", "u1_lazy" if storage == "lazy" else "u1_destination_major"
+            self,
+            "retained_format",
+            "compiled_actions" if storage == "lazy" else "csr",
         )
+        object.__setattr__(self, "source_term_count", int(term_count))
+        object.__setattr__(self, "schedule_count", int(term_count))
+        object.__setattr__(self, "estimated_retained_bytes", retained_bytes)
+        object.__setattr__(self, "estimated_construction_peak_bytes", retained_bytes)
 
     def apply(
         self,

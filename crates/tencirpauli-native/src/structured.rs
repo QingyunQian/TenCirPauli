@@ -15,9 +15,12 @@ use tencir_pauli_core::{
     canonicalize_hybrid_terms, embed_hybrid_terms, fermion_to_majorana_terms, hash_complex,
     hybrid_terms_conserve_charge, jordan_wigner_hybrid_terms, jordan_wigner_hybrid_terms_trusted,
     jordan_wigner_terms, multiply_boson_terms, multiply_fermion_terms, multiply_hybrid_terms,
-    structured_dense_matrix, structured_mvp_plan, structured_sparse_matrix, BosonCanonicalResult,
-    Complex64, FermionBatch, FermionCanonicalResult, FermionIntegralSource, FermionSpinBlocks,
-    FermionSpinOrdering, HybridBatch, HybridLayout, HybridRawBatch,
+    structured_dense_matrix_with_fermion_positions,
+    structured_eager_mvp_plan_with_fermion_positions, structured_mvp_plan_with_fermion_positions,
+    structured_sparse_matrix_with_fermion_positions, BosonCanonicalResult, Complex64, FermionBatch,
+    FermionCanonicalResult, FermionIntegralSource, FermionSpinBlocks, FermionSpinOrdering,
+    HybridBatch, HybridLayout, HybridRawBatch,
+    StructuredEagerMvpPlan as CoreStructuredEagerMvpPlan,
     StructuredMvpPlan as CoreStructuredMvpPlan, StructuredOperation,
 };
 
@@ -37,6 +40,17 @@ type NumpyBosonOutput<'py> = (
     usize,
     Bound<'py, PyArray1<u32>>,
     Bound<'py, PyArray1<usize>>,
+    Bound<'py, PyArray1<NumpyComplex128>>,
+);
+type NumpyStructuredCsrOutput<'py> = (
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<NumpyComplex128>>,
+);
+type NumpyStructuredCsrWithDimension<'py> = (
+    usize,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
     Bound<'py, PyArray1<NumpyComplex128>>,
 );
 type HybridInput = (
@@ -74,6 +88,7 @@ type NumpyDirectWeylFlat<'py> = (
     Bound<'py, PyArray1<u32>>,
     Bound<'py, PyArray1<NumpyComplex128>>,
 );
+type FermionMaskPhaseProfileOutput = Option<(usize, usize, usize, usize, u128, u128, u128, u128)>;
 type HybridFlatParts = (
     Vec<u8>,
     Vec<u32>,
@@ -1584,6 +1599,7 @@ impl NativeHybridOperatorHandle {
         fermion_weights: Vec<f64>,
         boson_weights: Vec<f64>,
         qubit_levels: Vec<(f64, f64)>,
+        qudit_weights: Vec<f64>,
         max_bytes: usize,
     ) -> PyResult<(bool, usize)> {
         py.allow_threads(|| {
@@ -1593,6 +1609,7 @@ impl NativeHybridOperatorHandle {
                 &fermion_weights,
                 &boson_weights,
                 &qubit_levels,
+                &qudit_weights,
                 max_bytes as u128,
             )
         })
@@ -1605,6 +1622,7 @@ impl NativeHybridOperatorHandle {
         fermion_weights: Vec<f64>,
         boson_weights: Vec<f64>,
         qubit_levels: Vec<(f64, f64)>,
+        qudit_weights: Vec<f64>,
     ) -> PyResult<bool> {
         py.allow_threads(|| {
             hybrid_terms_conserve_charge(
@@ -1613,6 +1631,7 @@ impl NativeHybridOperatorHandle {
                 &fermion_weights,
                 &boson_weights,
                 &qubit_levels,
+                &qudit_weights,
             )
         })
         .map_err(map_error)
@@ -1759,6 +1778,107 @@ pub(crate) struct StructuredMvpPlan {
     plan: CoreStructuredMvpPlan,
 }
 
+#[pyclass(module = "tencirpauli._native")]
+pub(crate) struct StructuredEagerMvpPlan {
+    plan: CoreStructuredEagerMvpPlan,
+}
+
+#[pymethods]
+impl StructuredEagerMvpPlan {
+    #[getter]
+    fn dimension(&self) -> usize {
+        self.plan.dimension()
+    }
+
+    #[getter]
+    fn estimated_bytes(&self) -> u128 {
+        self.plan.estimated_bytes()
+    }
+
+    #[getter]
+    fn estimated_construction_peak_bytes(&self) -> u128 {
+        self.plan.estimated_construction_peak_bytes()
+    }
+
+    #[getter]
+    fn source_term_count(&self) -> usize {
+        self.plan.source_term_count()
+    }
+
+    #[getter]
+    fn schedule_count(&self) -> usize {
+        self.plan.schedule_count()
+    }
+
+    #[getter]
+    fn execution_family(&self) -> &'static str {
+        self.plan.execution_family()
+    }
+
+    #[getter]
+    fn native_variant(&self) -> &'static str {
+        self.plan.native_variant()
+    }
+
+    #[getter]
+    fn retained_format(&self) -> &'static str {
+        self.plan.retained_format()
+    }
+
+    #[getter]
+    fn transition_count(&self) -> usize {
+        self.plan.transition_count()
+    }
+
+    fn csr<'py>(&self, py: Python<'py>) -> NumpyStructuredCsrOutput<'py> {
+        let (indptr, columns, values) = self.plan.csr();
+        (
+            PyArray1::from_vec(py, indptr),
+            PyArray1::from_vec(py, columns),
+            PyArray1::from_vec(py, values),
+        )
+    }
+
+    fn apply<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, NumpyComplex128>,
+        max_bytes: u128,
+    ) -> PyResult<Bound<'py, PyArray1<NumpyComplex128>>> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        if state_slice.len() != self.dimension() {
+            return Err(PyValueError::new_err(format!(
+                "state must have shape ({},), got ({},)",
+                self.dimension(),
+                state_slice.len()
+            )));
+        }
+        let output = py
+            .allow_threads(|| self.plan.apply(state_slice, max_bytes))
+            .map_err(map_error)?;
+        Ok(PyArray1::from_vec(py, output))
+    }
+
+    fn apply_into<'py>(
+        &self,
+        py: Python<'py>,
+        state: PyReadonlyArray1<'py, NumpyComplex128>,
+        mut output: PyReadwriteArray1<'py, NumpyComplex128>,
+        max_bytes: u128,
+    ) -> PyResult<()> {
+        let state_slice = state
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("state must be C-contiguous"))?;
+        let output_slice = output
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("output must be C-contiguous"))?;
+        py.allow_threads(|| self.plan.apply_into(state_slice, output_slice, max_bytes))
+            .map_err(map_error)
+    }
+}
+
 #[pymethods]
 impl StructuredMvpPlan {
     #[getter]
@@ -1769,6 +1889,75 @@ impl StructuredMvpPlan {
     #[getter]
     fn estimated_bytes(&self) -> u128 {
         self.plan.estimated_bytes()
+    }
+
+    #[getter]
+    fn estimated_construction_peak_bytes(&self) -> u128 {
+        self.plan.estimated_construction_peak_bytes()
+    }
+
+    #[getter]
+    fn source_term_count(&self) -> usize {
+        self.plan.source_term_count()
+    }
+
+    #[getter]
+    fn schedule_count(&self) -> usize {
+        self.plan.schedule_count()
+    }
+
+    #[getter]
+    fn execution_family(&self) -> &'static str {
+        self.plan.execution_family()
+    }
+
+    #[getter]
+    fn native_variant(&self) -> &'static str {
+        self.plan.native_variant()
+    }
+
+    #[getter]
+    fn retained_format(&self) -> &'static str {
+        self.plan.retained_format()
+    }
+
+    #[getter]
+    fn transition_count(&self) -> Option<usize> {
+        self.plan.transition_count()
+    }
+
+    fn debug_counters(&self) -> (usize, usize, usize, usize) {
+        self.plan.debug_counters()
+    }
+
+    fn debug_metadata(&self) -> (usize, usize, usize) {
+        self.plan.debug_metadata()
+    }
+
+    fn debug_fermion_mask_phase_profile(
+        &self,
+        py: Python<'_>,
+        samples: usize,
+    ) -> PyResult<FermionMaskPhaseProfileOutput> {
+        py.allow_threads(|| {
+            self.plan
+                .fermion_mask_phase_profile(samples)
+                .map(|profile| {
+                    profile.map(|profile| {
+                        (
+                            profile.descriptor_count,
+                            profile.sample_count,
+                            profile.packed_source_unit_count,
+                            profile.schedule_member_evaluations,
+                            profile.packed_extraction_nanos,
+                            profile.parity_nanos,
+                            profile.index_update_nanos,
+                            profile.input_output_nanos,
+                        )
+                    })
+                })
+        })
+        .map_err(map_error)
     }
 
     fn apply<'py>(
@@ -2057,14 +2246,37 @@ fn lower_hybrid_operations(
     let count = result.coefficients.len();
     let mut operations = Vec::with_capacity(count);
     for term_index in 0..count {
-        if result.fermion_present[term_index] {
+        if result.fermion_present[term_index] && result.mapped_present[term_index] {
             return Err(tencir_pauli_core::PauliError::InvalidSector {
-                context: "finite compilation requires mapped fermion factors",
+                context: "finite compilation cannot mix raw and mapped fermion factors",
             });
         }
         let boson_blocks = &result.boson_blocks[term_index];
         let qudit_triples = &result.qudit_triples[term_index];
         let mut term_operations = Vec::new();
+        if result.fermion_present[term_index] {
+            let append_fermion = |mode: u32, create: u32, output: &mut Vec<StructuredOperation>| {
+                let position = axes
+                    .iter()
+                    .position(|&(domain, index)| domain == 0 && index == mode as usize)
+                    .ok_or(tencir_pauli_core::PauliError::InvalidIndex {
+                        context: "raw fermion compilation axis",
+                    })?;
+                output.push(StructuredOperation {
+                    axis: position,
+                    kind: 3,
+                    p: mode,
+                    q: create,
+                });
+                Ok::<(), tencir_pauli_core::PauliError>(())
+            };
+            for &mode in result.fermion_annihilation[term_index].iter().rev() {
+                append_fermion(mode, 0, &mut term_operations)?;
+            }
+            for &mode in result.fermion_creation[term_index].iter().rev() {
+                append_fermion(mode, 1, &mut term_operations)?;
+            }
+        }
         for (position, &(domain, index)) in axes.iter().enumerate() {
             match domain {
                 0 => {
@@ -2140,6 +2352,36 @@ fn lower_hybrid_operations(
     Ok(operations)
 }
 
+fn fermion_axis_positions(
+    n_modes: usize,
+    axes: &[(u8, usize)],
+) -> Result<Vec<usize>, tencir_pauli_core::PauliError> {
+    let mut positions = vec![usize::MAX; n_modes];
+    for (position, &(domain, index)) in axes.iter().enumerate() {
+        if domain == 0 {
+            let slot =
+                positions
+                    .get_mut(index)
+                    .ok_or(tencir_pauli_core::PauliError::InvalidIndex {
+                        context: "fermion compilation axis",
+                    })?;
+            if *slot != usize::MAX {
+                return Err(tencir_pauli_core::PauliError::InvalidIndex {
+                    context: "duplicate fermion compilation axis",
+                });
+            }
+            *slot = position;
+        }
+    }
+    if positions.contains(&usize::MAX) {
+        return Err(tencir_pauli_core::PauliError::InvalidStructureLength {
+            expected: n_modes,
+            actual: axes.iter().filter(|&&(domain, _)| domain == 0).count(),
+        });
+    }
+    Ok(positions)
+}
+
 #[pyfunction]
 pub(crate) fn structured_dense_handle<'py>(
     py: Python<'py>,
@@ -2152,7 +2394,14 @@ pub(crate) fn structured_dense_handle<'py>(
         .allow_threads(|| {
             let operations = lower_hybrid_operations(&handle.result, &axes)?;
             let coefficients = handle.result.coefficients.clone();
-            structured_dense_matrix(&local_dimensions, &operations, &coefficients, max_bytes)
+            let positions = fermion_axis_positions(handle.layout.n_modes, &axes)?;
+            structured_dense_matrix_with_fermion_positions(
+                &local_dimensions,
+                &operations,
+                &coefficients,
+                &positions,
+                max_bytes,
+            )
         })
         .map_err(map_error)?;
     Ok((dimension, PyArray1::from_vec(py, values)))
@@ -2170,7 +2419,14 @@ pub(crate) fn structured_sparse_handle<'py>(
         .allow_threads(|| {
             let operations = lower_hybrid_operations(&handle.result, &axes)?;
             let coefficients = handle.result.coefficients.clone();
-            structured_sparse_matrix(&local_dimensions, &operations, &coefficients, max_bytes)
+            let positions = fermion_axis_positions(handle.layout.n_modes, &axes)?;
+            structured_sparse_matrix_with_fermion_positions(
+                &local_dimensions,
+                &operations,
+                &coefficients,
+                &positions,
+                max_bytes,
+            )
         })
         .map_err(map_error)?;
     Ok((
@@ -2178,6 +2434,41 @@ pub(crate) fn structured_sparse_handle<'py>(
         PyArray1::from_vec(py, result.rows),
         PyArray1::from_vec(py, result.columns),
         PyArray1::from_vec(py, result.values),
+    ))
+}
+
+/// Build and return the authoritative eager CSR arrays in one native call.
+///
+/// The Python facade uses this only for an explicit CSR target; COO remains a
+/// separate materialization because it necessarily needs row indices.
+#[pyfunction]
+pub(crate) fn structured_csr_handle<'py>(
+    py: Python<'py>,
+    handle: &NativeHybridOperatorHandle,
+    local_dimensions: Vec<usize>,
+    axes: Vec<(u8, usize)>,
+    max_bytes: u128,
+) -> PyResult<NumpyStructuredCsrWithDimension<'py>> {
+    let plan = py
+        .allow_threads(|| {
+            let operations = lower_hybrid_operations(&handle.result, &axes)?;
+            let coefficients = handle.result.coefficients.clone();
+            let positions = fermion_axis_positions(handle.layout.n_modes, &axes)?;
+            structured_eager_mvp_plan_with_fermion_positions(
+                &local_dimensions,
+                &operations,
+                &coefficients,
+                &positions,
+                max_bytes,
+            )
+        })
+        .map_err(map_error)?;
+    let (dimension, indptr, columns, values) = plan.into_csr();
+    Ok((
+        dimension,
+        PyArray1::from_vec(py, indptr),
+        PyArray1::from_vec(py, columns),
+        PyArray1::from_vec(py, values),
     ))
 }
 
@@ -2193,8 +2484,40 @@ pub(crate) fn structured_sparse_plan_handle(
         .allow_threads(|| {
             let operations = lower_hybrid_operations(&handle.result, &axes)?;
             let coefficients = handle.result.coefficients.clone();
-            structured_mvp_plan(local_dimensions, operations, coefficients, max_bytes)
+            let positions = fermion_axis_positions(handle.layout.n_modes, &axes)?;
+            structured_mvp_plan_with_fermion_positions(
+                local_dimensions,
+                operations,
+                coefficients,
+                &positions,
+                max_bytes,
+            )
         })
         .map_err(map_error)?;
     Ok(StructuredMvpPlan { plan })
+}
+
+#[pyfunction]
+pub(crate) fn structured_eager_plan_handle(
+    py: Python<'_>,
+    handle: &NativeHybridOperatorHandle,
+    local_dimensions: Vec<usize>,
+    axes: Vec<(u8, usize)>,
+    max_bytes: u128,
+) -> PyResult<StructuredEagerMvpPlan> {
+    let plan = py
+        .allow_threads(|| {
+            let operations = lower_hybrid_operations(&handle.result, &axes)?;
+            let coefficients = handle.result.coefficients.clone();
+            let positions = fermion_axis_positions(handle.layout.n_modes, &axes)?;
+            structured_eager_mvp_plan_with_fermion_positions(
+                &local_dimensions,
+                &operations,
+                &coefficients,
+                &positions,
+                max_bytes,
+            )
+        })
+        .map_err(map_error)?;
+    Ok(StructuredEagerMvpPlan { plan })
 }

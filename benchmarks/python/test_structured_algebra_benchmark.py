@@ -416,7 +416,8 @@ def test_structured_structured_mvp_construction(
     """Measure reusable native plan construction."""
     expected = operator.compile("native_mvp", boson_cutoffs=cutoffs)
     result = benchmark(operator.compile, "native_mvp", boson_cutoffs=cutoffs)
-    assert result.strategy == expected.strategy
+    assert result.execution_family == expected.execution_family
+    assert result.retained_format == expected.retained_format
     _record_metadata(
         benchmark,
         input_terms=operator.term_count,

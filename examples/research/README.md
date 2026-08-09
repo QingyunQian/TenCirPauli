@@ -10,3 +10,4 @@ Each study has its own directory. Keep the first version small: one executable s
 - [`syk_majorana/`](syk_majorana/): a quartic SYK ground-state calculation built from Majorana terms, with a reusable mapped native MVP plan and an independent QuSpin comparison.
 - [`lie_closure/`](lie_closure/): bounded Pauli-word and Pauli-sum Lie closure, dimension/rank reporting, Jacobi checks, and a pure-Python dictionary baseline.
 - [`fermion_mapping/`](fermion_mapping/): cross-environment correctness and timing comparison for Jordan–Wigner, parity, and Bravyi–Kitaev mappings against OpenFermion.
+- [`holstein/`](holstein/): a one-dimensional spinful Holstein electron–phonon Hamiltonian with native MVP/Lanczos execution and an optional QuSpin tensor-basis comparison.

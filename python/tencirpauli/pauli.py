@@ -962,7 +962,7 @@ class PauliOperator:
             raise RuntimeError("native MVP plan has incompatible term count")
         word_count = (self.nqubits + 63) // 64
         term_bytes = self.term_count * (word_count * 16 + 16)
-        if native_plan.strategy == "x_mask_diagonal":
+        if storage == "eager":
             x_mask_count = handle.distinct_x_mask_count()
             estimated_bytes = term_bytes + x_mask_count * (1 << self.nqubits) * 16
         else:
@@ -970,12 +970,23 @@ class PauliOperator:
         return NativeMVPPlan(
             self.nqubits,
             self.term_count,
-            native_plan.strategy,
             native_plan,
             storage=storage,
             local_dimensions=(2,) * self.nqubits,
             basis_ordering="qubit0_msb_matrix",
             estimated_bytes=estimated_bytes,
+            execution_family="pauli",
+            retained_format=(
+                "compact_graph" if storage == "eager" else "compiled_actions"
+            ),
+            schedule_count=self.term_count,
+            estimated_retained_bytes=estimated_bytes,
+            estimated_construction_peak_bytes=estimated_bytes,
+            transition_count=(
+                int(native_plan.transition_count)
+                if storage == "eager" and native_plan.transition_count is not None
+                else None
+            ),
             _factory_token=_PLAN_FACTORY_TOKEN,
         )
 

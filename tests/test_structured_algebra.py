@@ -290,6 +290,111 @@ def _weyl_matrix(dimension: int, a: int, b: int) -> np.ndarray:
     return result
 
 
+_MIXED_DOMAIN_SUBSETS = (
+    "FB",
+    "FQ",
+    "FD",
+    "BQ",
+    "BD",
+    "QD",
+    "FBQ",
+    "FBD",
+    "FQD",
+    "BQD",
+    "FBQD",
+)
+
+
+def _tensor_local(matrices: list[np.ndarray]) -> np.ndarray:
+    result = matrices[0]
+    for matrix in matrices[1:]:
+        result = np.kron(result, matrix)
+    return result
+
+
+@pytest.mark.parametrize("domains", _MIXED_DOMAIN_SUBSETS)
+def test_all_mixed_domain_subsets_match_independent_dense_reference(
+    domains: str,
+) -> None:
+    space = tcp.OperatorSpace(
+        fermions=1 if "F" in domains else 0,
+        bosons=1 if "B" in domains else 0,
+        qubits=1 if "Q" in domains else 0,
+        qudits=(3,) if "D" in domains else (),
+    )
+    local_operators: list[object] = []
+    local_matrices: list[np.ndarray] = []
+    for axis in space.axes:
+        if axis[0] == "fermion":
+            local_operators.append(
+                space.fermion.create(0) + (0.3 - 0.2j) * space.fermion.annihilate(0)
+            )
+            local_matrices.append(
+                _fermion_matrix(1, ((0, "create"),))
+                + (0.3 - 0.2j) * _fermion_matrix(1, ((0, "annihilate"),))
+            )
+        elif axis[0] == "boson":
+            local_operators.append(
+                space.boson.create(0) + (0.25 + 0.1j) * space.boson.annihilate(0)
+            )
+            local_matrices.append(
+                _boson_matrix(1, ((0, "create"),))
+                + (0.25 + 0.1j) * _boson_matrix(1, ((0, "annihilate"),))
+            )
+        elif axis[0] == "qubit":
+            local_operators.append(space.qubit.x(0) + (0.2 - 0.1j) * space.qubit.y(0))
+            local_matrices.append(
+                np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.complex128)
+                + (0.2 - 0.1j)
+                * np.array([[0.0, -1.0j], [1.0j, 0.0]], dtype=np.complex128)
+            )
+        else:
+            local_operators.append(space.qudit.weyl(0, 1, 1))
+            local_matrices.append(_weyl_matrix(3, 1, 1))
+
+    operator = local_operators[0]
+    expected = _tensor_local(
+        [
+            matrix if index == 0 else np.eye(matrix.shape[0], dtype=np.complex128)
+            for index, matrix in enumerate(local_matrices)
+        ]
+    )
+    for index, local_operator in enumerate(local_operators[1:], start=1):
+        operator = operator + local_operator
+        expected += _tensor_local(
+            [
+                (
+                    matrix
+                    if axis_index == index
+                    else np.eye(matrix.shape[0], dtype=np.complex128)
+                )
+                for axis_index, matrix in enumerate(local_matrices)
+            ]
+        )
+    cross = local_operators[0]
+    for local_operator in local_operators[1:]:
+        cross = cross * local_operator
+    operator = operator + (0.2 - 0.15j) * cross
+    expected += (0.2 - 0.15j) * _tensor_local(local_matrices)
+
+    cutoffs = {0: 1} if "B" in domains else None
+    compile_kwargs = {} if cutoffs is None else {"boson_cutoffs": cutoffs}
+    dense = operator.compile("dense", **compile_kwargs)
+    np.testing.assert_allclose(dense, expected, rtol=1e-12, atol=1e-12)
+    state = np.arange(dense.shape[0], dtype=np.complex128) + 0.3j
+    lazy = operator.compile("native_mvp", **compile_kwargs)
+    eager = operator.compile("native_mvp", storage="eager", **compile_kwargs)
+    assert lazy.execution_family == "cartesian"
+    assert eager.retained_format == "csr"
+    np.testing.assert_allclose(lazy.apply(state), expected @ state)
+    np.testing.assert_allclose(eager.apply(state), expected @ state)
+    counters = lazy._native_plan.debug_counters()
+    assert counters[0] > 0
+    if domains == "FB":
+        assert counters[1] > 0
+    assert counters[3] == 0
+
+
 def test_fermion_car_and_jordan_wigner_reference() -> None:
     annihilate = tcp.FermionOperator.from_terms(2, [(((0, "annihilate"),), 1.0)])
     create = tcp.FermionOperator.from_terms(2, [(((0, "create"),), 1.0)])
@@ -646,7 +751,8 @@ def test_adaptive_rust_sparse_targets_and_native_mvp() -> None:
     coo = operator.compile("coo", boson_cutoffs=cutoffs)
     csr = operator.compile("csr", boson_cutoffs=cutoffs)
     plan = operator.compile("native_mvp", boson_cutoffs=cutoffs)
-    assert plan.strategy == "structured_mvp_native"
+    assert plan.execution_family == "cartesian"
+    assert plan.retained_format == "compiled_actions"
     reconstructed_coo = np.zeros_like(dense)
     reconstructed_coo[coo.row, coo.column] = coo.data
     np.testing.assert_array_equal(reconstructed_coo, dense)
@@ -660,8 +766,8 @@ def test_adaptive_rust_sparse_targets_and_native_mvp() -> None:
 
     small = tcp.BosonOperator.from_terms(1, [(((0, "create"),), 1.0)])
     assert (
-        small.compile("native_mvp", boson_cutoffs={0: 1}).strategy
-        == "structured_mvp_native"
+        small.compile("native_mvp", boson_cutoffs={0: 1}).execution_family
+        == "cartesian"
     )
 
 
@@ -678,7 +784,8 @@ def test_adaptive_rust_sparse_weyl_targets_match_dense() -> None:
     np.testing.assert_allclose(dense, expected)
     coo = operator.compile("coo")
     plan = operator.compile("native_mvp")
-    assert plan.strategy == "structured_mvp_native"
+    assert plan.execution_family == "cartesian"
+    assert plan.retained_format == "compiled_actions"
     reconstructed = np.zeros_like(dense)
     reconstructed[coo.row, coo.column] = coo.data
     np.testing.assert_array_equal(reconstructed, dense)

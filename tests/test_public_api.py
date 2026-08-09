@@ -151,7 +151,7 @@ def test_mvp_plan_contract_and_factory_only_construction() -> None:
     assert plan.dimension == 2 and plan.term_count == 1
     assert plan.apply(np.asarray([1.0, 0.0]), max_bytes=None).shape == (2,)
     with pytest.raises(TypeError, match="factory"):
-        advanced.NativeMVPPlan(1, 1, "term_direct", object())
+        advanced.NativeMVPPlan(1, 1, object())
     assert "max_bytes" in inspect.signature(plan.apply).parameters
     assert (
         inspect.signature(plan.apply).parameters["max_bytes"].kind

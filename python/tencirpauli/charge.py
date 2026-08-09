@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import cmath
 import math
 import threading
 from typing import (
@@ -124,13 +125,40 @@ def _qubit_levels(
     return tuple(result)
 
 
+def _qudit_spectrum(dimension: int) -> Tuple[int, ...]:
+    """Return the exact integer-normalized local spin-z spectrum."""
+    if dimension < 3:
+        raise ValueError("qudit dimension must be at least 3")
+    if dimension % 2:
+        half = (dimension - 1) // 2
+        return tuple(half - level for level in range(dimension))
+    return tuple(dimension - 1 - 2 * level for level in range(dimension))
+
+
+def _qudit_vector(
+    values: Optional[Mapping[object, object]], count: int, name: str
+) -> Tuple[int, ...]:
+    result = [0] * count
+    if values is None:
+        return tuple(result)
+    if not isinstance(values, Mapping):
+        raise TypeError(f"{name} must be a mapping")
+    for key, value in values.items():
+        index = _exact_nonnegative(key, f"{name} index")
+        if index >= count:
+            raise ValueError(f"{name} index {index} is outside the operator space")
+        result[index] = _exact_int(value, f"{name} weight")
+    return tuple(result)
+
+
 class AdditiveCharge:
     """Immutable exact integer-valued diagonal charge on an ``OperatorSpace``.
 
     Fermion and boson weights contribute ``weight * occupation``. Qubit axes
-    use the explicit ``(level_0, level_1)`` pair, and ``offset`` is added to
-    every eigenvalue. Qudit axes are currently spectators. Charges are the
-    input to :meth:`sector` and :func:`analyze_charge`.
+    use the explicit ``(level_0, level_1)`` pair. Qudit weights multiply the
+    canonical integer-normalized spin-z spectrum. ``offset`` is added to
+    every eigenvalue. Charges are the input to :meth:`sector` and
+    :func:`analyze_charge`.
     """
 
     __slots__ = (
@@ -140,6 +168,7 @@ class AdditiveCharge:
         "name",
         "offset",
         "qubit_levels",
+        "qudit_weights",
         "space",
     )
     space: OperatorSpace
@@ -148,6 +177,7 @@ class AdditiveCharge:
     fermion_weights: Tuple[int, ...]
     boson_weights: Tuple[int, ...]
     qubit_levels: Tuple[Tuple[int, int], ...]
+    qudit_weights: Tuple[int, ...]
     _locked: bool
 
     def __init__(
@@ -158,6 +188,7 @@ class AdditiveCharge:
         fermions: Optional[Mapping[object, object]] = None,
         bosons: Optional[Mapping[object, object]] = None,
         qubits: Optional[Mapping[object, object]] = None,
+        qudits: Optional[Mapping[object, object]] = None,
         offset: int = 0,
     ) -> None:
         if not isinstance(space, OperatorSpace):
@@ -176,9 +207,11 @@ class AdditiveCharge:
             self, "boson_weights", _sparse_vector(bosons, space.bosons, "bosons")
         )
         object.__setattr__(self, "qubit_levels", _qubit_levels(qubits, space.qubits))
-        if space.qudits:
-            # Qudit axes are deliberately uncharged spectators in this phase.
-            pass
+        object.__setattr__(
+            self,
+            "qudit_weights",
+            _qudit_vector(qudits, len(space.qudits), "qudits"),
+        )
         object.__setattr__(self, "_locked", True)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -194,6 +227,7 @@ class AdditiveCharge:
             and self.fermion_weights == other.fermion_weights
             and self.boson_weights == other.boson_weights
             and self.qubit_levels == other.qubit_levels
+            and self.qudit_weights == other.qudit_weights
         )
 
     def __hash__(self) -> int:
@@ -204,6 +238,7 @@ class AdditiveCharge:
                 self.fermion_weights,
                 self.boson_weights,
                 self.qubit_levels,
+                self.qudit_weights,
             )
         )
 
@@ -306,6 +341,36 @@ class AdditiveCharge:
                         ),
                     )
                 )
+        if self.space.qudits:
+            dimension = self.space.qudits[0]
+            spectrum = _qudit_spectrum(dimension)
+            for site, weight in enumerate(self.qudit_weights):
+                if not weight:
+                    continue
+                scale = _checked_float(weight, "qudit charge weight")
+                for exponent in range(1, dimension):
+                    coefficient = (
+                        scale
+                        * sum(
+                            spectrum[level]
+                            * cmath.exp(-2j * math.pi * exponent * level / dimension)
+                            for level in range(dimension)
+                        )
+                        / dimension
+                    )
+                    if coefficient.real == 0.0 and coefficient.imag == 0.0:
+                        continue
+                    triples = [(site, 0, exponent)]
+                    terms.append(
+                        _Term(
+                            None,
+                            None,
+                            identity_qubits,
+                            QuditWeylWord(dimension, tuple(triples)),
+                            None,
+                            coefficient,
+                        )
+                    )
         return _make_operator(self.space, terms, max_bytes)
 
     def as_pauli(self) -> PauliOperator:
@@ -571,6 +636,7 @@ class ChargeSector:
                     *charge.fermion_weights,
                     *charge.boson_weights,
                     *(level for levels in charge.qubit_levels for level in levels),
+                    *charge.qudit_weights,
                 )
             )
             + target
@@ -586,6 +652,7 @@ class ChargeSector:
             [list(charge.fermion_weights) for charge, _ in normalized],
             [list(charge.boson_weights) for charge, _ in normalized],
             [list(charge.qubit_levels) for charge, _ in normalized],
+            [list(charge.qudit_weights) for charge, _ in normalized],
             list(target),
             _effective_max_bytes(max_bytes),
         )
@@ -696,6 +763,209 @@ def _restricted_layout_inputs(
     )
 
 
+def _fast_qubit_particles(
+    sector: ChargeSector,
+) -> Optional[Tuple[int, Tuple[int, ...]]]:
+    """Return active qubit factor weight and public positions."""
+    if len(sector.constraints) != 1 or sector.space.qubits == 0:
+        return None
+    charge, requested = sector.constraints[0]
+    if (
+        any(value != 0 for value in charge.fermion_weights)
+        or any(value != 0 for value in charge.boson_weights)
+        or any(value != 0 for value in charge.qudit_weights)
+        or any(levels not in {(0, 0), (0, 1)} for levels in charge.qubit_levels)
+    ):
+        return None
+    # ``qubit_levels`` is indexed in the qubit domain, whereas the native
+    # compiler expects positions in the public mixed-radix axis layout.  Keep
+    # the conversion here so a spectator from another domain (for example a
+    # leading boson axis) does not accidentally get treated as a qubit factor.
+    qubit_positions = _restricted_layout_inputs(sector)[3]
+    active_positions = tuple(
+        qubit_positions[index]
+        for index, levels in enumerate(charge.qubit_levels)
+        if levels == (0, 1)
+    )
+    if not active_positions:
+        return None
+    ordered = sorted(active_positions)
+    if ordered != list(range(ordered[0], ordered[-1] + 1)):
+        return None
+    particles = requested - charge.offset
+    if particles < 0 or particles > len(active_positions):
+        return None
+    return particles, active_positions
+
+
+def _fast_qudit_factor(
+    sector: ChargeSector,
+) -> Optional[Tuple[Tuple[int, ...], int, Tuple[int, ...]]]:
+    """Return one canonical spin-z qudit factor and its public positions."""
+    if len(sector.constraints) != 1 or not sector.space.qudits:
+        return None
+    charge, requested = sector.constraints[0]
+    if (
+        any(value != 0 for value in charge.fermion_weights)
+        or any(value != 0 for value in charge.boson_weights)
+        or any(levels != (0, 0) for levels in charge.qubit_levels)
+        or not any(value != 0 for value in charge.qudit_weights)
+    ):
+        return None
+    qudit_positions = _restricted_layout_inputs(sector)[4]
+    active = tuple(
+        qudit_positions[index]
+        for index, value in enumerate(charge.qudit_weights)
+        if value != 0
+    )
+    weights = tuple(value for value in charge.qudit_weights if value != 0)
+    if not active:
+        return None
+    ordered = sorted(active)
+    if ordered != list(range(ordered[0], ordered[-1] + 1)):
+        return None
+    return weights, requested - charge.offset, active
+
+
+def _fast_boson_factor(
+    sector: ChargeSector,
+) -> Optional[Tuple[Tuple[int, ...], int, Tuple[int, ...]]]:
+    """Return a fixed-number boson factor and its public positions."""
+    if len(sector.constraints) != 1 or not sector.space.bosons:
+        return None
+    charge, requested = sector.constraints[0]
+    if (
+        any(value != 0 for value in charge.fermion_weights)
+        or any(levels != (0, 0) for levels in charge.qubit_levels)
+        or any(value != 0 for value in charge.qudit_weights)
+        or not any(value != 0 for value in charge.boson_weights)
+    ):
+        return None
+    boson_positions = _restricted_layout_inputs(sector)[2]
+    active = tuple(
+        boson_positions[index]
+        for index, value in enumerate(charge.boson_weights)
+        if value != 0
+    )
+    weights = tuple(value for value in charge.boson_weights if value != 0)
+    if not active:
+        return None
+    ordered = sorted(active)
+    if ordered != list(range(ordered[0], ordered[-1] + 1)):
+        return None
+    return weights, requested - charge.offset, active
+
+
+def _supports_independent_factor_product(
+    sector: ChargeSector,
+) -> Optional[Tuple[Tuple[int, ...], ...]]:
+    """Return public-axis descriptors for disjoint single-domain factors."""
+    if not sector.constraints:
+        return None
+    positions_by_domain = {
+        (axis.domain, axis.index): position
+        for position, axis in enumerate(sector.space._axes)
+    }
+
+    # Total particle number plus a zero spin-balance constraint is algebraically
+    # equivalent to a fixed compact Fermion sector.  Treat the selected
+    # Fermion basis as one Product factor so the shared executor, rather than
+    # the historical spinful shortcut, owns the public transition semantics.
+    if sector.space.fermions and not sector.space.qubits and not sector.space.qudits:
+        sites = sector.space.fermions // 2
+        if sector.space.fermions % 2 == 0:
+            total_weights = (1,) * sector.space.fermions
+            grouped_balance = (1,) * sites + (-1,) * sites
+            interleaved_balance = tuple(
+                value for _ in range(sites) for value in (1, -1)
+            )
+            total_target: Optional[int] = None
+            balance_target: Optional[int] = None
+            recognized = True
+            for charge, requested in sector.constraints:
+                if (
+                    any(value != 0 for value in charge.boson_weights)
+                    or any(value != 0 for value in charge.qudit_weights)
+                    or any(level != (0, 0) for level in charge.qubit_levels)
+                ):
+                    recognized = False
+                    break
+                target = requested - charge.offset
+                if charge.fermion_weights == total_weights and total_target is None:
+                    total_target = target
+                elif (
+                    charge.fermion_weights
+                    in {
+                        grouped_balance,
+                        interleaved_balance,
+                    }
+                    and balance_target is None
+                ):
+                    balance_target = target
+                else:
+                    recognized = False
+                    break
+            if (
+                recognized
+                and total_target is not None
+                and balance_target == 0
+                and total_target % 2 == 0
+                and 0 < total_target // 2 <= sites
+            ):
+                return (
+                    tuple(
+                        positions_by_domain[("fermion", index)]
+                        for index in range(sector.space.fermions)
+                    ),
+                )
+
+    occupied: set[int] = set()
+    factors: list[Tuple[int, ...]] = []
+    single_noncontiguous = False
+    single_compact_domain = False
+    for constraint_index, (charge, _) in enumerate(sector.constraints):
+        active: set[int] = set()
+        domains: set[str] = set()
+        for index, value in enumerate(charge.fermion_weights):
+            if value:
+                active.add(positions_by_domain[("fermion", index)])
+                domains.add("fermion")
+        for index, value in enumerate(charge.boson_weights):
+            if value:
+                active.add(positions_by_domain[("boson", index)])
+                domains.add("boson")
+        for index, levels in enumerate(charge.qubit_levels):
+            if levels != (0, 0):
+                active.add(positions_by_domain[("qubit", index)])
+                domains.add("qubit")
+        for index, value in enumerate(charge.qudit_weights):
+            if value:
+                active.add(positions_by_domain[("qudit", index)])
+                domains.add("qudit")
+        if not active or len(domains) != 1 or occupied.intersection(active):
+            return None
+        if constraint_index == 0 and len(sector.constraints) == 1:
+            domain = next(iter(domains))
+            # The shared Product descriptor is also the canonical executor for
+            # a single compact Fermion factor.  Keeping the specialized
+            # one-domain shortcut here would make the same public sector use a
+            # second production semantic kernel.
+            single_compact_domain = domain in {"fermion", "qubit", "qudit", "boson"}
+            ordered = sorted(active)
+            contiguous = ordered == list(range(ordered[0], ordered[-1] + 1))
+            if not contiguous and domain in {"qubit", "qudit", "boson"}:
+                # The single-factor analytic rankers require one contiguous
+                # public block.  Keep non-contiguous same-domain spectators
+                # on the compiled Product descriptor instead of relabeling
+                # the plan Generic.
+                single_noncontiguous = True
+        occupied.update(active)
+        factors.append(tuple(sorted(active)))
+    if len(sector.constraints) > 1 or single_noncontiguous or single_compact_domain:
+        return tuple(factors)
+    return None
+
+
 class ChargeMvpPlan:
     """Reusable matrix-free transition plan in a finite charge-sector basis.
 
@@ -711,8 +981,14 @@ class ChargeMvpPlan:
         "basis_ordering",
         "dimension",
         "estimated_bytes",
+        "estimated_construction_peak_bytes",
+        "estimated_retained_bytes",
+        "execution_family",
+        "native_variant",
+        "retained_format",
+        "schedule_count",
+        "source_term_count",
         "storage",
-        "strategy",
         "target",
         "term_count",
         "transition_count",
@@ -723,8 +999,14 @@ class ChargeMvpPlan:
     estimated_bytes: int
     basis_ordering: str
     storage: ChargeStorage
-    strategy: str
     target: str
+    execution_family: str
+    native_variant: str
+    retained_format: str
+    source_term_count: int
+    schedule_count: int
+    estimated_retained_bytes: int
+    estimated_construction_peak_bytes: int
     _native_plan: Any
     _locked: bool
 
@@ -735,6 +1017,7 @@ class ChargeMvpPlan:
         *,
         native_plan: Any,
         storage: ChargeStorage = "eager",
+        execution_family: str = "generic",
     ) -> None:
         object.__setattr__(self, "dimension", int(dimension))
         object.__setattr__(self, "term_count", int(term_count))
@@ -747,8 +1030,34 @@ class ChargeMvpPlan:
         )
         object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
         object.__setattr__(self, "storage", _validate_storage(storage))
-        object.__setattr__(self, "strategy", "destination_major_csr")
         object.__setattr__(self, "target", "native_mvp")
+        object.__setattr__(self, "execution_family", execution_family)
+        object.__setattr__(
+            self,
+            "native_variant",
+            str(getattr(native_plan, "native_variant", "generic")),
+        )
+        object.__setattr__(self, "retained_format", "csr")
+        object.__setattr__(self, "source_term_count", int(term_count))
+        object.__setattr__(
+            self,
+            "schedule_count",
+            int(getattr(native_plan, "schedule_count", term_count)),
+        )
+        object.__setattr__(
+            self, "estimated_retained_bytes", int(native_plan.estimated_bytes)
+        )
+        object.__setattr__(
+            self,
+            "estimated_construction_peak_bytes",
+            int(
+                getattr(
+                    native_plan,
+                    "estimated_construction_peak_bytes",
+                    native_plan.estimated_bytes,
+                )
+            ),
+        )
         object.__setattr__(self, "_locked", True)
 
     def _csr_arrays(
@@ -879,18 +1188,32 @@ class ChargeLazyMvpPlan:
         "basis_ordering",
         "dimension",
         "estimated_bytes",
+        "estimated_construction_peak_bytes",
+        "estimated_retained_bytes",
+        "execution_family",
+        "native_variant",
+        "retained_format",
+        "schedule_count",
+        "source_term_count",
         "storage",
-        "strategy",
         "target",
         "term_count",
+        "transition_count",
     )
     dimension: int
     term_count: int
+    transition_count: Optional[int]
     estimated_bytes: int
     basis_ordering: str
     storage: ChargeStorage
-    strategy: str
     target: str
+    execution_family: str
+    native_variant: str
+    retained_format: str
+    source_term_count: int
+    schedule_count: int
+    estimated_retained_bytes: int
+    estimated_construction_peak_bytes: int
     _locked: bool
     _native_plan: Any
     _native_execution: Any
@@ -920,6 +1243,25 @@ class ChargeLazyMvpPlan:
             )
             for charge, _ in sector.constraints
         ]
+        qudit_rows = [
+            tuple(float(value) for value in charge.qudit_weights)
+            for charge, _ in sector.constraints
+        ]
+        fast_qubit_factor = _fast_qubit_particles(sector)
+        fast_qubit_particles = (
+            fast_qubit_factor[0] if fast_qubit_factor is not None else None
+        )
+        fast_qubit_positions = (
+            list(fast_qubit_factor[1]) if fast_qubit_factor is not None else None
+        )
+        fast_qudit = _fast_qudit_factor(sector)
+        fast_boson = _fast_boson_factor(sector)
+        fast_product_positions = _supports_independent_factor_product(sector)
+        # Product is a supported fallback and the general factorized route,
+        # but it is not allowed to displace a measured specialized winner.
+        # Native construction tries the specialized candidates first and only
+        # builds Product when the candidate is ineligible or exceeds its
+        # bounded construction budget.
         termwise_conserved = False
         if isinstance(operator, PauliOperator):
             if not isinstance(native_handle, _native.NativePauliOperatorHandle):
@@ -938,6 +1280,20 @@ class ChargeLazyMvpPlan:
                 termwise_conserved,
                 _effective_max_bytes(max_bytes),
                 None,
+                None,
+                fast_qubit_particles,
+                fast_qubit_positions,
+                list(fast_qudit[0]) if fast_qudit is not None else None,
+                fast_qudit[1] if fast_qudit is not None else None,
+                list(fast_qudit[2]) if fast_qudit is not None else None,
+                list(fast_boson[0]) if fast_boson is not None else None,
+                fast_boson[1] if fast_boson is not None else None,
+                list(fast_boson[2]) if fast_boson is not None else None,
+                (
+                    [list(values) for values in fast_product_positions]
+                    if fast_product_positions is not None
+                    else None
+                ),
             )
         else:
             if isinstance(
@@ -955,12 +1311,29 @@ class ChargeLazyMvpPlan:
                     tuple(float(value) for value in charge.fermion_weights),
                     tuple(float(value) for value in charge.boson_weights),
                     levels,
+                    qudit_weights,
                 )
-                for (charge, _), levels in zip(sector.constraints, level_rows)
+                for (charge, _), levels, qudit_weights in zip(
+                    sector.constraints, level_rows, qudit_rows
+                )
             )
-            fast_fermion_particles = (
+            fast_fermion_candidate = (
                 _fast_fermion_particles(operator, sector)
                 if termwise_conserved
+                else None
+            )
+            # The matched compact Fermion executor also supports the
+            # eligible Cartesian-Boson layout.  Keep it as the fixed winner
+            # until the general Product kernel passes a reverse-order A/B;
+            # Product remains available when this specialized builder rejects
+            # the public layout or its bounded descriptor budget.
+            fast_fermion_factor = fast_fermion_candidate
+            fast_fermion_particles = (
+                fast_fermion_factor[0] if fast_fermion_factor is not None else None
+            )
+            fast_fermion_mode_order = (
+                list(fast_fermion_factor[1])
+                if fast_fermion_factor is not None
                 else None
             )
             native_execution = sector._native_plan.compile_mvp_hybrid_handle(
@@ -975,11 +1348,26 @@ class ChargeLazyMvpPlan:
                 termwise_conserved,
                 _effective_max_bytes(max_bytes),
                 fast_fermion_particles,
+                fast_fermion_mode_order,
+                fast_qubit_particles,
+                fast_qubit_positions,
+                list(fast_qudit[0]) if fast_qudit is not None else None,
+                fast_qudit[1] if fast_qudit is not None else None,
+                list(fast_qudit[2]) if fast_qudit is not None else None,
+                list(fast_boson[0]) if fast_boson is not None else None,
+                fast_boson[1] if fast_boson is not None else None,
+                list(fast_boson[2]) if fast_boson is not None else None,
+                (
+                    [list(values) for values in fast_product_positions]
+                    if fast_product_positions is not None
+                    else None
+                ),
             )
         object.__setattr__(self, "_native_plan", sector._native_plan)
         object.__setattr__(self, "_native_execution", native_execution)
         object.__setattr__(self, "dimension", sector.dimension)
         object.__setattr__(self, "term_count", int(term_count))
+        object.__setattr__(self, "transition_count", None)
         object.__setattr__(
             self,
             "estimated_bytes",
@@ -987,8 +1375,28 @@ class ChargeLazyMvpPlan:
         )
         object.__setattr__(self, "basis_ordering", MIXED_RADIX_BASIS_ORDERING)
         object.__setattr__(self, "storage", "lazy")
-        object.__setattr__(self, "strategy", "term_direct")
         object.__setattr__(self, "target", "native_mvp")
+        object.__setattr__(
+            self, "execution_family", str(native_execution.execution_family)
+        )
+        object.__setattr__(
+            self,
+            "native_variant",
+            str(getattr(native_execution, "native_variant", "generic")),
+        )
+        object.__setattr__(self, "retained_format", "compiled_actions")
+        object.__setattr__(self, "source_term_count", int(term_count))
+        object.__setattr__(
+            self,
+            "schedule_count",
+            int(getattr(native_execution, "schedule_count", term_count)),
+        )
+        object.__setattr__(self, "estimated_retained_bytes", int(self.estimated_bytes))
+        object.__setattr__(
+            self,
+            "estimated_construction_peak_bytes",
+            int(self.estimated_bytes),
+        )
         object.__setattr__(self, "_locked", True)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -1264,6 +1672,7 @@ class ChargeRestrictedOperator:
                 self.sector.dimension,
                 self._lazy_plan.term_count,
                 native_plan=native,
+                execution_family=self._lazy_plan.execution_family,
             )
             object.__setattr__(self, "_eager_plan", cached)
             return cached
@@ -1333,33 +1742,50 @@ class ChargeRestrictedOperator:
 
 def _fast_fermion_particles(
     operator: Union[_StructuredOperator, PauliOperator], sector: ChargeSector
-) -> Optional[int]:
+) -> Optional[Tuple[int, Tuple[int, ...]]]:
     """Detect the fixed-spin-sector layout used by the Hubbard MVP fast path."""
-    if (
-        isinstance(operator, PauliOperator)
-        or getattr(operator, "_domain", None) != "fermion"
-    ):
+    if isinstance(operator, PauliOperator) or getattr(
+        operator, "_domain", None
+    ) not in {"fermion", "hybrid"}:
         return None
     space = sector.space
-    if space.bosons or space.qubits or space.qudits or space.fermions == 0:
+    if space.qubits or space.qudits or space.fermions == 0:
         return None
-    if space.fermions % 2 or sector.local_dimensions != (2,) * space.fermions:
+    if (
+        space.fermions % 2
+        or tuple(sector.local_dimensions[: space.fermions]) != (2,) * space.fermions
+    ):
         return None
     sites = space.fermions // 2
     total_weights = (1,) * space.fermions
-    balance_weights = (1,) * sites + (-1,) * sites
+    grouped_balance_weights = (1,) * sites + (-1,) * sites
     total_target: Optional[int] = None
     balance_target: Optional[int] = None
+    balance_weights: Optional[Tuple[int, ...]] = None
     for charge, requested in sector.constraints:
+        if (
+            any(value != 0 for value in charge.boson_weights)
+            or any(level != (0, 0) for level in charge.qubit_levels)
+            or any(value != 0 for value in charge.qudit_weights)
+        ):
+            return None
         target = requested - charge.offset
         if charge.fermion_weights == total_weights:
             if total_target is not None:
                 return None
             total_target = target
-        elif charge.fermion_weights == balance_weights:
+        elif charge.fermion_weights == grouped_balance_weights:
             if balance_target is not None:
                 return None
             balance_target = target
+            balance_weights = charge.fermion_weights
+        elif charge.fermion_weights == tuple(
+            value for site in range(sites) for value in (1, -1)
+        ):
+            if balance_target is not None:
+                return None
+            balance_target = target
+            balance_weights = charge.fermion_weights
         else:
             return None
     if total_target is None or balance_target != 0 or total_target % 2:
@@ -1367,7 +1793,14 @@ def _fast_fermion_particles(
     particles = total_target // 2
     if particles < 1 or particles > sites:
         return None
-    return particles
+    if balance_weights == grouped_balance_weights:
+        mode_order = tuple(range(2 * sites))
+    else:
+        mode_order = tuple(
+            value for site in range(sites) for value in (2 * site, 2 * site + 1)
+        )
+        mode_order = tuple(mode_order[0::2]) + tuple(mode_order[1::2])
+    return particles, mode_order
 
 
 def analyze_charge(
@@ -1417,6 +1850,7 @@ def analyze_charge(
             (float(level_zero), float(level_one))
             for level_zero, level_one in charge.qubit_levels
         ),
+        tuple(float(value) for value in charge.qudit_weights),
         _effective_max_bytes(max_bytes),
     )
     return AdditiveSymmetryAnalysis(
