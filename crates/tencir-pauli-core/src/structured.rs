@@ -2502,6 +2502,11 @@ struct StructuredScheduleGroup {
     contiguous_source_flip_mask: Option<usize>,
 }
 
+#[derive(Clone, Copy)]
+struct ContiguousFermionPrefix {
+    suffix_dimension: usize,
+}
+
 #[derive(Default)]
 struct StructuredApplyCounters {
     schedule_group_evaluations: AtomicUsize,
@@ -2842,6 +2847,7 @@ pub struct StructuredMvpPlan {
     fermion_mask_schedule_count: usize,
     descriptor_ineligible_schedule_count: usize,
     contiguous_fermion_source_mode_count: Option<usize>,
+    contiguous_fermion_prefix: Option<ContiguousFermionPrefix>,
 }
 
 /// Batched native phase measurements for the shared FermionMask descriptor.
@@ -3726,10 +3732,28 @@ impl StructuredMvpPlan {
             .max()
             .unwrap_or(0);
         let mut fermion_mask_scratch = vec![0_u64; fermion_word_count];
+        let mut prefix_sources = Vec::new();
+        let contiguous_fermion_prefix = if let Some(prefix) = self.contiguous_fermion_prefix {
+            let descriptor = self.fermion_masks.iter().find_map(Option::as_ref).ok_or(
+                PauliError::InvalidStructureLength {
+                    expected: 1,
+                    actual: 0,
+                },
+            )?;
+            let fermion_dimension = self.dimension / prefix.suffix_dimension;
+            prefix_sources.resize(fermion_dimension, 0_u64);
+            for (source, packed) in prefix_sources.iter_mut().enumerate() {
+                descriptor.pack_contiguous_binary_index(source, std::slice::from_mut(packed))?;
+            }
+            Some((prefix_sources.as_slice(), prefix.suffix_dimension))
+        } else {
+            None
+        };
         let mut member_context = CompiledScheduleApplyContext {
             strides: &self.strides,
             fermion_mask_scratch: &mut fermion_mask_scratch,
             counters: &self.counters,
+            contiguous_fermion_prefix,
         };
         for group in &self.groups {
             let suffix_stride = group.suffix_stride;
@@ -3805,6 +3829,7 @@ struct CompiledScheduleApplyContext<'a> {
     strides: &'a [usize],
     fermion_mask_scratch: &'a mut [u64],
     counters: &'a StructuredApplyCounters,
+    contiguous_fermion_prefix: Option<(&'a [u64], usize)>,
 }
 
 fn apply_compiled_schedule_member(
@@ -3820,21 +3845,43 @@ fn apply_compiled_schedule_member(
             .counters
             .fermion_mask_applications
             .fetch_add(1, Ordering::Relaxed);
-        let words = descriptor.required_occupied.len();
-        descriptor.pack_index(
-            source,
-            context.strides,
-            &mut context.fermion_mask_scratch[..words],
-        )?;
-        let Some(amplitude) =
-            descriptor.amplitude_from_words(&context.fermion_mask_scratch[..words], coefficient)
-        else {
-            return Ok(None);
-        };
-        (
-            descriptor.apply_flip_to_index(source, context.strides)?,
-            amplitude,
-        )
+        if let Some((packed_sources, suffix_dimension)) = context.contiguous_fermion_prefix {
+            let fermion_source = source / suffix_dimension;
+            let packed = *packed_sources
+                .get(fermion_source)
+                .ok_or(PauliError::InvalidIndex {
+                    context: "indexing contiguous Fermion prefix source",
+                })?;
+            let Some(amplitude) = descriptor.amplitude_from_single_word(packed, coefficient) else {
+                return Ok(None);
+            };
+            let fermion_destination =
+                descriptor.apply_flip_to_contiguous_binary_index(fermion_source)?;
+            let spectator = source % suffix_dimension;
+            let destination = fermion_destination
+                .checked_mul(suffix_dimension)
+                .and_then(|value| value.checked_add(spectator))
+                .ok_or(PauliError::Overflow {
+                    context: "computing contiguous Fermion prefix destination",
+                })?;
+            (destination, amplitude)
+        } else {
+            let words = descriptor.required_occupied.len();
+            descriptor.pack_index(
+                source,
+                context.strides,
+                &mut context.fermion_mask_scratch[..words],
+            )?;
+            let Some(amplitude) = descriptor
+                .amplitude_from_words(&context.fermion_mask_scratch[..words], coefficient)
+            else {
+                return Ok(None);
+            };
+            (
+                descriptor.apply_flip_to_index(source, context.strides)?,
+                amplitude,
+            )
+        }
     } else {
         (source, coefficient)
     };
@@ -4000,6 +4047,35 @@ pub fn structured_mvp_plan_with_fermion_positions(
                 Some(descriptor.apply_flip_to_contiguous_binary_index(0)?);
         }
     }
+    let contiguous_fermion_prefix =
+        fermion_masks
+            .iter()
+            .find_map(Option::as_ref)
+            .and_then(|descriptor| {
+                let mode_count = fermion_positions.len();
+                (mode_count > 0
+                    && mode_count <= local_dimensions.len()
+                    && local_dimensions[..mode_count]
+                        .iter()
+                        .all(|&dimension| dimension == 2)
+                    && fermion_positions
+                        .iter()
+                        .enumerate()
+                        .all(|(mode, &axis)| mode == axis)
+                    && descriptor.required_occupied.len() == 1
+                    && descriptor.mode_axes.len() == mode_count
+                    && descriptor
+                        .mode_axes
+                        .iter()
+                        .enumerate()
+                        .all(|(mode, &axis)| mode == axis)
+                    && fermion_masks.iter().filter_map(Option::as_ref).all(|mask| {
+                        mask.required_occupied.len() == 1 && mask.mode_axes == descriptor.mode_axes
+                    }))
+                .then_some(ContiguousFermionPrefix {
+                    suffix_dimension: strides[mode_count - 1],
+                })
+            });
     let net_action_bytes = net_actions.iter().try_fold(0_u128, |total, actions| {
         let action_bytes =
             actions
@@ -4103,6 +4179,7 @@ pub fn structured_mvp_plan_with_fermion_positions(
         fermion_mask_schedule_count,
         descriptor_ineligible_schedule_count,
         contiguous_fermion_source_mode_count,
+        contiguous_fermion_prefix,
     })
 }
 

@@ -109,7 +109,7 @@ Fermion, Boson, Qudit, Hybrid, and Majorana operators follow the same default la
 
 ## Structured operator algebra
 
-structured adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, and `OperatorSpace` for canonical fermionic CAR, symbolic bosonic CCR, hybrid mixed-radix layouts, and uniform-dimension Weyl words. Fermions map through Jordan–Wigner; boson cutoffs are required only at finite compilation and use the projected open-boundary Fock convention. The batch `OperatorBuilder` is available under [`tencirpauli.advanced`](python/tencirpauli/advanced.py).
+structured adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, and `OperatorSpace` for canonical fermionic CAR, symbolic bosonic CCR, hybrid mixed-radix layouts, and uniform-dimension Weyl words. Native `compile("native_mvp")` executes raw Fermion descriptors by default in the Jordan–Wigner occupation-basis order; call `map_fermions("jordan_wigner")`, or select parity/Bravyi–Kitaev explicitly, when a mapped Pauli representation is required. Boson cutoffs are required only at finite compilation and use the projected open-boundary Fock convention. The batch `OperatorBuilder` is available under [`tencirpauli.advanced`](python/tencirpauli/advanced.py).
 
 Majorana and charge adds exact `MajoranaWord`/`MajoranaOperator` conversion, reusable Jordan–Wigner, parity, and Bravyi–Kitaev occupation mappings, and integer `AdditiveCharge`/`ChargeSector` workflows. Charge sectors use exact conservation checks, infer simple finite boson bounds, retain uncharged qudit spectators, and expose guarded dense/COO/CSR plus matrix-free restricted plans. See [`examples/majorana_charge.py`](examples/majorana_charge.py) and the design index under [`docs/vibe/README.md`](docs/vibe/README.md).
 

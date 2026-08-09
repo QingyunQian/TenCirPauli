@@ -25,7 +25,7 @@ import tencirpauli as tcp
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST_VERSION = "fermion-mask-phase-v2"
+MANIFEST_VERSION = "fermion-mask-phase-v3"
 
 
 def _rss_bytes() -> int:
@@ -33,17 +33,20 @@ def _rss_bytes() -> int:
     return value if sys.platform == "darwin" else value * 1024
 
 
-def _operator() -> tcp.FermionOperator:
+def _operator(modes: int) -> tcp.FermionOperator:
+    """Build a local hopping-and-density model on the requested mode count."""
+    if modes < 2:
+        raise ValueError("modes must be at least two")
     terms: list[tuple[tuple[tuple[int, str], ...], complex]] = []
-    for mode in range(12):
+    for mode in range(modes):
         terms.append((((mode, "create"), (mode, "annihilate")), 0.15 * (mode + 1)))
-    for mode in range(11):
+    for mode in range(modes - 1):
         coefficient = 0.7 + 0.05j * (mode + 1)
         terms.append((((mode, "create"), (mode + 1, "annihilate")), coefficient))
         terms.append(
             (((mode + 1, "create"), (mode, "annihilate")), coefficient.conjugate())
         )
-    return tcp.FermionOperator.from_terms(12, terms)
+    return tcp.FermionOperator.from_terms(modes, terms)
 
 
 def _phase_record(plan: Any, samples: int) -> dict[str, Any] | None:
@@ -89,9 +92,10 @@ def _measure(
     factory: Callable[[tcp.FermionOperator], Any],
     repeats: int,
     phase_samples: int,
+    modes: int,
 ) -> tuple[dict[str, Any], np.ndarray[Any, Any]]:
     construction: list[float] = []
-    operator = _operator()
+    operator = _operator(modes)
     plan: Any = None
     for _ in range(3):
         start = time.perf_counter()
@@ -156,20 +160,36 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repeats", type=int, default=7)
     parser.add_argument("--phase-samples", type=int, default=4096)
+    parser.add_argument(
+        "--modes",
+        type=int,
+        default=None,
+        help="fermion mode count; defaults to 12 or 18 with --throughput",
+    )
+    parser.add_argument(
+        "--throughput",
+        action="store_true",
+        help="use the 18-mode, D=262144 throughput workload",
+    )
     args = parser.parse_args()
     if args.repeats < 7 or args.phase_samples < 1:
         raise SystemExit("repeats must be at least seven and phase samples positive")
+    modes = 18 if args.throughput and args.modes is None else (args.modes or 12)
+    if modes < 2 or modes > 63:
+        raise SystemExit("modes must be between 2 and 63")
     raw, raw_output = _measure(
         "raw_fermion_mask",
         lambda operator: operator.compile("native_mvp"),
         args.repeats,
         args.phase_samples,
+        modes,
     )
     mapped, mapped_output = _measure(
         "explicit_jordan_wigner_pauli",
         lambda operator: operator.map_fermions("jordan_wigner").compile("native_mvp"),
         args.repeats,
         args.phase_samples,
+        modes,
     )
     error = float(np.max(np.abs(raw_output - mapped_output)))
     if error > 5e-12:
@@ -179,6 +199,7 @@ def main() -> None:
             {
                 "benchmark": "fermion_mask_phase_profile",
                 "workload_manifest": MANIFEST_VERSION,
+                "modes": modes,
                 "records": [raw, mapped],
                 "max_abs_error": error,
                 "exact_command": [sys.executable, str(Path(__file__).resolve())],

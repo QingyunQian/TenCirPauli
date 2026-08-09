@@ -1,0 +1,15 @@
+{
+  "workload_manifest": "quspin-capability-v1",
+  "capability": "independent_spin_factors_throughput",
+  "comparison": "directly_comparable",
+  "operator_family": "two_eleven_spin_fixed_hamming_product_throughput",
+  "storage": "lazy",
+  "quspin_mode": "matrix_free",
+  "dtype": "complex128",
+  "seed": 20260809,
+  "warmups": 2,
+  "repeats": 7,
+  "action_validation": "vector",
+  "action_tolerance": 1e-10,
+  "max_bytes": 17179869184
+}

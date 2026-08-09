@@ -1476,7 +1476,14 @@ class _StructuredOperator:
         boson_cutoffs: Optional[Mapping[object, object]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
-        """Compile into a dense, sparse, native, or backend MVP target."""
+        """Compile into a dense, sparse, native, or backend MVP target.
+
+        Raw Fermion factors remain raw descriptors for the default
+        ``compile("native_mvp")`` path. Its ``mapping="jordan_wigner"``
+        default denotes the public occupation-basis convention; it does not
+        force Pauli expansion. Call :meth:`map_fermions` before compiling to
+        explicitly request mapped-Pauli execution.
+        """
         if target not in {"dense", "coo", "csr", "native_mvp", "backend_mvp"}:
             raise ValueError(
                 "target must be one of 'dense', 'coo', 'csr', 'native_mvp', or 'backend_mvp'"
@@ -2685,7 +2692,12 @@ class FermionOperator(_StructuredOperator):
         mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
-        """Compile a Fermion operator, keeping raw masks for native MVP."""
+        """Compile a Fermion operator, keeping raw masks for native MVP.
+
+        The default native-MVP route uses direct CAR descriptors in the
+        Jordan--Wigner occupation-basis order. Call :meth:`map_fermions`
+        first to force a Pauli mapping.
+        """
         if target == "native_mvp" and mapping == "jordan_wigner":
             result = _compile_finite(
                 self,
@@ -3091,7 +3103,11 @@ class HybridOperator(_StructuredOperator):
         boson_cutoffs: Optional[Mapping[object, object]] = None,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
-        """Compile a hybrid operator after optional Jordan-Wigner mapping."""
+        """Compile a hybrid operator with optional explicit Fermion mapping.
+
+        The default native-MVP route retains raw Fermion descriptors; calling
+        :meth:`map_fermions` first selects mapped-Pauli execution instead.
+        """
         return super().compile(
             target,
             storage=storage,

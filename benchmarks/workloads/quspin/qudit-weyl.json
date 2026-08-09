@@ -1,0 +1,15 @@
+{
+  "workload_manifest": "quspin-capability-v1",
+  "capability": "qudit_weyl",
+  "comparison": "no_fair_optimized_baseline",
+  "no_fair_baseline_reason": "QuSpin has no optimized finite-Weyl basis with TenCirPauli's X^a Z^b phase convention; a Python callback would not be comparable.",
+  "operator_family": "finite_weyl_shift_phase",
+  "storage": "lazy",
+  "quspin_mode": "none",
+  "dtype": "complex128",
+  "seed": 20260809,
+  "warmups": 2,
+  "repeats": 7,
+  "action_tolerance": 1e-11,
+  "max_bytes": 17179869184
+}

@@ -1,12 +1,12 @@
 # Phase 10.5 acceptance evidence
 
-This document records the current release-mode evidence for the structured-operator execution work. D29 remains the historical third-round decision; D30 records the fourth-round containment, Product public-index remediation, allocation evidence, current native-variant matrix, and renewed primary lazy measurement. Unsupported coupled constraints remain explicitly `generic` by design; clean-commit provenance is intentionally excluded from this technical acceptance record and may be supplied by the owner as a separate repository operation.
+This document records the current release-mode evidence for the structured-operator execution work. It is not a technical-closure record: the complete directly comparable QuSpin capability matrix remains open. The owner has selected raw Fermion descriptors as the uniform CPU-native MVP default; the historical sixth-round direct raw-Fermion performance gate is superseded rather than converted into a runtime representation selector. D29 remains the historical third-round decision; D30 records the fourth-round containment, Product public-index remediation, allocation evidence, current native-variant matrix, and renewed primary lazy measurement. Unsupported coupled constraints remain explicitly `generic` by design; clean-commit provenance is intentionally excluded from this technical acceptance record and may be supplied by the owner as a separate repository operation.
 
 ## Fifth-round remediation evidence
 
 The fifth-round Product remediation compiles active/inactive compact-factor shapes per schedule group. A new structural differential expands an inactive fixed-weight factor from 2 to 4 to 6 qubits: dimensions grow from 4 to 12 to 40, while factor-action, group, and aggregate counts remain constant, only identity-segment applications grow, and every Product result equals its independent dense reference. The Product plan retains bounded factor metadata, emits zero fallback/global-ranker/destination-allocation counters, and uses direct contiguous suffix segments where public order permits.
 
-The pure raw-Fermion contiguous binary path now computes packed source words once per source cache and reuses the shared descriptor for schedule members. The `fermion-mask-phase-v2` release record (`c50038bac50d-dirty-896134efcce85367`) has raw/mapped error `2.20e-14`, 4,096 packed-source units versus 139,264 member evaluations, and a default-thread median of `0.128 ms` raw versus `0.098 ms` explicit packed Pauli. The equivalent one-thread medians are `0.354 ms` and `0.243 ms`. This replaces the prior approximately 20x raw-path regression without reintroducing Jordan--Wigner execution or a duplicate sign implementation.
+The pure raw-Fermion contiguous binary path now computes packed source words once per source cache and reuses the shared descriptor for schedule members. Earlier small records removed the prior approximately 20x raw-path regression but did not establish a meaningful throughput conclusion. The committed 18-mode topology diagnostic now uses `D=262,144`, two untimed warmups, and seven steady samples; it validates the direct path against explicit mapped Pauli to below `1.6e-13`. Raw descriptors remain the uniform native-MVP default by owner decision, avoiding an unprofiled topology classifier or a second automatic execution policy; explicit `map_fermions("jordan_wigner")` remains available when mapped Pauli is deliberately requested.
 
 ## Fourth-round remediation evidence
 
@@ -20,7 +20,38 @@ The fresh coupled Generic profile (`generic-wide-profile-v1`, the same worktree 
 
 ## Isolated QuSpin environment
 
-The repository provides `benchmarks/environments/quspin.yml` with pinned Python, NumPy, SciPy, QuSpin, and QuSpin extension versions. The local acceptance run used the existing dedicated QuSpin Conda environment, which reports QuSpin `0.3.7` from package metadata and `quspin==1.0.0` from pip metadata. The parent runner launches TenCirPauli and QuSpin as separate subprocesses and exchanges only the frozen workload parameters and flat JSON records.
+The repository provides `benchmarks/environments/quspin.yml` with pinned Python, NumPy, SciPy, QuSpin, and QuSpin extension versions. The local acceptance run used the existing dedicated QuSpin Conda environment, which reports QuSpin `0.3.7` from package metadata and `quspin==1.0.0` from pip metadata. The Holstein parent runner launches TenCirPauli and QuSpin as separate subprocesses and exchanges only frozen workload parameters and flat JSON records.
+
+`benchmarks/manual/quspin_capability_matrix.py` generalizes that protocol beyond Holstein. Its capability-named manifests cover full and fixed-Hamming spin, pure Fermion/Boson, Fermion-Boson, fixed-sector spectator, independent-factor, and reversed-factor Product operators. The two child runners remain environment-specific; they canonicalize bounded actions by physical occupations before the parent compares them, record both TenCirPauli `apply_into` and public `apply`, record QuSpin public `dot`, and use fresh-process ABBA ordering. Coupled-charge and finite-Weyl manifests are retained as explicit no-fair-optimized-baseline rows with internal evidence rather than a fabricated cross-library ratio.
+
+The bounded dense-action subset of the matrix exercised every small direct row at one and four threads. Every bounded direct action comparison was at or below `2.3e-16`, every bounded direct public-call ratio was below one, and the largest observed ratios were approximately `0.056` at one thread and `0.052` at four threads. These small capability records validate the mappings and harness contract; they are not throughput evidence and do not close the phase.
+
+## Large vector-action capability evidence
+
+The three large direct rows use a separate canonical vector-action preflight before their isolated ABBA timing children. Each row uses two untimed warmups and seven steady samples per child, with TenCirPauli public allocating `apply` compared to QuSpin allocating `dot`. The action errors below are cross-library errors after occupation-order canonicalization, not each library's internal self-check.
+
+| Capability | D | Threads | TCP `apply_into` | TCP public `apply` | QuSpin `dot` | TCP/QuSpin | Action error | Verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 18-spin exchange/Ising | 262,144 | 1 | 13.52 ms | 14.00 ms | 90.54 ms | 0.155 | `8.2e-18` | TCP win |
+| 18-spin exchange/Ising | 262,144 | 4 | 3.62 ms | 3.96 ms | 90.62 ms | 0.044 | `1.1e-17` | TCP win |
+| 10-Fermion × 4-Boson hybrid | 262,144 | 1 | 11.96 ms | 12.33 ms | 22.44 ms | 0.550 | `6.1e-18` | TCP win |
+| 10-Fermion × 4-Boson hybrid | 262,144 | 4 | 11.90 ms | 12.27 ms | 21.94 ms | 0.559 | `1.0e-17` | TCP win |
+| two independent 11-spin fixed-Hamming factors | 213,444 | 1 | 6.30 ms | 6.40 ms | 12.91 ms | 0.496 | `1.2e-17` | TCP win |
+| two independent 11-spin fixed-Hamming factors | 213,444 | 4 | 1.90 ms | 2.17 ms | 13.62 ms | 0.159 | `8.7e-18` | TCP win |
+
+The independent-factor row initially exposed an avoidable Product implementation cost: a contiguous two-factor layout recomputed the generic prefix-completion global rank for every output segment. The fixed path recognizes only contiguous non-interleaved factors, combines their native factor ranks directly as mixed-radix digits, and writes independent destination blocks in parallel without a selected-space permutation. The same workload improved from approximately `244 ms` to `6.40 ms` at one thread; interleaved layouts retain the general ranker.
+
+The hybrid row also exposed an avoidable Cartesian implementation cost. Its Fermion axes form a contiguous binary prefix with a trailing Boson Cartesian suffix, but the previous executor decoded the same Fermion occupation separately for each Boson configuration and could not use the pure-Fermion parallel kernel. The repaired path caches one packed binary word per Fermion prefix and uses it for all trailing Boson configurations, without materializing a transition graph. The one-thread public median improved from `29.30 ms` to `12.33 ms`; the fixed four-thread setting remains approximately `12.27 ms`, so the remaining serial scheduling is a scaling opportunity but not a QuSpin parity blocker.
+
+The raw 18-mode FermionMask diagnostic is also millisecond-scale, but mapping locality alone does not predict the winner. The direct descriptor profile assigns about 37–39% to parity popcount, 29–33% to index update, 30–34% to input/output/cache traffic, and 1–3% to source packing. The concrete locality matrix is:
+
+| Operator class | Raw schedules | JW schedules | 1-thread raw/JW | 4-thread raw/JW | Cross-encoding error | Winner |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| nearest-neighbour chain | 52 | 87 | 26.55 / 22.31 ms | 7.32 / 5.90 ms | `8.5e-14` | JW |
+| long-range hopping (separation at least six) | 174 | 331 | 70.37 / 86.02 ms | 18.79 / 22.39 ms | `1.6e-13` | raw FermionMask |
+| nonlocal quartic pair transfer | 60 | 480 | 19.50 / 123.93 ms | 5.45 / 32.19 ms | `1.5e-14` | raw FermionMask |
+
+Thus a blanket default switch to Jordan--Wigner would be incorrect: it wins this local-chain case despite the raw representation's smaller schedule count, but raw wins once nonlocal one-body hopping doubles the JW schedule count and wins decisively when quartic transfer expands the mapping eightfold. The owner therefore selects raw descriptors as the uniform CPU-native MVP default, with explicit `map_fermions("jordan_wigner")` retained for users who need the Pauli representation. The implementation intentionally adds no topology-dependent runtime selector.
 
 The small independent preflight used two sites, cutoff one, one particle per spin, and complex128. Matrix-free and explicit CSR QuSpin runs both matched the TenCirPauli dimension `16`; the ground-energy error was below `5e-15` in both paths and both residuals were below `9e-10`.
 
@@ -73,7 +104,7 @@ The bounded runner `benchmarks/manual/representation_ab.py` exercises the curren
 
 ## Reproducible tooling
 
-The manual entry points are `benchmarks/manual/compare_quspin.py`, `benchmarks/manual/product_thread_ab.py`, `benchmarks/manual/product_variant_matrix.py`, `benchmarks/manual/fermion_mask_phase_profile.py`, `benchmarks/manual/generic_wide_profile.py`, `benchmarks/manual/representation_ab.py`, `benchmarks/manual/product_u1_16_ab.py`, and `benchmarks/manual/csr_chunk_scaling.py`. The six-site phase profile is emitted by `examples/research/holstein/run_tencirpauli.py` through `construction_profile()`. The frozen Holstein parameter manifest is `benchmarks/workloads/holstein.json`. The QuSpin runner supports both `quantum_LinearOperator` matrix-free execution and explicit CSR execution; unsupported callback-heavy or nonequivalent baselines are not used.
+The manual entry points are `benchmarks/manual/compare_quspin.py`, `benchmarks/manual/quspin_capability_matrix.py`, `benchmarks/manual/product_thread_ab.py`, `benchmarks/manual/product_variant_matrix.py`, `benchmarks/manual/fermion_mask_phase_profile.py`, `benchmarks/manual/generic_wide_profile.py`, `benchmarks/manual/representation_ab.py`, `benchmarks/manual/product_u1_16_ab.py`, and `benchmarks/manual/csr_chunk_scaling.py`. The six-site phase profile is emitted by `examples/research/holstein/run_tencirpauli.py` through `construction_profile()`. The frozen Holstein parameter manifest is `benchmarks/workloads/holstein.json`; the capability matrix manifests are under `benchmarks/workloads/quspin/`. The QuSpin runners support both `quantum_LinearOperator` matrix-free execution and explicit CSR execution; unsupported callback-heavy or nonequivalent baselines are classified explicitly.
 
 ## Project quality gate
 
@@ -81,7 +112,7 @@ The final native build passed `cargo fmt --check`, Clippy with warnings denied, 
 
 ## Remediation status
 
-The fourth-round F4-1 through F4-7 items are technically closed by D30 in the current worktree: native metadata is authoritative; measured specialized winners are selected before Product; Product uses bounded factor-level public indexing and truthful activity counters; Structured/Fermion and Generic allocation regressions are allocator-backed; current variant, phase, CSR, and primary lazy records include the selected native route; and CSR equality/RSS claims are executed by the cited runner. D24 retains eager-format winners and D22 remains the owner-approved eager parity decision.
+The fourth-round F4-1 through F4-7 implementation items remain recorded as completed by D30: native metadata is authoritative; measured specialized winners are selected before Product; Product uses bounded factor-level public indexing and truthful activity counters; Structured/Fermion and Generic allocation regressions are allocator-backed; current variant, phase, CSR, and primary lazy records include the selected native route; and CSR equality/RSS claims are executed by the cited runner. D24 retains eager-format winners and D22 remains the owner-approved eager parity decision. The raw-Fermion policy is now an owner-selected uniform default; the complete capability-matrix gate remains open.
 
 ## Performance interpretation
 
@@ -95,4 +126,4 @@ The matched six-site eager/explicit single-thread comparison is closed as owner-
 | R2 | Closed by active-axis/suffix Structured schedules and the shared `FermionMaskDescriptor`; pure binary plans select the actual packed Pauli native variant, while the measured pure-Fermion A/B explicitly retains its faster specialized executor. | `crates/tencir-pauli-core/src/fermion_mask.rs`, `structured.rs`, `charge.rs`; ordered-CAR/mode-128 tests, structured counters, native-variant tests, and release A/B records. |
 | R3 | Closed by ordered-row append plus D25's bounded source-major exception; the sink uses deterministic heap k-way merge with cross-chunk coalescing and exact-zero removal, and the required chunk/profile evidence is recorded above. | `crates/tencir-pauli-core/src/csr.rs`, `structured.rs`, `charge.rs`; `csr_chunk_scaling.py`, six-site `construction_profile()`, direct CSR/COO equality, and multi-chunk cancellation regression. |
 | R4 | Closed by construction-time compiled schedules and reusable scalar/fixed-width accumulators; raw identifier conversion, descriptor validation, and destination-key allocation are absent from scalable apply loops. | `phase-10.5-trusted-handle-audit.md`, `phase-10.5-owner-decision-log.md` (D29); `tests/test_charge.py`, schedule compilation, conservative preflight, Clippy, and release suite. |
-| R5 | Closed by D22/D24 and D29's native-variant/capability evidence; clean repository provenance remains an owner-side repository operation and is not part of this technical decision. | `phase-10.5-owner-decision-log.md` (D22/D24/D29), `representation_ab.py`, `product_u1_16_ab.py`, isolated Holstein/QuSpin runners, and this document. |
+| R5 | Open only for the complete fair QuSpin capability matrix. The direct raw-Fermion requirement is superseded by the owner-selected uniform raw default, while explicit mapped-Pauli execution remains available. Clean repository provenance remains an owner-side repository operation and is not part of this technical decision. | `phase-10.5-sixth-round-review-2026-08-09.md`, `quspin_capability_matrix.py`, the raw/JW topology diagnostic, isolated Holstein/QuSpin runners, and this document. |

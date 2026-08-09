@@ -1,0 +1,15 @@
+{
+  "workload_manifest": "quspin-capability-v1",
+  "capability": "generic_coupled_charge",
+  "comparison": "no_fair_optimized_baseline",
+  "no_fair_baseline_reason": "The coupled spin-boson charge requires a user_basis or callback-based projection in QuSpin; neither is an equivalent optimized basis.",
+  "operator_family": "coupled_spin_boson_charge_transfer",
+  "storage": "lazy",
+  "quspin_mode": "none",
+  "dtype": "complex128",
+  "seed": 20260809,
+  "warmups": 2,
+  "repeats": 7,
+  "action_tolerance": 1e-11,
+  "max_bytes": 17179869184
+}

@@ -164,6 +164,7 @@ class NativeMVPPlan:
     qudit_dimension: Optional[int]
     weyl_convention: Optional[str]
     execution_family: str
+    native_variant: str
     retained_format: str
     schedule_count: int
     estimated_retained_bytes: int
@@ -192,6 +193,7 @@ class NativeMVPPlan:
         qudit_dimension: Optional[int] = None,
         weyl_convention: Optional[str] = None,
         execution_family: str = "generic",
+        native_variant: Optional[str] = None,
         retained_format: Optional[str] = None,
         schedule_count: Optional[int] = None,
         estimated_retained_bytes: Optional[int] = None,
@@ -269,6 +271,13 @@ class NativeMVPPlan:
         object.__setattr__(self, "weyl_convention", weyl_convention)
         if execution_family not in {"pauli", "cartesian", "product", "generic"}:
             raise ValueError("invalid native MVP execution family")
+        resolved_native_variant = (
+            str(getattr(native_plan, "native_variant", execution_family))
+            if native_variant is None
+            else native_variant
+        )
+        if not resolved_native_variant:
+            raise ValueError("native_variant must be non-empty")
         resolved_format = retained_format or (
             "compiled_actions" if storage == "lazy" else "csr"
         )
@@ -306,6 +315,7 @@ class NativeMVPPlan:
         ):
             raise ValueError("transition_count must be a non-negative integer or None")
         object.__setattr__(self, "execution_family", execution_family)
+        object.__setattr__(self, "native_variant", resolved_native_variant)
         object.__setattr__(self, "retained_format", resolved_format)
         object.__setattr__(self, "schedule_count", resolved_schedule_count)
         object.__setattr__(self, "estimated_retained_bytes", int(resolved_retained))

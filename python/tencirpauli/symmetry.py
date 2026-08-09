@@ -488,6 +488,7 @@ class U1MvpPlan:
     _native_plan: Any
     storage: str
     execution_family: str
+    native_variant: str
     retained_format: str
     source_term_count: int
     schedule_count: int
@@ -535,6 +536,11 @@ class U1MvpPlan:
         object.__setattr__(self, "storage", storage)
         retained_bytes = int(self.estimated_bytes)
         object.__setattr__(self, "execution_family", "product")
+        object.__setattr__(
+            self,
+            "native_variant",
+            str(getattr(native_plan, "native_variant", "qubit")),
+        )
         object.__setattr__(
             self,
             "retained_format",

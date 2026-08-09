@@ -100,6 +100,55 @@ def test_product_counters_prove_two_factor_path_without_fallback_or_ranker() -> 
     assert rankers == 0
 
 
+def test_contiguous_two_factor_product_matches_dense_without_global_ranker() -> None:
+    space = tcp.OperatorSpace(qubits=6)
+    first = tcp.AdditiveCharge(space, qubits={index: (0, 1) for index in range(3)})
+    second = tcp.AdditiveCharge(space, qubits={index: (0, 1) for index in range(3, 6)})
+    operator = (
+        space.qubit.x(0) * space.qubit.x(1)
+        + space.qubit.y(0) * space.qubit.y(1)
+        - 0.7 * space.qubit.x(3) * space.qubit.x(4)
+        - 0.7 * space.qubit.y(3) * space.qubit.y(4)
+        + 0.13 * space.qubit.z(0) * space.qubit.z(3)
+    )
+    restricted = operator.restrict_charge(tcp.ChargeSector(((first, 1), (second, 1))))
+    plan = restricted.mvp_plan()
+    assert plan.native_variant == "product"
+    state = np.arange(plan.dimension, dtype=np.complex128) + 0.3j
+    output = np.empty_like(state)
+    plan.apply_into(state, output, max_bytes=0)
+    np.testing.assert_allclose(output, restricted.dense() @ state)
+
+
+def test_contiguous_fermion_prefix_with_boson_suffix_matches_dense() -> None:
+    space = tcp.OperatorSpace(fermions=3, bosons=2)
+    fermion = space.fermion
+    boson = space.boson
+    operator = (
+        -0.41
+        * (
+            fermion.create(0) * fermion.annihilate(1)
+            + fermion.create(1) * fermion.annihilate(0)
+        )
+        + 0.17
+        * fermion.create(2)
+        * fermion.annihilate(2)
+        * (boson.create(0) + boson.annihilate(0))
+        + 0.29
+        * (
+            boson.create(0) * boson.annihilate(1)
+            + boson.create(1) * boson.annihilate(0)
+        )
+    )
+    plan = operator.compile("native_mvp", boson_cutoffs={0: 2, 1: 2}, max_bytes=None)
+    assert plan.execution_family == "cartesian"
+    state = np.arange(plan.dimension, dtype=np.complex128) - 0.2j
+    output = np.empty_like(state)
+    plan.apply_into(state, output, max_bytes=0)
+    dense = operator.compile("dense", boson_cutoffs={0: 2, 1: 2}, max_bytes=None)
+    np.testing.assert_allclose(output, dense @ state)
+
+
 def test_product_identity_spectator_scales_segments_not_factor_work() -> None:
     small, small_sector = _two_factor_product(1)
     large, large_sector = _two_factor_product(3)
@@ -212,6 +261,33 @@ def test_product_public_index_handles_interleaved_factor_without_ranker(
     assert counters[3] == 0
     assert counters[4] == 0
     assert counters[5] > 0
+
+
+def test_product_keeps_diagonal_active_factors_out_of_inactive_schedule_groups() -> (
+    None
+):
+    """A cross-factor diagonal must not reuse an inactive-factor representative."""
+    space = tcp.OperatorSpace(qubits=7)
+    first = tcp.AdditiveCharge(space, qubits={index: (0, 1) for index in range(3)})
+    second = tcp.AdditiveCharge(space, qubits={index: (0, 1) for index in range(3, 7)})
+    operator = (
+        0.52
+        * (space.qubit.x(0) * space.qubit.x(2) + space.qubit.y(0) * space.qubit.y(2))
+        - 0.34
+        * (space.qubit.x(3) * space.qubit.x(6) + space.qubit.y(3) * space.qubit.y(6))
+        + 0.18 * space.qubit.z(1) * space.qubit.z(5)
+        - 0.07 * space.qubit.z(4)
+    )
+    restricted = operator.restrict_charge(tcp.ChargeSector(((first, 1), (second, 2))))
+    plan = restricted.mvp_plan()
+    assert plan.native_variant == "product"
+    state = np.arange(plan.dimension, dtype=np.complex128) + 0.25j
+    output = np.empty_like(state)
+    plan.apply_into(state, output, max_bytes=0)
+    np.testing.assert_allclose(output, restricted.dense() @ state)
+    counters = tuple(plan._native_execution.debug_counters())
+    assert counters[0] > 0
+    assert counters[3:5] == (0, 0)
 
 
 def test_csr_chunk_capacities_have_identical_arrays_and_mvp() -> None:
@@ -342,6 +418,9 @@ def test_raw_fermion_source_packing_is_shared_across_schedule_members() -> None:
     )
     raw = operator.compile("native_mvp")
     mapped = operator.map_fermions().compile("native_mvp")
+    assert raw.native_variant == "compiled"
+    assert raw._native_plan.native_variant == "compiled"
+    assert mapped.native_variant == "pauli"
     state = np.arange(raw.dimension, dtype=np.complex128) - 0.25j
     output = np.empty_like(state)
     raw.apply_into(state, output, max_bytes=0)

@@ -2585,7 +2585,7 @@ struct ProductLazyActionDescriptor {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ProductScheduleKey(Vec<(bool, usize)>);
+struct ProductScheduleKey(Vec<(bool, bool, usize)>);
 
 struct ProductScheduleGroup {
     members: Box<[usize]>,
@@ -2674,6 +2674,20 @@ struct ProductPublicIndexer {
     axis_roles: Box<[ProductAxisRole]>,
     spectator_suffix_dimensions: Box<[usize]>,
     factors: Box<[ProductFactorPublicIndex]>,
+    flat_component_strides: Option<ProductFlatComponentStrides>,
+}
+
+/// Direct mixed-radix ranks for a public layout formed from contiguous,
+/// independent factor components and Cartesian spectator axes.
+///
+/// The general prefix-completion ranker remains necessary for interleaved
+/// factor axes.  For a contiguous component layout, however, each factor's
+/// own canonical rank is already its public mixed-radix digit.  Reusing it
+/// avoids recomputing both global ranks for every Product segment.
+struct ProductFlatComponentStrides {
+    factor_strides: Box<[usize]>,
+    spectator_strides: Box<[usize]>,
+    dimension: usize,
 }
 
 impl ProductPublicIndexer {
@@ -2689,6 +2703,18 @@ impl ProductPublicIndexer {
             || prefix_lengths.len() != self.factors.len()
         {
             return Err(invalid_sector());
+        }
+        if let Some(strides) = self.flat_component_strides.as_ref() {
+            let mut rank = 0usize;
+            for (factor, &factor_rank) in factor_ranks.iter().enumerate() {
+                debug_assert!(factor_rank < self.factors[factor].completion_count(factor_rank, 0));
+                rank += factor_rank * strides.factor_strides[factor];
+            }
+            for (spectator, &value) in spectator_values.iter().enumerate() {
+                rank += value * strides.spectator_strides[spectator];
+            }
+            debug_assert!(rank < strides.dimension);
+            return Ok(rank);
         }
         prefix_lengths.fill(0);
         let mut rank = 0usize;
@@ -2751,6 +2777,88 @@ impl ProductPublicIndexer {
     }
 }
 
+fn contiguous_product_component_strides(
+    axis_roles: &[ProductAxisRole],
+    factor_dimensions: &[usize],
+    spectator_dimensions: &[usize],
+    dimension: usize,
+) -> Result<Option<ProductFlatComponentStrides>, PauliError> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Component {
+        Factor(usize),
+        Spectator(usize),
+    }
+
+    let mut components = Vec::<Component>::new();
+    let mut factor_axis_counts = vec![0usize; factor_dimensions.len()];
+    let mut factor_closed = vec![false; factor_dimensions.len()];
+    let mut spectator_seen = vec![false; spectator_dimensions.len()];
+    let mut previous = None;
+    for role in axis_roles {
+        let component = match *role {
+            ProductAxisRole::Factor { factor, local_axis } => {
+                if factor >= factor_dimensions.len()
+                    || local_axis != factor_axis_counts[factor]
+                    || factor_closed[factor]
+                {
+                    return Ok(None);
+                }
+                factor_axis_counts[factor] += 1;
+                Component::Factor(factor)
+            }
+            ProductAxisRole::Spectator { spectator } => {
+                if spectator >= spectator_dimensions.len() || spectator_seen[spectator] {
+                    return Ok(None);
+                }
+                spectator_seen[spectator] = true;
+                Component::Spectator(spectator)
+            }
+        };
+        if previous != Some(component) {
+            if let Some(Component::Factor(factor)) = previous {
+                factor_closed[factor] = true;
+            }
+            components.push(component);
+            previous = Some(component);
+        }
+    }
+    if factor_axis_counts.contains(&0) || spectator_seen.iter().any(|&seen| !seen) {
+        return Ok(None);
+    }
+    let mut factor_strides = vec![0usize; factor_dimensions.len()];
+    let mut spectator_strides = vec![0usize; spectator_dimensions.len()];
+    let mut stride = 1usize;
+    for component in components.iter().rev() {
+        match *component {
+            Component::Factor(factor) => {
+                factor_strides[factor] = stride;
+                stride =
+                    stride
+                        .checked_mul(factor_dimensions[factor])
+                        .ok_or(PauliError::Overflow {
+                            context: "sizing contiguous Product public index",
+                        })?;
+            }
+            Component::Spectator(spectator) => {
+                spectator_strides[spectator] = stride;
+                stride = stride.checked_mul(spectator_dimensions[spectator]).ok_or(
+                    PauliError::Overflow {
+                        context: "sizing contiguous Product public index",
+                    },
+                )?;
+            }
+        }
+    }
+    if stride != dimension {
+        return Ok(None);
+    }
+    Ok(Some(ProductFlatComponentStrides {
+        factor_strides: factor_strides.into_boxed_slice(),
+        spectator_strides: spectator_strides.into_boxed_slice(),
+        dimension,
+    }))
+}
+
 #[derive(Default)]
 struct ProductApplyCounters {
     factor_action_evaluations: AtomicUsize,
@@ -2760,6 +2868,23 @@ struct ProductApplyCounters {
     ranker_invocations: AtomicUsize,
     group_evaluations: AtomicUsize,
     aggregate_insertions: AtomicUsize,
+}
+
+#[derive(Default)]
+struct ProductApplyCounterDeltas {
+    factor_action_evaluations: usize,
+    spectator_segment_applications: usize,
+    aggregate_insertions: usize,
+    group_evaluations: usize,
+}
+
+impl ProductApplyCounterDeltas {
+    fn merge(&mut self, other: Self) {
+        self.factor_action_evaluations += other.factor_action_evaluations;
+        self.spectator_segment_applications += other.spectator_segment_applications;
+        self.aggregate_insertions += other.aggregate_insertions;
+        self.group_evaluations += other.group_evaluations;
+    }
 }
 
 impl ProductApplyCounters {
@@ -2774,6 +2899,17 @@ impl ProductApplyCounters {
             self.aggregate_insertions.load(Ordering::Relaxed),
         )
     }
+
+    fn add(&self, deltas: &ProductApplyCounterDeltas) {
+        self.factor_action_evaluations
+            .fetch_add(deltas.factor_action_evaluations, Ordering::Relaxed);
+        self.spectator_segment_applications
+            .fetch_add(deltas.spectator_segment_applications, Ordering::Relaxed);
+        self.aggregate_insertions
+            .fetch_add(deltas.aggregate_insertions, Ordering::Relaxed);
+        self.group_evaluations
+            .fetch_add(deltas.group_evaluations, Ordering::Relaxed);
+    }
 }
 
 fn product_schedule_key(
@@ -2785,23 +2921,22 @@ fn product_schedule_key(
     for (factor_index, maybe_action) in action.factor_actions.iter().enumerate() {
         if let Some(factor_action) = maybe_action {
             for transition in &factor_action.transitions {
-                key.push(
-                    transition
-                        .as_ref()
-                        .map_or((false, 0), |transition| (true, transition.destination_rank)),
-                );
+                key.push(transition.as_ref().map_or((true, false, 0), |transition| {
+                    (true, true, transition.destination_rank)
+                }));
             }
         } else {
             for source in 0..factor_dimensions[factor_index] {
-                key.push((true, source));
+                key.push((false, true, source));
             }
         }
     }
     for (spectator_index, maybe_action) in action.spectator_actions.iter().enumerate() {
         if let Some(spectator_action) = maybe_action {
             for transition in &spectator_action.transitions {
-                key.push(transition.as_ref().map_or((false, 0), |transition| {
+                key.push(transition.as_ref().map_or((true, false, 0), |transition| {
                     (
+                        true,
                         true,
                         usize::try_from(transition.destination).unwrap_or(usize::MAX),
                     )
@@ -2809,7 +2944,7 @@ fn product_schedule_key(
             }
         } else {
             for source in 0..spectator_dimensions[spectator_index] {
-                key.push((true, source));
+                key.push((false, true, source));
             }
         }
     }
@@ -2896,6 +3031,257 @@ impl FastProductMvpPlan {
                 words[mode / 64] |= 1_u64 << (mode % 64);
             }
         }
+        Ok(())
+    }
+
+    fn has_contiguous_two_factor_kernel(&self) -> bool {
+        let Some(strides) = self.public_indexer.flat_component_strides.as_ref() else {
+            return false;
+        };
+        self.factor_dimensions.len() == 2
+            && self.spectator_dimensions.is_empty()
+            && strides.factor_strides.len() == 2
+            && strides.factor_strides[0] == self.factor_dimensions[1]
+            && strides.factor_strides[1] == 1
+            && self
+                .actions
+                .iter()
+                .all(|action| action.fermion_mask.is_none())
+    }
+
+    fn group_has_active_factor(group: &ProductScheduleGroup, factor: usize) -> bool {
+        group
+            .active_factors
+            .components
+            .iter()
+            .any(|component| component.index == factor)
+    }
+
+    fn contiguous_two_factor_source_rank(
+        &self,
+        group: &ProductScheduleGroup,
+        factor: usize,
+        destination_rank: usize,
+        active: bool,
+    ) -> Option<usize> {
+        if !active {
+            return Some(destination_rank);
+        }
+        self.actions[group.representative].factor_actions[factor]
+            .as_ref()?
+            .inverse_transitions
+            .get(destination_rank)?
+            .as_ref()
+            .map(|transition| transition.source_rank)
+    }
+
+    fn contiguous_two_factor_aggregate(
+        &self,
+        group: &ProductScheduleGroup,
+        source: [usize; 2],
+        destination: [usize; 2],
+        active: [bool; 2],
+    ) -> Option<Complex64> {
+        let mut aggregate = Complex64::default();
+        for &action_index in &group.members {
+            let action = &self.actions[action_index];
+            let mut value = action.coefficient;
+            if active[0] {
+                let transition = action.factor_actions[0]
+                    .as_ref()?
+                    .transitions
+                    .get(source[0])?
+                    .as_ref()?;
+                if transition.destination_rank != destination[0] {
+                    return None;
+                }
+                value *= transition.value;
+            }
+            if active[1] {
+                let transition = action.factor_actions[1]
+                    .as_ref()?
+                    .transitions
+                    .get(source[1])?
+                    .as_ref()?;
+                if transition.destination_rank != destination[1] {
+                    return None;
+                }
+                value *= transition.value;
+            }
+            aggregate += value;
+        }
+        Some(aggregate)
+    }
+
+    fn apply_contiguous_two_factor_into(
+        &self,
+        state: &[Complex64],
+        output: &mut [Complex64],
+    ) -> Result<(), PauliError> {
+        let zero_dimension = self.factor_dimensions[0];
+        let one_dimension = self.factor_dimensions[1];
+        let mut counter_deltas = ProductApplyCounterDeltas::default();
+        for group in &self.groups {
+            let active_zero = Self::group_has_active_factor(group, 0);
+            let active_one = Self::group_has_active_factor(group, 1);
+            let member_count = group.members.len();
+            let group_deltas = match (active_zero, active_one) {
+                (false, false) => {
+                    let mut deltas = ProductApplyCounterDeltas {
+                        group_evaluations: 1,
+                        aggregate_insertions: member_count,
+                        ..ProductApplyCounterDeltas::default()
+                    };
+                    let Some(aggregate) =
+                        self.contiguous_two_factor_aggregate(group, [0, 0], [0, 0], [false, false])
+                    else {
+                        continue;
+                    };
+                    if aggregate.re != 0.0 || aggregate.im != 0.0 {
+                        output.par_iter_mut().zip(state.par_iter()).for_each(
+                            |(destination, source)| {
+                                *destination += aggregate * *source;
+                            },
+                        );
+                        deltas.spectator_segment_applications = self.dimension;
+                    }
+                    deltas
+                }
+                (true, false) => output
+                    .par_chunks_mut(one_dimension)
+                    .enumerate()
+                    .map(|(destination_zero, destination_row)| {
+                        let mut deltas = ProductApplyCounterDeltas::default();
+                        let Some(source_zero) = self.contiguous_two_factor_source_rank(
+                            group,
+                            0,
+                            destination_zero,
+                            true,
+                        ) else {
+                            return deltas;
+                        };
+                        deltas.group_evaluations = 1;
+                        deltas.factor_action_evaluations = 1;
+                        deltas.aggregate_insertions = member_count;
+                        let Some(aggregate) = self.contiguous_two_factor_aggregate(
+                            group,
+                            [source_zero, 0],
+                            [destination_zero, 0],
+                            [true, false],
+                        ) else {
+                            return deltas;
+                        };
+                        if aggregate.re != 0.0 || aggregate.im != 0.0 {
+                            let source_start = source_zero * one_dimension;
+                            for (destination, source) in destination_row
+                                .iter_mut()
+                                .zip(&state[source_start..source_start + one_dimension])
+                            {
+                                *destination += aggregate * *source;
+                            }
+                            deltas.spectator_segment_applications = one_dimension;
+                        }
+                        deltas
+                    })
+                    .reduce(ProductApplyCounterDeltas::default, |mut total, deltas| {
+                        total.merge(deltas);
+                        total
+                    }),
+                (false, true) => {
+                    let mut values = Vec::with_capacity(one_dimension);
+                    let mut deltas = ProductApplyCounterDeltas::default();
+                    for destination_one in 0..one_dimension {
+                        let Some(source_one) =
+                            self.contiguous_two_factor_source_rank(group, 1, destination_one, true)
+                        else {
+                            values.push(None);
+                            continue;
+                        };
+                        deltas.group_evaluations += 1;
+                        deltas.factor_action_evaluations += 1;
+                        deltas.aggregate_insertions += member_count;
+                        let aggregate = self.contiguous_two_factor_aggregate(
+                            group,
+                            [0, source_one],
+                            [0, destination_one],
+                            [false, true],
+                        );
+                        values.push(aggregate.map(|value| (source_one, value)));
+                    }
+                    if values.iter().any(|value| {
+                        value.is_some_and(|(_, value)| value.re != 0.0 || value.im != 0.0)
+                    }) {
+                        output.par_chunks_mut(one_dimension).enumerate().for_each(
+                            |(factor_zero, destination_row)| {
+                                let source_start = factor_zero * one_dimension;
+                                for (destination_one, value) in values.iter().enumerate() {
+                                    let Some((source_one, aggregate)) = value else {
+                                        continue;
+                                    };
+                                    if aggregate.re != 0.0 || aggregate.im != 0.0 {
+                                        destination_row[destination_one] +=
+                                            *aggregate * state[source_start + *source_one];
+                                    }
+                                }
+                            },
+                        );
+                        deltas.spectator_segment_applications = self.dimension;
+                    }
+                    deltas
+                }
+                (true, true) => output
+                    .par_chunks_mut(one_dimension)
+                    .enumerate()
+                    .map(|(destination_zero, destination_row)| {
+                        let mut deltas = ProductApplyCounterDeltas::default();
+                        let Some(source_zero) = self.contiguous_two_factor_source_rank(
+                            group,
+                            0,
+                            destination_zero,
+                            true,
+                        ) else {
+                            return deltas;
+                        };
+                        for (destination_one, destination) in destination_row.iter_mut().enumerate()
+                        {
+                            let Some(source_one) = self.contiguous_two_factor_source_rank(
+                                group,
+                                1,
+                                destination_one,
+                                true,
+                            ) else {
+                                continue;
+                            };
+                            deltas.group_evaluations += 1;
+                            deltas.factor_action_evaluations += 2;
+                            deltas.aggregate_insertions += member_count;
+                            let Some(aggregate) = self.contiguous_two_factor_aggregate(
+                                group,
+                                [source_zero, source_one],
+                                [destination_zero, destination_one],
+                                [true, true],
+                            ) else {
+                                continue;
+                            };
+                            if aggregate.re != 0.0 || aggregate.im != 0.0 {
+                                *destination +=
+                                    aggregate * state[source_zero * one_dimension + source_one];
+                                deltas.spectator_segment_applications += 1;
+                            }
+                        }
+                        deltas
+                    })
+                    .reduce(ProductApplyCounterDeltas::default, |mut total, deltas| {
+                        total.merge(deltas);
+                        total
+                    }),
+            };
+            counter_deltas.merge(group_deltas);
+        }
+        if let Some(counters) = self.counters.as_ref() {
+            counters.add(&counter_deltas);
+        }
+        debug_assert_eq!(zero_dimension * one_dimension, self.dimension);
         Ok(())
     }
 
@@ -3122,7 +3508,11 @@ impl FastProductMvpPlan {
             return Err(invalid_sector());
         }
         output.fill(Complex64::default());
-        self.apply_destination_gather_into(state, output)
+        if self.has_contiguous_two_factor_kernel() {
+            self.apply_contiguous_two_factor_into(state, output)
+        } else {
+            self.apply_destination_gather_into(state, output)
+        }
     }
 }
 
@@ -3670,10 +4060,17 @@ pub fn build_fast_product_mvp_plan(
     if suffix_dimension != spectator_dimension {
         return Err(invalid_sector());
     }
+    let flat_component_strides = contiguous_product_component_strides(
+        &axis_roles,
+        &factor_dimensions,
+        &spectator_dimensions,
+        dimension,
+    )?;
     let public_indexer = ProductPublicIndexer {
         axis_roles: axis_roles.into_boxed_slice(),
         spectator_suffix_dimensions: spectator_suffix_dimensions.into_boxed_slice(),
         factors: public_factor_indexes.into_boxed_slice(),
+        flat_component_strides,
     };
     let mut actions = Vec::new();
     if lazy {

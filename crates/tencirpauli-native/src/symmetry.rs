@@ -249,6 +249,11 @@ impl NativeU1MvpPlan {
         self.plan.transition_count()
     }
 
+    #[getter]
+    fn native_variant(&self) -> &'static str {
+        "qubit"
+    }
+
     fn apply<'py>(
         &self,
         py: Python<'py>,
@@ -317,6 +322,11 @@ impl NativeU1LazyMvpPlan {
     #[getter]
     fn estimated_bytes(&self) -> u128 {
         self.plan.estimated_bytes()
+    }
+
+    #[getter]
+    fn native_variant(&self) -> &'static str {
+        "qubit"
     }
 
     fn apply<'py>(

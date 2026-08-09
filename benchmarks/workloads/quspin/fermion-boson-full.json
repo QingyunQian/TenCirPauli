@@ -1,0 +1,14 @@
+{
+  "workload_manifest": "quspin-capability-v1",
+  "capability": "fermion_boson_full",
+  "comparison": "directly_comparable",
+  "operator_family": "fermion_boson_hopping_density_displacement",
+  "storage": "lazy",
+  "quspin_mode": "matrix_free",
+  "dtype": "complex128",
+  "seed": 20260809,
+  "warmups": 2,
+  "repeats": 7,
+  "action_tolerance": 1e-11,
+  "max_bytes": 17179869184
+}
