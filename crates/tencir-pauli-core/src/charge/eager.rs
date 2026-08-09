@@ -41,6 +41,8 @@ fn compile_charge_row_buffers_from_prepared_plan(
     let mut destination = vec![0_u64; axis_count];
     let mut remaining = vec![0_i128; plan.constraint_count()];
     let mut candidate_remaining = vec![0_i128; plan.constraint_count()];
+    let execution_layout = plan.factorized_execution_layout();
+    let mut factor_scratch = execution_layout.map(FactorizedLayout::scratch);
     let mut apply_stats = ChargeApplyStats::default();
     let mut destinations =
         ChargeDestinationAccumulator::new(layout.full_strides.as_deref(), terms.len(), axis_count)?;
@@ -53,14 +55,25 @@ fn compile_charge_row_buffers_from_prepared_plan(
     let mut fermion_words = vec![0_u64; fermion_word_count];
     let mut sink = CsrSink::with_chunk_capacity(dimension, chunk_capacity);
     for column in 0..dimension {
-        plan.unrank_into_with_scratch(
-            u64::try_from(column).map_err(|_| PauliError::Overflow {
-                context: "indexing charge-sector transitions",
-            })?,
-            &mut source,
-            &mut remaining,
-            &mut candidate_remaining,
-        )?;
+        let column_rank = u64::try_from(column).map_err(|_| PauliError::Overflow {
+            context: "indexing charge-sector transitions",
+        })?;
+        if let (Some(layout), Some(scratch)) = (execution_layout, factor_scratch.as_mut()) {
+            if column == 0 {
+                layout.unrank_with_scratch(column_rank, &mut source, scratch)?;
+            } else if !layout.advance_public_cursor(&mut source, scratch)? {
+                return Err(PauliError::InvalidSector {
+                    context: "factorized source cursor ended before sector dimension",
+                });
+            }
+        } else {
+            plan.unrank_into_with_scratch(
+                column_rank,
+                &mut source,
+                &mut remaining,
+                &mut candidate_remaining,
+            )?;
+        }
         destinations.clear();
         for schedule in schedules {
             let Some(value) = apply_compiled_charge_schedule(
@@ -84,7 +97,14 @@ fn compile_charge_row_buffers_from_prepared_plan(
                 return Ok(());
             }
             apply_stats.ranker_invocations += 1;
-            let row = match plan.rank_into(destination, &mut remaining, &mut candidate_remaining) {
+            let ranked = if let (Some(layout), Some(scratch)) =
+                (execution_layout, factor_scratch.as_mut())
+            {
+                layout.rank_with_scratch(destination, scratch)
+            } else {
+                plan.rank_into(destination, &mut remaining, &mut candidate_remaining)
+            };
+            let row = match ranked {
                 Ok(row) => row,
                 Err(PauliError::InvalidSector { .. }) => {
                     return Err(PauliError::InvalidSector {

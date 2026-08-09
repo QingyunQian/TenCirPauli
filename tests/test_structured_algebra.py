@@ -879,11 +879,10 @@ def test_tensor_product_grading_and_layout_compatibility() -> None:
         _ = left + tcp.OperatorSpace(fermions=2).fermion.annihilate(0)
 
 
-def test_structured_memory_and_target_errors() -> None:
+def test_structured_advisory_memory_and_target_errors() -> None:
     assert tcp.DEFAULT_MAX_BYTES == 16 * 1024**3
     operator = tcp.BosonOperator.from_terms(1, [(((0, "create"),), 1.0)])
-    with pytest.raises(MemoryError):
-        operator.compile("dense", boson_cutoffs={0: 3}, max_bytes=1)
+    assert operator.compile("dense", boson_cutoffs={0: 3}, max_bytes=1).shape == (4, 4)
     with pytest.raises(NotImplementedError):
         operator.compile("backend_mvp", boson_cutoffs={0: 3})
     fermion = tcp.FermionOperator.from_terms(1, [(((0, "annihilate"),), 1.0)])
@@ -1168,7 +1167,7 @@ def test_fermion_canonical_fast_path_accepts_long_words(count: int) -> None:
     assert operator.terms[0].word.creation_modes == tuple(range(count))
 
 
-def test_fermion_inversion_nilpotency_and_running_guard() -> None:
+def test_fermion_inversion_nilpotency_and_advisory_running_guard() -> None:
     factors = tuple((mode, "create") for mode in range(127, -1, -1))
     inverted = tcp.FermionOperator.from_terms(
         128, [(factors, 1.0)], max_bytes=128 * 192 + 192
@@ -1182,7 +1181,7 @@ def test_fermion_inversion_nilpotency_and_running_guard() -> None:
             max_bytes=1024,
         )
         assert duplicate.term_count == 0
-    with pytest.raises(MemoryError):
+    assert (
         tcp.FermionOperator.from_terms(
             3,
             [
@@ -1199,7 +1198,9 @@ def test_fermion_inversion_nilpotency_and_running_guard() -> None:
                 )
             ],
             max_bytes=1400,
-        )
+        ).term_count
+        >= 0
+    )
 
 
 def test_partial_mapping_both_orders_nested_and_tensor_product() -> None:

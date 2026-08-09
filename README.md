@@ -202,6 +202,8 @@ The circuit facade adds a value-only `expectation(observable)` terminal; it agre
 
 `U1Sector` and `U1Circuit` use TensorCircuit computational-basis integer ordering. `U1Circuit` stores and executes only the fixed-Hamming-weight sector; `state()`/`probability()` are restricted-space terminals and `state_full()`/`probability_full()` are explicit full-space terminals. The native restricted implementation supports arbitrary-width packed occupation limbs, while full-space materialization remains subject to the public `DEFAULT_MAX_BYTES` guard.
 
+`max_bytes` is a coarse guard for cheaply estimated major outputs and workspaces, not a peak-RSS promise. Values below 1 GiB are advisory and are treated as unbounded; at or above 1 GiB, readily estimated major allocations are preflighted. Checked dimensions and arithmetic always apply, and an allocator-level out-of-memory failure remains possible for requests that cannot be estimated cheaply.
+
 ## TensorCircuit conversion
 
 TensorCircuit is the required ecosystem dependency. User-facing conversion uses target-type classmethods:

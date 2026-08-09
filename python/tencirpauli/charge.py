@@ -5,7 +5,6 @@ from __future__ import annotations
 import cmath
 import math
 import threading
-from dataclasses import dataclass
 from typing import (
     Any,
     Dict,
@@ -36,6 +35,7 @@ from .hamiltonian import (
     CSRMatrix,
     _check_allocation,
     _effective_max_bytes,
+    _enforced_max_bytes,
     _validate_apply_into_buffers,
     _validate_max_bytes,
 )
@@ -753,226 +753,6 @@ class ChargeSector:
         return f"ChargeSector(dimension={self.dimension}, constraints={len(self.constraints)})"
 
 
-def _restricted_layout_inputs(
-    sector: ChargeSector,
-) -> Tuple[Tuple[int, ...], List[int], List[int], List[int], List[int], int]:
-    axis_positions = {
-        (axis.domain, axis.index): position
-        for position, axis in enumerate(sector.space._axes)
-    }
-    return (
-        tuple(sector.local_dimensions),
-        [axis_positions[("fermion", index)] for index in range(sector.space.fermions)],
-        [axis_positions[("boson", index)] for index in range(sector.space.bosons)],
-        [axis_positions[("qubit", index)] for index in range(sector.space.qubits)],
-        [axis_positions[("qudit", index)] for index in range(len(sector.space.qudits))],
-        sector.space.qudits[0] if sector.space.qudits else 0,
-    )
-
-
-def _fast_qubit_particles(
-    sector: ChargeSector,
-) -> Optional[Tuple[int, Tuple[int, ...]]]:
-    """Return active qubit factor weight and public positions."""
-    if len(sector.constraints) != 1 or sector.space.qubits == 0:
-        return None
-    charge, requested = sector.constraints[0]
-    if (
-        any(value != 0 for value in charge.fermion_weights)
-        or any(value != 0 for value in charge.boson_weights)
-        or any(value != 0 for value in charge.qudit_weights)
-        or any(levels not in {(0, 0), (0, 1)} for levels in charge.qubit_levels)
-    ):
-        return None
-    # ``qubit_levels`` is indexed in the qubit domain, whereas the native
-    # compiler expects positions in the public mixed-radix axis layout.  Keep
-    # the conversion here so a spectator from another domain (for example a
-    # leading boson axis) does not accidentally get treated as a qubit factor.
-    qubit_positions = _restricted_layout_inputs(sector)[3]
-    active_positions = tuple(
-        qubit_positions[index]
-        for index, levels in enumerate(charge.qubit_levels)
-        if levels == (0, 1)
-    )
-    if not active_positions:
-        return None
-    ordered = sorted(active_positions)
-    if ordered != list(range(ordered[0], ordered[-1] + 1)):
-        return None
-    particles = requested - charge.offset
-    if particles < 0 or particles > len(active_positions):
-        return None
-    return particles, active_positions
-
-
-def _fast_qudit_factor(
-    sector: ChargeSector,
-) -> Optional[Tuple[Tuple[int, ...], int, Tuple[int, ...]]]:
-    """Return one canonical spin-z qudit factor and its public positions."""
-    if len(sector.constraints) != 1 or not sector.space.qudits:
-        return None
-    charge, requested = sector.constraints[0]
-    if (
-        any(value != 0 for value in charge.fermion_weights)
-        or any(value != 0 for value in charge.boson_weights)
-        or any(levels != (0, 0) for levels in charge.qubit_levels)
-        or not any(value != 0 for value in charge.qudit_weights)
-    ):
-        return None
-    qudit_positions = _restricted_layout_inputs(sector)[4]
-    active = tuple(
-        qudit_positions[index]
-        for index, value in enumerate(charge.qudit_weights)
-        if value != 0
-    )
-    weights = tuple(value for value in charge.qudit_weights if value != 0)
-    if not active:
-        return None
-    ordered = sorted(active)
-    if ordered != list(range(ordered[0], ordered[-1] + 1)):
-        return None
-    return weights, requested - charge.offset, active
-
-
-def _fast_boson_factor(
-    sector: ChargeSector,
-) -> Optional[Tuple[Tuple[int, ...], int, Tuple[int, ...]]]:
-    """Return a fixed-number boson factor and its public positions."""
-    if len(sector.constraints) != 1 or not sector.space.bosons:
-        return None
-    charge, requested = sector.constraints[0]
-    if (
-        any(value != 0 for value in charge.fermion_weights)
-        or any(levels != (0, 0) for levels in charge.qubit_levels)
-        or any(value != 0 for value in charge.qudit_weights)
-        or not any(value != 0 for value in charge.boson_weights)
-    ):
-        return None
-    boson_positions = _restricted_layout_inputs(sector)[2]
-    active = tuple(
-        boson_positions[index]
-        for index, value in enumerate(charge.boson_weights)
-        if value != 0
-    )
-    weights = tuple(value for value in charge.boson_weights if value != 0)
-    if not active:
-        return None
-    ordered = sorted(active)
-    if ordered != list(range(ordered[0], ordered[-1] + 1)):
-        return None
-    return weights, requested - charge.offset, active
-
-
-def _supports_independent_factor_product(
-    sector: ChargeSector,
-) -> Optional[Tuple[Tuple[int, ...], ...]]:
-    """Return public-axis descriptors for disjoint single-domain factors."""
-    if not sector.constraints:
-        return None
-    positions_by_domain = {
-        (axis.domain, axis.index): position
-        for position, axis in enumerate(sector.space._axes)
-    }
-
-    # Total particle number plus a zero spin-balance constraint is algebraically
-    # equivalent to a fixed compact Fermion sector.  Treat the selected
-    # Fermion basis as one Product factor so the shared executor, rather than
-    # the historical spinful shortcut, owns the public transition semantics.
-    if sector.space.fermions and not sector.space.qubits and not sector.space.qudits:
-        sites = sector.space.fermions // 2
-        if sector.space.fermions % 2 == 0:
-            total_weights = (1,) * sector.space.fermions
-            grouped_balance = (1,) * sites + (-1,) * sites
-            interleaved_balance = tuple(
-                value for _ in range(sites) for value in (1, -1)
-            )
-            total_target: Optional[int] = None
-            balance_target: Optional[int] = None
-            recognized = True
-            for charge, requested in sector.constraints:
-                if (
-                    any(value != 0 for value in charge.boson_weights)
-                    or any(value != 0 for value in charge.qudit_weights)
-                    or any(level != (0, 0) for level in charge.qubit_levels)
-                ):
-                    recognized = False
-                    break
-                target = requested - charge.offset
-                if charge.fermion_weights == total_weights and total_target is None:
-                    total_target = target
-                elif (
-                    charge.fermion_weights
-                    in {
-                        grouped_balance,
-                        interleaved_balance,
-                    }
-                    and balance_target is None
-                ):
-                    balance_target = target
-                else:
-                    recognized = False
-                    break
-            if (
-                recognized
-                and total_target is not None
-                and balance_target == 0
-                and total_target % 2 == 0
-                and 0 < total_target // 2 <= sites
-            ):
-                return (
-                    tuple(
-                        positions_by_domain[("fermion", index)]
-                        for index in range(sector.space.fermions)
-                    ),
-                )
-
-    occupied: set[int] = set()
-    factors: list[Tuple[int, ...]] = []
-    single_noncontiguous = False
-    single_compact_domain = False
-    for constraint_index, (charge, _) in enumerate(sector.constraints):
-        active: set[int] = set()
-        domains: set[str] = set()
-        for index, value in enumerate(charge.fermion_weights):
-            if value:
-                active.add(positions_by_domain[("fermion", index)])
-                domains.add("fermion")
-        for index, value in enumerate(charge.boson_weights):
-            if value:
-                active.add(positions_by_domain[("boson", index)])
-                domains.add("boson")
-        for index, levels in enumerate(charge.qubit_levels):
-            if levels != (0, 0):
-                active.add(positions_by_domain[("qubit", index)])
-                domains.add("qubit")
-        for index, value in enumerate(charge.qudit_weights):
-            if value:
-                active.add(positions_by_domain[("qudit", index)])
-                domains.add("qudit")
-        if not active or len(domains) != 1 or occupied.intersection(active):
-            return None
-        if constraint_index == 0 and len(sector.constraints) == 1:
-            domain = next(iter(domains))
-            # The shared Product descriptor is also the canonical executor for
-            # a single compact Fermion factor.  Keeping the specialized
-            # one-domain shortcut here would make the same public sector use a
-            # second production semantic kernel.
-            single_compact_domain = domain in {"fermion", "qubit", "qudit", "boson"}
-            ordered = sorted(active)
-            contiguous = ordered == list(range(ordered[0], ordered[-1] + 1))
-            if not contiguous and domain in {"qubit", "qudit", "boson"}:
-                # The single-factor analytic rankers require one contiguous
-                # public block.  Keep non-contiguous same-domain spectators
-                # on the compiled Product descriptor instead of relabeling
-                # the plan Generic.
-                single_noncontiguous = True
-        occupied.update(active)
-        factors.append(tuple(sorted(active)))
-    if len(sector.constraints) > 1 or single_noncontiguous or single_compact_domain:
-        return tuple(factors)
-    return None
-
-
 class ChargeMvpPlan(_NativeMvpFacade):
     """Reusable matrix-free transition plan in a finite charge-sector basis.
 
@@ -1083,6 +863,59 @@ class ChargeMvpPlan(_NativeMvpFacade):
         object.__setattr__(self, name, value)
 
 
+def _compile_charge_eager_native(
+    sector: ChargeSector,
+    operator: Union[_StructuredOperator, PauliOperator],
+    max_bytes: Optional[int],
+) -> Any:
+    """Lower shared schedules straight into native CSR for eager storage."""
+    native_handle = operator._native_handle
+    if native_handle is None:
+        raise RuntimeError("charge restriction requires a native operator handle")
+    level_rows = [
+        tuple((float(zero), float(one)) for zero, one in charge.qubit_levels)
+        for charge, _ in sector.constraints
+    ]
+    qudit_rows = [
+        tuple(float(value) for value in charge.qudit_weights)
+        for charge, _ in sector.constraints
+    ]
+    if isinstance(operator, PauliOperator):
+        if not isinstance(native_handle, _native.NativePauliOperatorHandle):
+            raise RuntimeError("Pauli restriction received an invalid handle")
+        termwise_conserved = all(
+            native_handle.termwise_conserves_charge(levels) for levels in level_rows
+        )
+        return sector._native_plan.compile_eager_pauli_handle(
+            native_handle,
+            termwise_conserved,
+            _effective_max_bytes(max_bytes),
+        )
+    if isinstance(
+        native_handle,
+        (_native.NativeFermionOperatorHandle, _native.NativeBosonOperatorHandle),
+    ):
+        native_handle = native_handle.to_hybrid()
+    if not isinstance(native_handle, _native.NativeHybridOperatorHandle):
+        raise RuntimeError("charge restriction received an invalid handle")
+    termwise_conserved = all(
+        native_handle.termwise_conserves_charge(
+            tuple(float(value) for value in charge.fermion_weights),
+            tuple(float(value) for value in charge.boson_weights),
+            levels,
+            qudit_weights,
+        )
+        for (charge, _), levels, qudit_weights in zip(
+            sector.constraints, level_rows, qudit_rows
+        )
+    )
+    return sector._native_plan.compile_eager_hybrid_handle(
+        native_handle,
+        termwise_conserved,
+        _effective_max_bytes(max_bytes),
+    )
+
+
 class ChargeLazyMvpPlan(_NativeMvpFacade):
     """Explicitly lazy native MVP plan for a finite charge sector.
 
@@ -1111,14 +944,6 @@ class ChargeLazyMvpPlan(_NativeMvpFacade):
         operator: Union[_StructuredOperator, PauliOperator],
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None:
-        (
-            local_dimensions,
-            fermion_positions,
-            boson_positions,
-            qubit_positions,
-            qudit_positions,
-            qudit_dimension,
-        ) = _restricted_layout_inputs(sector)
         native_handle = operator._native_handle
         if native_handle is None:
             raise RuntimeError("charge restriction requires a native operator handle")
@@ -1133,12 +958,6 @@ class ChargeLazyMvpPlan(_NativeMvpFacade):
             tuple(float(value) for value in charge.qudit_weights)
             for charge, _ in sector.constraints
         ]
-        hints = ChargeCompileHints.from_sector(operator, sector)
-        # Product is a supported fallback and the general factorized route,
-        # but it is not allowed to displace a measured specialized winner.
-        # Native construction tries the specialized candidates first and only
-        # builds Product when the candidate is ineligible or exceeds its
-        # bounded construction budget.
         termwise_conserved = False
         if isinstance(operator, PauliOperator):
             if not isinstance(native_handle, _native.NativePauliOperatorHandle):
@@ -1148,41 +967,8 @@ class ChargeLazyMvpPlan(_NativeMvpFacade):
             )
             native_execution = sector._native_plan.compile_mvp_pauli_handle(
                 native_handle,
-                sector.dimension,
-                list(local_dimensions),
-                fermion_positions,
-                boson_positions,
-                qubit_positions,
-                qudit_positions,
                 termwise_conserved,
                 _effective_max_bytes(max_bytes),
-                None,
-                None,
-                hints.qubit_particles,
-                (
-                    list(hints.qubit_positions)
-                    if hints.qubit_positions is not None
-                    else None
-                ),
-                list(hints.qudit_weights) if hints.qudit_weights is not None else None,
-                hints.qudit_target,
-                (
-                    list(hints.qudit_positions)
-                    if hints.qudit_positions is not None
-                    else None
-                ),
-                list(hints.boson_weights) if hints.boson_weights is not None else None,
-                hints.boson_target,
-                (
-                    list(hints.boson_positions)
-                    if hints.boson_positions is not None
-                    else None
-                ),
-                (
-                    [list(values) for values in hints.product_positions]
-                    if hints.product_positions is not None
-                    else None
-                ),
             )
         else:
             if isinstance(
@@ -1206,53 +992,10 @@ class ChargeLazyMvpPlan(_NativeMvpFacade):
                     sector.constraints, level_rows, qudit_rows
                 )
             )
-            # The matched compact Fermion executor also supports the
-            # eligible Cartesian-Boson layout.  Keep it as the fixed winner
-            # until the general Product kernel passes a reverse-order A/B;
-            # Product remains available when this specialized builder rejects
-            # the public layout or its bounded descriptor budget.
             native_execution = sector._native_plan.compile_mvp_hybrid_handle(
                 native_handle,
-                sector.dimension,
-                list(local_dimensions),
-                fermion_positions,
-                boson_positions,
-                qubit_positions,
-                qudit_positions,
-                qudit_dimension,
                 termwise_conserved,
                 _effective_max_bytes(max_bytes),
-                hints.fermion_particles if termwise_conserved else None,
-                (
-                    list(hints.fermion_mode_order)
-                    if termwise_conserved and hints.fermion_mode_order is not None
-                    else None
-                ),
-                hints.qubit_particles,
-                (
-                    list(hints.qubit_positions)
-                    if hints.qubit_positions is not None
-                    else None
-                ),
-                list(hints.qudit_weights) if hints.qudit_weights is not None else None,
-                hints.qudit_target,
-                (
-                    list(hints.qudit_positions)
-                    if hints.qudit_positions is not None
-                    else None
-                ),
-                list(hints.boson_weights) if hints.boson_weights is not None else None,
-                hints.boson_target,
-                (
-                    list(hints.boson_positions)
-                    if hints.boson_positions is not None
-                    else None
-                ),
-                (
-                    [list(values) for values in hints.product_positions]
-                    if hints.product_positions is not None
-                    else None
-                ),
             )
         retained_bytes = int(native_execution.estimated_bytes)
         object.__setattr__(self, "_sector_plan", sector._native_plan)
@@ -1319,7 +1062,7 @@ class ChargeRestrictedOperator:
     operator: Union[_StructuredOperator, PauliOperator]
     sector: ChargeSector
     dimension: int
-    _lazy_plan: ChargeLazyMvpPlan
+    _lazy_plan: Optional[ChargeLazyMvpPlan]
     _eager_plan: Optional[ChargeMvpPlan]
     _lock: threading.Lock
     storage: ChargeStorage
@@ -1352,6 +1095,28 @@ class ChargeRestrictedOperator:
                     "selected charge sector requires an exactly conserved operator"
                 )
         term_count = operator.term_count
+        if storage == "eager":
+            native = _compile_charge_eager_native(sector, operator, max_bytes)
+            execution_family = (
+                "factorized"
+                if str(getattr(native, "native_variant", "generic")) == "factorized"
+                else "generic"
+            )
+            eager_plan = ChargeMvpPlan(
+                sector.dimension,
+                term_count,
+                native_plan=native,
+                execution_family=execution_family,
+            )
+            object.__setattr__(self, "operator", operator)
+            object.__setattr__(self, "sector", sector)
+            object.__setattr__(self, "dimension", sector.dimension)
+            object.__setattr__(self, "storage", storage)
+            object.__setattr__(self, "_lazy_plan", None)
+            object.__setattr__(self, "_eager_plan", eager_plan)
+            object.__setattr__(self, "_lock", threading.Lock())
+            object.__setattr__(self, "_locked", True)
+            return
         _check_allocation(
             int(sector.estimated_bytes), max_bytes, "lazy charge MVP plan"
         )
@@ -1364,8 +1129,6 @@ class ChargeRestrictedOperator:
         object.__setattr__(self, "_eager_plan", None)
         object.__setattr__(self, "_lock", threading.Lock())
         object.__setattr__(self, "_locked", True)
-        if storage == "eager":
-            self._ensure_eager(max_bytes)
 
     def __setattr__(self, name: str, value: object) -> None:
         if getattr(self, "_locked", False):
@@ -1392,6 +1155,8 @@ class ChargeRestrictedOperator:
                 length.
         """
         plan = self._eager_plan or self._lazy_plan
+        if plan is None:
+            raise RuntimeError("charge restriction has no executable native plan")
         return plan.apply(state, max_bytes=max_bytes)
 
     def apply_into(
@@ -1404,12 +1169,14 @@ class ChargeRestrictedOperator:
         """Apply into strict caller-owned buffers using the retained strategy."""
         _validate_apply_into_buffers(input_state, output_state, self.dimension)
         plan = self._eager_plan or self._lazy_plan
+        if plan is None:
+            raise RuntimeError("charge restriction has no executable native plan")
         plan.apply_into(input_state, output_state, max_bytes=max_bytes)
 
     @property
     def estimated_bytes(self) -> int:
         """Return the current best-effort retained-byte estimate."""
-        value = self._lazy_plan.estimated_bytes
+        value = 0 if self._lazy_plan is None else self._lazy_plan.estimated_bytes
         if self._eager_plan is not None:
             value += self._eager_plan.estimated_bytes
         return value
@@ -1430,8 +1197,14 @@ class ChargeRestrictedOperator:
         storage = _validate_storage(storage)
         if storage == "eager":
             return self._ensure_eager(max_bytes)
-        _check_allocation(self._lazy_plan.estimated_bytes, max_bytes, "charge MVP plan")
-        return self._lazy_plan
+        lazy = self._lazy_plan
+        if lazy is None:
+            lazy = ChargeLazyMvpPlan(
+                self.sector, self.operator.term_count, self.operator, max_bytes
+            )
+            object.__setattr__(self, "_lazy_plan", lazy)
+        _check_allocation(lazy.estimated_bytes, max_bytes, "charge MVP plan")
+        return lazy
 
     def _ensure_eager(self, max_bytes: Optional[int]) -> ChargeMvpPlan:
         return self._ensure_eager_for_target(max_bytes, None)
@@ -1468,15 +1241,18 @@ class ChargeRestrictedOperator:
                         f"charge {target} materialization",
                     )
                 return cached
-            _check_allocation(
-                self._lazy_plan.estimated_bytes,
-                max_bytes,
-                "charge lazy MVP plan",
-            )
-            if max_bytes is None:
+            lazy = self._lazy_plan
+            if lazy is None:
+                lazy = ChargeLazyMvpPlan(
+                    self.sector, self.operator.term_count, self.operator, max_bytes
+                )
+                object.__setattr__(self, "_lazy_plan", lazy)
+            _check_allocation(lazy.estimated_bytes, max_bytes, "charge lazy MVP plan")
+            enforced_max_bytes = _enforced_max_bytes(max_bytes)
+            if enforced_max_bytes is None:
                 remaining = None
             else:
-                remaining = max_bytes - self._lazy_plan.estimated_bytes
+                remaining = enforced_max_bytes - lazy.estimated_bytes
             target_floor = (
                 0
                 if target is None
@@ -1495,7 +1271,7 @@ class ChargeRestrictedOperator:
                 construction_budget = remaining - target_floor
             else:
                 construction_budget = None
-            native = self._lazy_plan._native_execution.compile_eager(
+            native = lazy._native_execution.compile_eager(
                 _effective_max_bytes(construction_budget)
             )
             target_bytes = (
@@ -1512,9 +1288,9 @@ class ChargeRestrictedOperator:
             )
             cached = ChargeMvpPlan(
                 self.sector.dimension,
-                self._lazy_plan.term_count,
+                lazy.term_count,
                 native_plan=native,
-                execution_family=self._lazy_plan.execution_family,
+                execution_family=lazy.execution_family,
             )
             object.__setattr__(self, "_eager_plan", cached)
             return cached
@@ -1569,128 +1345,6 @@ class ChargeRestrictedOperator:
             columns,
             coefficients,
             (self.dimension, self.dimension),
-        )
-
-
-def _fast_fermion_particles(
-    operator: Union[_StructuredOperator, PauliOperator], sector: ChargeSector
-) -> Optional[Tuple[int, Tuple[int, ...]]]:
-    """Detect the fixed-spin-sector layout used by the Hubbard MVP fast path."""
-    if isinstance(operator, PauliOperator) or getattr(
-        operator, "_domain", None
-    ) not in {"fermion", "hybrid"}:
-        return None
-    space = sector.space
-    if space.qubits or space.qudits or space.fermions == 0:
-        return None
-    if (
-        space.fermions % 2
-        or tuple(sector.local_dimensions[: space.fermions]) != (2,) * space.fermions
-    ):
-        return None
-    sites = space.fermions // 2
-    total_weights = (1,) * space.fermions
-    grouped_balance_weights = (1,) * sites + (-1,) * sites
-    total_target: Optional[int] = None
-    balance_target: Optional[int] = None
-    balance_weights: Optional[Tuple[int, ...]] = None
-    for charge, requested in sector.constraints:
-        if (
-            any(value != 0 for value in charge.boson_weights)
-            or any(level != (0, 0) for level in charge.qubit_levels)
-            or any(value != 0 for value in charge.qudit_weights)
-        ):
-            return None
-        target = requested - charge.offset
-        if charge.fermion_weights == total_weights:
-            if total_target is not None:
-                return None
-            total_target = target
-        elif charge.fermion_weights == grouped_balance_weights:
-            if balance_target is not None:
-                return None
-            balance_target = target
-            balance_weights = charge.fermion_weights
-        elif charge.fermion_weights == tuple(
-            value for site in range(sites) for value in (1, -1)
-        ):
-            if balance_target is not None:
-                return None
-            balance_target = target
-            balance_weights = charge.fermion_weights
-        else:
-            return None
-    if total_target is None or balance_target != 0 or total_target % 2:
-        return None
-    particles = total_target // 2
-    if particles < 1 or particles > sites:
-        return None
-    if balance_weights == grouped_balance_weights:
-        mode_order = tuple(range(2 * sites))
-    else:
-        mode_order = tuple(
-            value for site in range(sites) for value in (2 * site, 2 * site + 1)
-        )
-        mode_order = tuple(mode_order[0::2]) + tuple(mode_order[1::2])
-    return particles, mode_order
-
-
-@dataclass(frozen=True)
-class ChargeCompileHints:
-    """One immutable classification result passed to native charge compilation."""
-
-    __slots__ = (
-        "boson_positions",
-        "boson_target",
-        "boson_weights",
-        "fermion_mode_order",
-        "fermion_particles",
-        "product_positions",
-        "qubit_particles",
-        "qubit_positions",
-        "qudit_positions",
-        "qudit_target",
-        "qudit_weights",
-    )
-
-    fermion_particles: Optional[int]
-    fermion_mode_order: Optional[Tuple[int, ...]]
-    qubit_particles: Optional[int]
-    qubit_positions: Optional[Tuple[int, ...]]
-    qudit_weights: Optional[Tuple[int, ...]]
-    qudit_target: Optional[int]
-    qudit_positions: Optional[Tuple[int, ...]]
-    boson_weights: Optional[Tuple[int, ...]]
-    boson_target: Optional[int]
-    boson_positions: Optional[Tuple[int, ...]]
-    product_positions: Optional[Tuple[Tuple[int, ...], ...]]
-
-    @classmethod
-    def from_sector(
-        cls,
-        operator: Union[_StructuredOperator, PauliOperator],
-        sector: ChargeSector,
-    ) -> "ChargeCompileHints":
-        fermion = _fast_fermion_particles(operator, sector)
-        qubit = _fast_qubit_particles(sector)
-        qudit = _fast_qudit_factor(sector)
-        boson = _fast_boson_factor(sector)
-        if sum(candidate is not None for candidate in (qubit, qudit, boson)) > 1:
-            raise RuntimeError(
-                "charge-sector classification selected incompatible factors"
-            )
-        return cls(
-            fermion_particles=None if fermion is None else fermion[0],
-            fermion_mode_order=None if fermion is None else fermion[1],
-            qubit_particles=None if qubit is None else qubit[0],
-            qubit_positions=None if qubit is None else qubit[1],
-            qudit_weights=None if qudit is None else qudit[0],
-            qudit_target=None if qudit is None else qudit[1],
-            qudit_positions=None if qudit is None else qudit[2],
-            boson_weights=None if boson is None else boson[0],
-            boson_target=None if boson is None else boson[1],
-            boson_positions=None if boson is None else boson[2],
-            product_positions=_supports_independent_factor_product(sector),
         )
 
 

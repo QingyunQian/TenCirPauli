@@ -102,8 +102,7 @@ def test_backend_plan_has_versioned_arrays_and_independent_numpy_executor() -> N
     np.testing.assert_allclose(
         plan.apply(state), operator.dense() @ state, rtol=1e-12, atol=1e-12
     )
-    with pytest.raises(MemoryError, match="backend MVP working memory"):
-        plan.apply(state, max_bytes=1)
+    np.testing.assert_allclose(plan.apply(state, max_bytes=1), operator.dense() @ state)
 
 
 def test_native_mvp_plan_reuses_compiled_masks() -> None:
@@ -148,10 +147,9 @@ def test_native_mvp_plan_random_complex_differential() -> None:
         )
 
 
-def test_native_mvp_plan_reports_explicit_memory_contract() -> None:
+def test_native_mvp_plan_ignores_advisory_memory_budget() -> None:
     operator = PauliOperator.from_terms(4, (((1, 0, 0, 0), 1.0),))
-    with pytest.raises(MemoryError):
-        operator.native_mvp_plan(storage="eager", max_bytes=32)
+    assert operator.native_mvp_plan(storage="eager", max_bytes=32).storage == "eager"
 
 
 def test_empty_identity_shape_invalid_state_and_allocation_guards() -> None:
@@ -164,20 +162,17 @@ def test_empty_identity_shape_invalid_state_and_allocation_guards() -> None:
     )
     with pytest.raises(ValueError, match="expected structure length"):
         PauliOperator.empty(2).mvp(np.ones(3, dtype=np.complex128))
-    with pytest.raises(MemoryError, match="requested"):
-        make_operator(10).dense(max_bytes=1)
+    assert make_operator(10).dense(max_bytes=1).shape == (1 << 10, 1 << 10)
     with pytest.raises(OverflowError, match="dimension"):
         PauliOperator.empty(64).dense()
 
 
-def test_mvp_memory_guard_rejects_before_output_materialization() -> None:
+def test_mvp_ignores_advisory_memory_budget() -> None:
     operator = PauliOperator.empty(20)
     state = np.zeros(1 << 20, dtype=np.complex128)
-    with pytest.raises(MemoryError, match="requested"):
-        operator.mvp(state, max_bytes=1)
+    np.testing.assert_array_equal(operator.mvp(state, max_bytes=1), state)
     plan = operator.native_mvp_plan(max_bytes=1)
-    with pytest.raises(MemoryError, match="requested"):
-        plan.apply(state, max_bytes=1)
+    np.testing.assert_array_equal(plan.apply(state, max_bytes=1), state)
 
 
 def test_compile_target_dispatch_is_explicit() -> None:

@@ -293,50 +293,27 @@ class NativeChargeSectorPlan:
     def compile_mvp_pauli_handle(
         self,
         handle: NativePauliOperatorHandle,
-        dimension: int,
-        local_dimensions: Sequence[int],
-        fermion_positions: Sequence[int],
-        boson_positions: Sequence[int],
-        qubit_positions: Sequence[int],
-        qudit_positions: Sequence[int],
         termwise_conserved: bool,
         max_bytes: int,
-        fast_fermion_particles: int | None = ...,
-        fast_fermion_mode_order: Sequence[int] | None = ...,
-        fast_qubit_particles: int | None = ...,
-        fast_qubit_positions: Sequence[int] | None = ...,
-        fast_qudit_weights: Sequence[int] | None = ...,
-        fast_qudit_target: int | None = ...,
-        fast_qudit_positions: Sequence[int] | None = ...,
-        fast_boson_weights: Sequence[int] | None = ...,
-        fast_boson_target: int | None = ...,
-        fast_boson_positions: Sequence[int] | None = ...,
-        fast_product_positions: Sequence[Sequence[int]] | None = ...,
     ) -> NativeChargeMvpPlan: ...
     def compile_mvp_hybrid_handle(
         self,
         handle: NativeHybridOperatorHandle,
-        dimension: int,
-        local_dimensions: Sequence[int],
-        fermion_positions: Sequence[int],
-        boson_positions: Sequence[int],
-        qubit_positions: Sequence[int],
-        qudit_positions: Sequence[int],
-        qudit_dimension: int,
         termwise_conserved: bool,
         max_bytes: int,
-        fast_fermion_particles: int | None = ...,
-        fast_fermion_mode_order: Sequence[int] | None = ...,
-        fast_qubit_particles: int | None = ...,
-        fast_qubit_positions: Sequence[int] | None = ...,
-        fast_qudit_weights: Sequence[int] | None = ...,
-        fast_qudit_target: int | None = ...,
-        fast_qudit_positions: Sequence[int] | None = ...,
-        fast_boson_weights: Sequence[int] | None = ...,
-        fast_boson_target: int | None = ...,
-        fast_boson_positions: Sequence[int] | None = ...,
-        fast_product_positions: Sequence[Sequence[int]] | None = ...,
     ) -> NativeChargeMvpPlan: ...
+    def compile_eager_pauli_handle(
+        self,
+        handle: NativePauliOperatorHandle,
+        termwise_conserved: bool,
+        max_bytes: int,
+    ) -> NativeChargeEagerMvpPlan: ...
+    def compile_eager_hybrid_handle(
+        self,
+        handle: NativeHybridOperatorHandle,
+        termwise_conserved: bool,
+        max_bytes: int,
+    ) -> NativeChargeEagerMvpPlan: ...
 
 class NativeChargeMvpPlan:
     @property

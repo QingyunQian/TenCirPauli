@@ -769,7 +769,7 @@ def test_structured_fermion_mapping_sparse_and_mvp(
 
 
 def test_structured_expansion_guard_smoke(benchmark: BenchmarkFixture) -> None:
-    """Keep the recursive-expansion memory guard executable and bounded."""
+    """Keep the small recursive expansion executable with an advisory budget."""
     factors = (
         (0, "annihilate"),
         (1, "annihilate"),
@@ -779,11 +779,10 @@ def test_structured_expansion_guard_smoke(benchmark: BenchmarkFixture) -> None:
         (2, "create"),
     )
 
-    def guarded() -> None:
-        with pytest.raises(MemoryError):
-            tcp.FermionOperator.from_terms(3, [(factors, 1.0)], max_bytes=1400)
+    def construct() -> None:
+        tcp.FermionOperator.from_terms(3, [(factors, 1.0)], max_bytes=1400)
 
-    benchmark(guarded)
+    benchmark(construct)
     _record_metadata(
         benchmark,
         input_terms=1,
@@ -791,7 +790,7 @@ def test_structured_expansion_guard_smoke(benchmark: BenchmarkFixture) -> None:
         generated_contributions=6,
         dimension=1 << 3,
         nonzeros_or_transitions=0,
-        workload="fermion_contraction_expansion_guard",
+        workload="fermion_contraction_expansion_advisory_budget",
     )
 
 

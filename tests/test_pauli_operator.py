@@ -247,13 +247,10 @@ def test_explicit_code_array_api_preserves_mapping_and_validation() -> None:
         PauliOperator.from_code_arrays([[1], [2]], [1.0])
 
 
-def test_tensor_product_preflights_major_workspace_and_uses_one_batch() -> None:
+def test_tensor_product_ignores_advisory_workspace_budget_and_uses_one_batch() -> None:
     left = PauliOperator.from_terms(1, [("I", 1.0), ("X", 2.0)])
     right = PauliOperator.from_terms(1, [("Z", 0.5), ("Y", -1.0)])
-    with pytest.raises(MemoryError, match="tensor-product"):
-        left.tensor_product(right, max_bytes=1)
-
-    actual = left.tensor_product(right)
+    actual = left.tensor_product(right, max_bytes=1)
     expected = PauliOperator.from_terms(
         2,
         [

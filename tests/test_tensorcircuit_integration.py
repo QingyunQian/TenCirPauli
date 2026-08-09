@@ -26,8 +26,7 @@ def test_numpy_backend_plan_smoke() -> None:
     state = np.arange(4, dtype=np.float64) + 1j * np.arange(4, dtype=np.float64)
     result = backend_mvp(plan)(state)
     np.testing.assert_allclose(result, operator.dense() @ state, rtol=1e-12, atol=1e-12)
-    with pytest.raises(MemoryError, match="TensorCircuit MVP adapter"):
-        backend_mvp(plan, max_bytes=1)
+    np.testing.assert_allclose(backend_mvp(plan, max_bytes=1)(state), result)
 
 
 def test_jax_backend_plan_smoke() -> None:

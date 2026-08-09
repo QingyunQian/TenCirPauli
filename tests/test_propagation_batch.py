@@ -114,7 +114,9 @@ def test_batch_supports_product_bloch_and_empty_observables() -> None:
     assert empty.values_and_gradients([0.19]).gradients.shape == (0, 1)
 
 
-def test_batch_rejects_invalid_rows_parameters_and_memory() -> None:
+def test_batch_rejects_invalid_rows_and_parameters_but_ignores_advisory_budget() -> (
+    None
+):
     tape = advanced.GateTape(1)
     tape.rx(0, parameter=0)
     with pytest.raises(ValueError, match="same nqubits"):
@@ -126,10 +128,12 @@ def test_batch_rejects_invalid_rows_parameters_and_memory() -> None:
         tcp.PropagationBatch(
             tape, [tcp.PauliOperator(1, [((3,), 1.0)])]
         ).values_and_gradients([0.2], checkpoint_interval=0)
-    with pytest.raises(MemoryError, match="memory limit"):
+    assert (
         tcp.PropagationBatch(
             advanced.GateTape(1), [tcp.PauliOperator(1, [((3,), 1.0)])], max_bytes=1
-        )
+        ).nqubits
+        == 1
+    )
 
 
 def test_batch_parallel_repeat_is_bitwise_stable() -> None:
@@ -159,18 +163,18 @@ def test_batch_memory_budget_limits_expanding_rows_to_safe_concurrency() -> None
     np.testing.assert_array_equal(result, result[0])
 
 
-def test_batch_rejects_budget_smaller_than_one_worker_at_construction() -> None:
+def test_batch_ignores_advisory_budget_at_construction() -> None:
     tape = advanced.GateTape(12)
     for layer in range(4):
         for wire in range(12):
             tape.ry(wire, parameter=layer * 12 + wire)
     observable = tcp.PauliOperator(12, [([3] * 12, 1.0)])
-    with pytest.raises(MemoryError, match="memory limit"):
+    assert (
         tcp.PropagationBatch(
-            tape,
-            [observable] * 16,
-            max_bytes=100_000,
-        )
+            tape, [observable] * 16, max_bytes=100_000
+        ).observable_count
+        == 16
+    )
 
 
 def test_wide_weight_projected_batch_uses_projected_storage_bound() -> None:
@@ -207,13 +211,15 @@ def test_wide_weight_projected_batch_uses_projected_storage_bound() -> None:
         max_bytes=None,
     )
     assert wider.nqubits == 128
-    with pytest.raises(MemoryError, match="memory limit"):
+    assert (
         tcp.PropagationBatch(
             wider_tape,
             [wider_observable],
             max_weight=2,
             max_bytes=1024,
-        )
+        ).nqubits
+        == 128
+    )
 
 
 def test_batch_concurrent_calls_are_isolated() -> None:

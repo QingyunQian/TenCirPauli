@@ -337,14 +337,14 @@ def test_zero_qubit_identity_and_inline_boundary_structures() -> None:
         assert result.terms[0].word.to_codes() == tuple(codes)
 
 
-def test_wide_key_payload_is_included_in_small_memory_guard() -> None:
+def test_wide_key_payload_ignores_advisory_memory_budget() -> None:
     nqubits = 10_000
-    with pytest.raises(MemoryError, match="memory limit"):
-        advanced.PropagationEngine(
-            advanced.GateTape(nqubits),
-            tcp.PauliOperator(nqubits, [([1] + [0] * (nqubits - 1), 1.0)]),
-            max_bytes=1_000,
-        )
+    engine = advanced.PropagationEngine(
+        advanced.GateTape(nqubits),
+        tcp.PauliOperator(nqubits, [([1] + [0] * (nqubits - 1), 1.0)]),
+        max_bytes=1_000,
+    )
+    assert engine.nqubits == nqubits
 
 
 def test_engine_snapshots_tape_and_bloch_state_and_supports_concurrent_calls() -> None:

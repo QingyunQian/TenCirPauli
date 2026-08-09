@@ -311,6 +311,7 @@ impl FermionMaskDescriptor {
         self.contiguous_public
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_to_words(
         &self,
         source: &[u64],

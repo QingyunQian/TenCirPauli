@@ -73,8 +73,10 @@ def test_pauli_convenience_linear_operator_compiles_and_reuses_native_plan(
     assert calls == 1
     with pytest.raises(TypeError):
         operator.to_scipy_linear_operator(mapping="jordan_wigner")  # type: ignore[call-arg]
-    with pytest.raises(MemoryError):
-        operator.native_mvp_plan().to_scipy_linear_operator(max_bytes=1).matvec(vector)
+    np.testing.assert_allclose(
+        operator.native_mvp_plan().to_scipy_linear_operator(max_bytes=1).matvec(vector),
+        expected,
+    )
 
 
 def test_backend_plan_does_not_advertise_native_scipy_interop() -> None:

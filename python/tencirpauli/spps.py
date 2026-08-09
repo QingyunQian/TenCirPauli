@@ -10,7 +10,7 @@ import numpy as np
 
 from . import _native
 from .circuit import _coerce_parameters
-from .hamiltonian import DEFAULT_MAX_BYTES, _validate_max_bytes
+from .hamiltonian import DEFAULT_MAX_BYTES, _effective_max_bytes, _validate_max_bytes
 from .pauli import PauliOperator
 from .propagation import (
     ComputationalBasisState,
@@ -107,7 +107,7 @@ class SPPSEngine:
             bits,
             values,
             normalized_smoothing,
-            max_bytes,
+            _effective_max_bytes(max_bytes),
         )
         self.nqubits = int(self._native.nqubits)
         self.nparameters = int(self._native.nparameters)

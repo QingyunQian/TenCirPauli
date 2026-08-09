@@ -89,14 +89,11 @@ mod test_allocation_counter {
 pub(crate) use test_allocation_counter::allocation_count;
 
 pub use charge::{
-    apply_charge_csr_into, build_fast_boson_mvp_plan, build_fast_fermion_mvp_plan,
-    build_fast_product_mvp_plan, build_fast_qubit_mvp_plan, build_fast_qudit_mvp_plan,
-    compile_charge_csr_from_prepared_plan,
+    apply_charge_csr_into, charge_execution_variant, compile_charge_csr_from_prepared_plan,
     compile_charge_csr_from_prepared_plan_with_chunk_capacity,
     estimate_charge_transition_terms_bytes, group_charge_transition_terms, prepare_charge_mvp_plan,
-    prepare_charge_transition_plan_layout, ChargeBuildContext, ChargeCsrResult, ChargeKernelHints,
-    ChargeLazyKernel, ChargeTransitionTerm, FastAdditiveMvpPlan, FastFermionMvpPlan,
-    FastQubitMvpPlan, PreparedChargeMvpPlan, PreparedChargeTransitionPlanLayout,
+    prepare_charge_transition_plan_layout, ChargeCsrResult, ChargeLazyKernel, ChargeTransitionTerm,
+    PreparedChargeMvpPlan, PreparedChargeTransitionPlanLayout,
 };
 pub use charge_sector::{
     build_charge_sector_plan, build_compact_charge_sector_plan, ChargeSectorPlan,

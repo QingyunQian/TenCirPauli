@@ -169,8 +169,8 @@ def test_charge_cache_and_apply_into(benchmark: BenchmarkFixture) -> None:
     )
 
 
-def test_product_fermion_boson_apply_into(benchmark: BenchmarkFixture) -> None:
-    """Measure the native combinatorial Fermion x Boson Product executor."""
+def test_factorized_fermion_boson_apply_into(benchmark: BenchmarkFixture) -> None:
+    """Measure native factorized Fermion and Boson execution."""
     space = tcp.OperatorSpace(fermions=8, bosons=2)
     charge = tcp.AdditiveCharge(
         space, fermions={index: 1 for index in range(space.fermions)}
@@ -189,7 +189,7 @@ def test_product_fermion_boson_apply_into(benchmark: BenchmarkFixture) -> None:
     )
     sector = tcp.ChargeSector(((charge, 4), (balance, 0)), boson_cutoffs={0: 3, 1: 3})
     plan = operator.restrict_charge(sector).mvp_plan()
-    assert plan.execution_family == "product"
+    assert plan.execution_family == "factorized"
     state = np.arange(plan.dimension, dtype=np.complex128)
     output = np.empty_like(state)
     benchmark(plan.apply_into, state, output)
@@ -326,7 +326,9 @@ def test_structured_storage_apply(benchmark: BenchmarkFixture, storage: str) -> 
     assert plan.estimated_bytes > 0
 
 
-def test_product_charge_aggregation_steady_apply(benchmark: BenchmarkFixture) -> None:
+def test_factorized_charge_aggregation_steady_apply(
+    benchmark: BenchmarkFixture,
+) -> None:
     # The boson spectator exercises the independent qubit-factor path.
     # XX and YY must still cancel their nonconserving contributions before the
     # restricted transition graph is accepted.
@@ -339,7 +341,7 @@ def test_product_charge_aggregation_steady_apply(benchmark: BenchmarkFixture) ->
     operator = space.qubit.x(0) * space.qubit.x(1) + space.qubit.y(0) * space.qubit.y(1)
     restricted = operator.restrict_charge(number.sector(5, boson_cutoffs={0: 0}))
     plan = restricted.mvp_plan()
-    assert plan.execution_family == "product"
+    assert plan.execution_family == "factorized"
     state = np.arange(plan.dimension, dtype=np.complex128)
     result = benchmark(plan.apply, state)
     _record_plan_metadata(
@@ -352,7 +354,7 @@ def test_product_charge_aggregation_steady_apply(benchmark: BenchmarkFixture) ->
     assert result.shape == state.shape
 
 
-def test_product_charge_prepared_layout_apply_into(
+def test_factorized_charge_prepared_layout_apply_into(
     benchmark: BenchmarkFixture,
 ) -> None:
     # Keep the sector small while using enough canonical descriptors to make
@@ -374,7 +376,7 @@ def test_product_charge_prepared_layout_apply_into(
         operator = term if operator is None else operator + term
     restricted = operator.restrict_charge(number.sector(3, boson_cutoffs={0: 0}))
     plan = restricted.mvp_plan()
-    assert plan.execution_family == "product"
+    assert plan.execution_family == "factorized"
     state = np.linspace(-0.5, 0.75, plan.dimension).astype(np.complex128)
     output = np.empty_like(state)
     benchmark(plan.apply_into, state, output)

@@ -18,6 +18,15 @@ import numpy as np
 # shared facade and its validation helpers do not need to import hamiltonian.
 DEFAULT_MAX_BYTES = 16 * 1024 * 1024 * 1024
 
+# ``max_bytes`` is deliberately a coarse, best-effort guard rather than an
+# allocation contract.  Sub-gigabyte values have repeatedly caused useful
+# native caches and ordinary workspaces to be rejected on machines where they
+# are immaterial, while still being far too imprecise to describe peak RSS.
+# Treat them as advisory.  At and above this floor we retain cheap preflights
+# for major outputs and workspaces; allocator failure remains the final guard
+# for requests that cannot be estimated cheaply.
+MIN_ENFORCED_MAX_BYTES = 1024 * 1024 * 1024
+
 
 def _validate_max_bytes(max_bytes: Optional[int]) -> None:
     if max_bytes is not None and (
@@ -27,16 +36,25 @@ def _validate_max_bytes(max_bytes: Optional[int]) -> None:
 
 
 def _effective_max_bytes(max_bytes: Optional[int]) -> int:
+    """Return the native allocation limit after the public advisory floor."""
+    enforced_limit = _enforced_max_bytes(max_bytes)
+    return sys.maxsize if enforced_limit is None else enforced_limit
+
+
+def _enforced_max_bytes(max_bytes: Optional[int]) -> Optional[int]:
+    """Return a materially enforceable public memory limit, if any."""
     _validate_max_bytes(max_bytes)
-    return sys.maxsize if max_bytes is None else max_bytes
+    if max_bytes is None or max_bytes < MIN_ENFORCED_MAX_BYTES:
+        return None
+    return max_bytes
 
 
 def _check_allocation(requested: int, limit: Optional[int], context: str) -> None:
-    _validate_max_bytes(limit)
-    if limit is not None and requested > limit:
+    enforced_limit = _enforced_max_bytes(limit)
+    if enforced_limit is not None and requested > enforced_limit:
         raise MemoryError(
             f"{context} requires approximately {requested} bytes, "
-            f"exceeding max_bytes={limit}"
+            f"exceeding max_bytes={enforced_limit}"
         )
 
 

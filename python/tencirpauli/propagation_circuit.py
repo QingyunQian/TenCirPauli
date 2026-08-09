@@ -9,7 +9,11 @@ from typing import Any, Mapping, Optional, Sequence, Type, TypeVar, Union, cast
 import numpy as np
 
 from .circuit import Angle, _angle, _concrete_angle, _concrete_angles, _is_jax_value
-from .hamiltonian import DEFAULT_MAX_BYTES, _validate_max_bytes
+from .hamiltonian import (
+    DEFAULT_MAX_BYTES,
+    _enforced_max_bytes,
+    _validate_max_bytes,
+)
 from .pauli import PauliOperator
 from .propagation import (
     ComputationalBasisState,
@@ -438,7 +442,7 @@ class PropagationCircuit(_CircuitBuilder):
     def _options(self, max_bytes: object) -> Optional[int]:
         budget = self.max_bytes if max_bytes is _USE_DEFAULT_MAX_BYTES else max_bytes
         _validate_max_bytes(cast(Optional[int], budget))
-        return cast(Optional[int], budget)
+        return _enforced_max_bytes(cast(Optional[int], budget))
 
     def expectation(
         self,

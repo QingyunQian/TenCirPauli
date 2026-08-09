@@ -198,13 +198,15 @@ def test_native_majorana_fermion_expansion_matches_python_reference() -> None:
     np.testing.assert_allclose(actual, expected)
 
 
-def test_majorana_operator_aggregation_and_expansion_guard() -> None:
+def test_majorana_operator_aggregation_and_advisory_expansion_budget() -> None:
     operator = tcp.MajoranaOperator.from_terms(2, [((1, 0, 1), 1.0), ((0,), 1.0)])
     assert operator.term_count == 0
-    with pytest.raises(MemoryError):
-        tcp.MajoranaOperator.from_terms(5, [(tuple(range(10)), 1.0)]).to_fermion(
-            max_bytes=100
-        )
+    assert (
+        tcp.MajoranaOperator.from_terms(5, [(tuple(range(10)), 1.0)])
+        .to_fermion(max_bytes=100)
+        .term_count
+        > 0
+    )
 
 
 @pytest.mark.parametrize("name", ["jordan_wigner", "parity", "bravyi_kitaev"])
@@ -284,13 +286,11 @@ def test_majorana_mapping_and_reusable_plan_metadata() -> None:
     assert compiled.basis_ordering == "qubit0_msb_matrix"
 
 
-def test_mapping_plan_and_mapped_output_honor_memory_limits() -> None:
-    with pytest.raises(MemoryError):
-        tcp.FermionQubitMapping.parity(8, max_bytes=1)
+def test_mapping_plan_and_mapped_output_ignore_advisory_memory_limits() -> None:
+    assert tcp.FermionQubitMapping.parity(8, max_bytes=1).n_modes == 8
     plan = tcp.FermionQubitMapping.bravyi_kitaev(2)
     operator = tcp.FermionOperator.from_terms(2, [(((0, "create"),), 1.0)])
-    with pytest.raises(MemoryError):
-        plan.map_fermion_operator(operator, max_bytes=1)
+    assert plan.map_fermion_operator(operator, max_bytes=1).nqubits == 2
 
 
 def test_mapping_estimate_covers_packed_and_public_major_buffers() -> None:
@@ -301,8 +301,7 @@ def test_mapping_estimate_covers_packed_and_public_major_buffers() -> None:
     bounded = tcp.FermionQubitMapping.parity(8, max_bytes=expected)
     assert bounded.estimated_bytes == expected
     assert tcp.FermionQubitMapping.parity(16).estimated_bytes > plan.estimated_bytes
-    with pytest.raises(MemoryError):
-        tcp.FermionQubitMapping.parity(512, max_bytes=3_000_000)
+    assert tcp.FermionQubitMapping.parity(512, max_bytes=3_000_000).n_modes == 512
 
 
 def test_packed_majorana_support_crosses_multiple_u64_boundaries() -> None:

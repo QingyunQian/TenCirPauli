@@ -6,7 +6,7 @@ from typing import Any, Optional, Union, cast
 
 import numpy as np
 
-from .hamiltonian import _validate_max_bytes
+from .hamiltonian import _enforced_max_bytes, _validate_max_bytes
 from .pauli import PauliOperator
 from .propagation import ComputationalBasisState, ProductBlochState, ZeroState
 from .propagation_circuit import (
@@ -65,7 +65,7 @@ class SPPSCircuit(_CircuitBuilder):
     def _budget(self, max_bytes: object) -> Optional[int]:
         budget = self.max_bytes if max_bytes is _USE_DEFAULT_MAX_BYTES else max_bytes
         _validate_max_bytes(cast(Optional[int], budget))
-        return cast(Optional[int], budget)
+        return _enforced_max_bytes(cast(Optional[int], budget))
 
     def expectation(
         self,

@@ -17,6 +17,7 @@ from .hamiltonian import (
     CSRMatrix,
     _check_allocation,
     _effective_max_bytes,
+    _enforced_max_bytes,
     _validate_apply_into_buffers,
     _validate_max_bytes,
 )
@@ -384,7 +385,8 @@ class U1RestrictedOperator:
         with self._lock:
             native = self._native_operator
             if native is None:
-                if max_bytes is None:
+                enforced_max_bytes = _enforced_max_bytes(max_bytes)
+                if enforced_max_bytes is None:
                     remaining = None
                 else:
                     _check_allocation(
@@ -392,7 +394,7 @@ class U1RestrictedOperator:
                         max_bytes,
                         "U1 lazy MVP plan",
                     )
-                    remaining = max_bytes - self._lazy_estimate
+                    remaining = enforced_max_bytes - self._lazy_estimate
                 target_floor = (
                     0
                     if target is None

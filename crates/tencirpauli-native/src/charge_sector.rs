@@ -4,10 +4,11 @@ use numpy::{Complex64 as NumpyComplex128, PyArray1, PyReadonlyArray1, PyReadwrit
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
 use tencir_pauli_core::{
-    build_compact_charge_sector_plan, estimate_charge_transition_terms_bytes,
+    build_compact_charge_sector_plan, charge_execution_variant,
+    compile_charge_csr_from_prepared_plan, estimate_charge_transition_terms_bytes,
     group_charge_transition_terms, prepare_charge_mvp_plan, prepare_charge_transition_plan_layout,
-    ChargeCsrResult, ChargeKernelHints, ChargeSectorPlan, ChargeTransitionTerm, Complex64,
-    CsrApplyPolicy, CsrGraph, PauliError, PreparedChargeMvpPlan,
+    ChargeCsrResult, ChargeSectorPlan, ChargeTransitionTerm, Complex64, CsrApplyPolicy, CsrGraph,
+    PauliError, PreparedChargeMvpPlan,
 };
 
 use crate::convert::map_error;
@@ -25,12 +26,151 @@ type ChargeCooArrays<'py> = (
     Bound<'py, PyArray1<NumpyComplex128>>,
 );
 
+/// Native-only physical-axis layout retained with the exact sector plan.
+/// Operator compilation receives the handle directly, so Python never
+/// rebuilds and resends this O(axis-count) metadata for every restriction.
+#[derive(Clone)]
+struct NativeChargeLayout {
+    local_dimensions: Vec<u64>,
+    fermion_positions: Vec<u64>,
+    boson_positions: Vec<u64>,
+    qubit_positions: Vec<u64>,
+    qudit_positions: Vec<u64>,
+    qudit_dimension: u64,
+}
+
+impl NativeChargeLayout {
+    fn from_compact(
+        local_dimensions: &[usize],
+        axis_kinds: &[u8],
+        axis_indices: &[usize],
+    ) -> Result<Self, PauliError> {
+        if local_dimensions.len() != axis_kinds.len()
+            || local_dimensions.len() != axis_indices.len()
+        {
+            return Err(PauliError::InvalidStructureLength {
+                expected: local_dimensions.len(),
+                actual: axis_kinds.len(),
+            });
+        }
+        fn positions_for_kind(
+            kind: u8,
+            axis_kinds: &[u8],
+            axis_indices: &[usize],
+        ) -> Result<Vec<u64>, PauliError> {
+            let count = axis_kinds
+                .iter()
+                .zip(axis_indices)
+                .filter_map(|(&candidate, &index)| (candidate == kind).then_some(index))
+                .max()
+                .map_or(Ok(0usize), |index| {
+                    index.checked_add(1).ok_or(PauliError::Overflow {
+                        context: "sizing charge-sector axis layout",
+                    })
+                })?;
+            let mut positions = vec![u64::MAX; count];
+            for (physical, (&candidate, &index)) in axis_kinds.iter().zip(axis_indices).enumerate()
+            {
+                if candidate != kind {
+                    continue;
+                }
+                let position = positions.get_mut(index).ok_or(PauliError::InvalidSector {
+                    context: "invalid charge-sector axis index",
+                })?;
+                if *position != u64::MAX {
+                    return Err(PauliError::InvalidSector {
+                        context: "duplicate charge-sector axis index",
+                    });
+                }
+                *position = u64::try_from(physical).map_err(|_| PauliError::Overflow {
+                    context: "converting charge-sector axis position",
+                })?;
+            }
+            if positions.contains(&u64::MAX) {
+                return Err(PauliError::InvalidSector {
+                    context: "missing charge-sector axis index",
+                });
+            }
+            Ok(positions)
+        }
+
+        let qudit_positions = positions_for_kind(3, axis_kinds, axis_indices)?;
+        let qudit_dimension = qudit_positions.first().map_or(Ok(0_u64), |&position| {
+            let dimension = *local_dimensions
+                .get(usize::try_from(position).map_err(|_| PauliError::Overflow {
+                    context: "converting charge-sector qudit position",
+                })?)
+                .ok_or(PauliError::InvalidSector {
+                    context: "invalid charge-sector qudit position",
+                })?;
+            u64::try_from(dimension).map_err(|_| PauliError::Overflow {
+                context: "converting charge-sector qudit dimension",
+            })
+        })?;
+        for &position in &qudit_positions {
+            let dimension = *local_dimensions
+                .get(usize::try_from(position).map_err(|_| PauliError::Overflow {
+                    context: "converting charge-sector qudit position",
+                })?)
+                .ok_or(PauliError::InvalidSector {
+                    context: "invalid charge-sector qudit position",
+                })?;
+            if u64::try_from(dimension).ok() != Some(qudit_dimension) {
+                return Err(PauliError::InvalidSector {
+                    context: "charge-sector qudit dimensions must be uniform",
+                });
+            }
+        }
+        Ok(Self {
+            local_dimensions: local_dimensions
+                .iter()
+                .copied()
+                .map(|dimension| {
+                    u64::try_from(dimension).map_err(|_| PauliError::Overflow {
+                        context: "converting charge-sector local dimension",
+                    })
+                })
+                .collect::<Result<_, _>>()?,
+            fermion_positions: positions_for_kind(0, axis_kinds, axis_indices)?,
+            boson_positions: positions_for_kind(1, axis_kinds, axis_indices)?,
+            qubit_positions: positions_for_kind(2, axis_kinds, axis_indices)?,
+            qudit_positions,
+            qudit_dimension,
+        })
+    }
+
+    fn estimated_bytes(&self) -> Result<u128, PauliError> {
+        let entry_count = self
+            .local_dimensions
+            .len()
+            .checked_add(self.fermion_positions.len())
+            .and_then(|count| count.checked_add(self.boson_positions.len()))
+            .and_then(|count| count.checked_add(self.qubit_positions.len()))
+            .and_then(|count| count.checked_add(self.qudit_positions.len()))
+            .ok_or(PauliError::Overflow {
+                context: "sizing retained charge-sector layout",
+            })?;
+        let entries_bytes = (entry_count as u128)
+            .checked_mul(std::mem::size_of::<u64>() as u128)
+            .ok_or(PauliError::Overflow {
+                context: "estimating retained charge-sector layout",
+            })?;
+        (std::mem::size_of::<NativeChargeLayout>() as u128)
+            .checked_add(entries_bytes)
+            .ok_or(PauliError::Overflow {
+                context: "estimating retained charge-sector layout",
+            })
+    }
+}
+
 fn charge_plan_base_bytes(
     plan: &ChargeSectorPlan,
+    layout: &NativeChargeLayout,
     terms: &[ChargeTransitionTerm],
 ) -> Result<u128, PauliError> {
     plan.estimated_bytes()
-        .checked_add(estimate_charge_transition_terms_bytes(terms)?)
+        .checked_add(layout.estimated_bytes()?)
+        .and_then(|bytes| bytes.checked_add(estimate_charge_transition_terms_bytes(terms).ok()?))
         .ok_or(PauliError::Overflow {
             context: "estimating native charge MVP plan",
         })
@@ -84,82 +224,83 @@ fn charge_terms_from_hybrid_handle(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_native_charge_mvp_plan(
-    plan: Arc<ChargeSectorPlan>,
-    dimension: usize,
-    local_dimensions: Vec<u64>,
-    fermion_positions: Vec<u64>,
-    boson_positions: Vec<u64>,
-    qubit_positions: Vec<u64>,
-    qudit_positions: Vec<u64>,
-    qudit_dimension: u64,
+fn build_native_charge_schedule_layout(
+    plan: &Arc<ChargeSectorPlan>,
+    layout_descriptor: NativeChargeLayout,
     terms: Vec<ChargeTransitionTerm>,
-    termwise_conserved: bool,
     max_bytes: u128,
-    fast_fermion_particles: Option<usize>,
-    fast_fermion_mode_order: Option<Vec<u64>>,
-    fast_qubit_particles: Option<usize>,
-    fast_qubit_positions: Option<Vec<u64>>,
-    fast_qudit_weights: Option<Vec<i128>>,
-    fast_qudit_target: Option<i128>,
-    fast_qudit_positions: Option<Vec<u64>>,
-    fast_boson_weights: Option<Vec<i128>>,
-    fast_boson_target: Option<i128>,
-    fast_boson_positions: Option<Vec<u64>>,
-    fast_product_positions: Option<Vec<Vec<u64>>>,
-) -> PyResult<NativeChargeMvpPlan> {
-    if dimension != plan.dimension() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "charge MVP dimension does not match its sector plan",
-        ));
-    }
+) -> PyResult<(
+    tencir_pauli_core::PreparedChargeTransitionPlanLayout,
+    Box<[ChargeTransitionTerm]>,
+    u128,
+)> {
+    let dimension = plan.dimension();
     let terms = group_charge_transition_terms(&terms).map_err(map_error)?;
-    let base_bytes = charge_plan_base_bytes(&plan, &terms).map_err(map_error)?;
+    let base_bytes = charge_plan_base_bytes(plan, &layout_descriptor, &terms).map_err(map_error)?;
     let layout_budget = charge_remaining_budget(max_bytes, base_bytes).map_err(map_error)?;
     let layout = prepare_charge_transition_plan_layout(
-        &plan,
+        plan,
         dimension,
-        local_dimensions.clone(),
-        &fermion_positions,
-        &boson_positions,
-        &qubit_positions,
-        &qudit_positions,
-        qudit_dimension,
+        layout_descriptor.local_dimensions,
+        &layout_descriptor.fermion_positions,
+        &layout_descriptor.boson_positions,
+        &layout_descriptor.qubit_positions,
+        &layout_descriptor.qudit_positions,
+        layout_descriptor.qudit_dimension,
         &terms,
         layout_budget,
     )
     .map_err(map_error)?;
-    let fast_budget =
-        charge_remaining_budget(layout_budget, layout.estimated_bytes()).map_err(map_error)?;
-    let hints = ChargeKernelHints {
-        fermion_particles: fast_fermion_particles,
-        fermion_mode_order: fast_fermion_mode_order.as_deref(),
-        qubit_particles: fast_qubit_particles,
-        qubit_positions: fast_qubit_positions.as_deref(),
-        qudit_weights: fast_qudit_weights.as_deref(),
-        qudit_target: fast_qudit_target,
-        qudit_positions: fast_qudit_positions.as_deref(),
-        boson_weights: fast_boson_weights.as_deref(),
-        boson_target: fast_boson_target,
-        boson_positions: fast_boson_positions.as_deref(),
-        product_positions: fast_product_positions.as_deref(),
-    };
-    Ok(NativeChargeMvpPlan {
-        plan: prepare_charge_mvp_plan(
-            plan,
-            layout,
-            terms.into_boxed_slice(),
-            termwise_conserved,
-            fast_budget,
-            hints,
-        )
-        .map_err(map_error)?,
-    })
+    let retained_bytes = base_bytes
+        .checked_add(layout.estimated_bytes())
+        .ok_or(PauliError::Overflow {
+            context: "estimating native charge schedule layout",
+        })
+        .map_err(map_error)?;
+    Ok((layout, terms.into_boxed_slice(), retained_bytes))
+}
+
+fn build_native_charge_prepared_plan(
+    plan: Arc<ChargeSectorPlan>,
+    layout_descriptor: NativeChargeLayout,
+    terms: Vec<ChargeTransitionTerm>,
+    termwise_conserved: bool,
+    max_bytes: u128,
+) -> PyResult<PreparedChargeMvpPlan> {
+    let (layout, terms, retained_bytes) =
+        build_native_charge_schedule_layout(&plan, layout_descriptor, terms, max_bytes)?;
+    let kernel_budget = charge_remaining_budget(max_bytes, retained_bytes).map_err(map_error)?;
+    prepare_charge_mvp_plan(plan, layout, terms, termwise_conserved, kernel_budget)
+        .map_err(map_error)
+}
+
+fn build_native_charge_eager_plan(
+    plan: Arc<ChargeSectorPlan>,
+    layout_descriptor: NativeChargeLayout,
+    terms: Vec<ChargeTransitionTerm>,
+    _termwise_conserved: bool,
+    max_bytes: u128,
+) -> PyResult<NativeChargeEagerMvpPlan> {
+    let sector_layout_bytes = layout_descriptor.estimated_bytes().map_err(map_error)?;
+    let (layout, terms, retained_bytes) =
+        build_native_charge_schedule_layout(&plan, layout_descriptor, terms, max_bytes)?;
+    let eager_budget = max_bytes
+        .checked_sub(retained_bytes)
+        .ok_or(PauliError::MemoryLimit {
+            requested: retained_bytes,
+            limit: max_bytes,
+        })
+        .map_err(map_error)?;
+    let result = compile_charge_csr_from_prepared_plan(&plan, &layout, &terms, eager_budget)
+        .map_err(map_error)?;
+    NativeChargeEagerMvpPlan::from_csr(result, charge_execution_variant(&plan), sector_layout_bytes)
 }
 
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeChargeSectorPlan {
     plan: Arc<ChargeSectorPlan>,
+    layout: NativeChargeLayout,
+    layout_estimated_bytes: u128,
 }
 
 #[pymethods]
@@ -171,7 +312,9 @@ impl NativeChargeSectorPlan {
 
     #[getter]
     fn estimated_bytes(&self) -> u128 {
-        self.plan.estimated_bytes()
+        self.plan
+            .estimated_bytes()
+            .saturating_add(self.layout_estimated_bytes)
     }
 
     fn rank(&self, occupations: Vec<u64>) -> PyResult<u64> {
@@ -195,156 +338,96 @@ impl NativeChargeSectorPlan {
         Ok(PyArray1::from_vec(py, values))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (
-        handle,
-        dimension,
-        local_dimensions,
-        fermion_positions,
-        boson_positions,
-        qubit_positions,
-        qudit_positions,
-        termwise_conserved,
-        max_bytes,
-        fast_fermion_particles=None,
-        fast_fermion_mode_order=None,
-        fast_qubit_particles=None,
-        fast_qubit_positions=None,
-        fast_qudit_weights=None,
-        fast_qudit_target=None,
-        fast_qudit_positions=None,
-        fast_boson_weights=None,
-        fast_boson_target=None,
-        fast_boson_positions=None,
-        fast_product_positions=None
-    ))]
+    #[pyo3(signature = (handle, termwise_conserved, max_bytes))]
     fn compile_mvp_pauli_handle(
         &self,
         py: Python<'_>,
         handle: &NativePauliOperatorHandle,
-        dimension: usize,
-        local_dimensions: Vec<u64>,
-        fermion_positions: Vec<u64>,
-        boson_positions: Vec<u64>,
-        qubit_positions: Vec<u64>,
-        qudit_positions: Vec<u64>,
         termwise_conserved: bool,
         max_bytes: u128,
-        fast_fermion_particles: Option<usize>,
-        fast_fermion_mode_order: Option<Vec<u64>>,
-        fast_qubit_particles: Option<usize>,
-        fast_qubit_positions: Option<Vec<u64>>,
-        fast_qudit_weights: Option<Vec<i128>>,
-        fast_qudit_target: Option<i128>,
-        fast_qudit_positions: Option<Vec<u64>>,
-        fast_boson_weights: Option<Vec<i128>>,
-        fast_boson_target: Option<i128>,
-        fast_boson_positions: Option<Vec<u64>>,
-        fast_product_positions: Option<Vec<Vec<u64>>>,
     ) -> PyResult<NativeChargeMvpPlan> {
         let plan = Arc::clone(&self.plan);
+        let layout = self.layout.clone();
+        let sector_layout_bytes = self.layout_estimated_bytes;
         py.allow_threads(move || {
-            build_native_charge_mvp_plan(
+            build_native_charge_prepared_plan(
                 plan,
-                dimension,
-                local_dimensions,
-                fermion_positions,
-                boson_positions,
-                qubit_positions,
-                qudit_positions,
-                0,
+                layout,
                 charge_terms_from_pauli_handle(handle),
                 termwise_conserved,
                 max_bytes,
-                fast_fermion_particles,
-                fast_fermion_mode_order,
-                fast_qubit_particles,
-                fast_qubit_positions,
-                fast_qudit_weights,
-                fast_qudit_target,
-                fast_qudit_positions,
-                fast_boson_weights,
-                fast_boson_target,
-                fast_boson_positions,
-                fast_product_positions,
             )
+            .map(|plan| NativeChargeMvpPlan {
+                plan,
+                sector_layout_bytes,
+            })
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (
-        handle,
-        dimension,
-        local_dimensions,
-        fermion_positions,
-        boson_positions,
-        qubit_positions,
-        qudit_positions,
-        qudit_dimension,
-        termwise_conserved,
-        max_bytes,
-        fast_fermion_particles=None,
-        fast_fermion_mode_order=None,
-        fast_qubit_particles=None,
-        fast_qubit_positions=None,
-        fast_qudit_weights=None,
-        fast_qudit_target=None,
-        fast_qudit_positions=None,
-        fast_boson_weights=None,
-        fast_boson_target=None,
-        fast_boson_positions=None,
-        fast_product_positions=None
-    ))]
+    #[pyo3(signature = (handle, termwise_conserved, max_bytes))]
     fn compile_mvp_hybrid_handle(
         &self,
         py: Python<'_>,
         handle: &NativeHybridOperatorHandle,
-        dimension: usize,
-        local_dimensions: Vec<u64>,
-        fermion_positions: Vec<u64>,
-        boson_positions: Vec<u64>,
-        qubit_positions: Vec<u64>,
-        qudit_positions: Vec<u64>,
-        qudit_dimension: u64,
         termwise_conserved: bool,
         max_bytes: u128,
-        fast_fermion_particles: Option<usize>,
-        fast_fermion_mode_order: Option<Vec<u64>>,
-        fast_qubit_particles: Option<usize>,
-        fast_qubit_positions: Option<Vec<u64>>,
-        fast_qudit_weights: Option<Vec<i128>>,
-        fast_qudit_target: Option<i128>,
-        fast_qudit_positions: Option<Vec<u64>>,
-        fast_boson_weights: Option<Vec<i128>>,
-        fast_boson_target: Option<i128>,
-        fast_boson_positions: Option<Vec<u64>>,
-        fast_product_positions: Option<Vec<Vec<u64>>>,
     ) -> PyResult<NativeChargeMvpPlan> {
         let plan = Arc::clone(&self.plan);
+        let layout = self.layout.clone();
+        let sector_layout_bytes = self.layout_estimated_bytes;
         py.allow_threads(move || {
-            build_native_charge_mvp_plan(
+            build_native_charge_prepared_plan(
                 plan,
-                dimension,
-                local_dimensions,
-                fermion_positions,
-                boson_positions,
-                qubit_positions,
-                qudit_positions,
-                qudit_dimension,
+                layout,
                 charge_terms_from_hybrid_handle(handle),
                 termwise_conserved,
                 max_bytes,
-                fast_fermion_particles,
-                fast_fermion_mode_order,
-                fast_qubit_particles,
-                fast_qubit_positions,
-                fast_qudit_weights,
-                fast_qudit_target,
-                fast_qudit_positions,
-                fast_boson_weights,
-                fast_boson_target,
-                fast_boson_positions,
-                fast_product_positions,
+            )
+            .map(|plan| NativeChargeMvpPlan {
+                plan,
+                sector_layout_bytes,
+            })
+        })
+    }
+
+    #[pyo3(signature = (handle, termwise_conserved, max_bytes))]
+    fn compile_eager_pauli_handle(
+        &self,
+        py: Python<'_>,
+        handle: &NativePauliOperatorHandle,
+        termwise_conserved: bool,
+        max_bytes: u128,
+    ) -> PyResult<NativeChargeEagerMvpPlan> {
+        let plan = Arc::clone(&self.plan);
+        let layout = self.layout.clone();
+        py.allow_threads(move || {
+            build_native_charge_eager_plan(
+                plan,
+                layout,
+                charge_terms_from_pauli_handle(handle),
+                termwise_conserved,
+                max_bytes,
+            )
+        })
+    }
+
+    #[pyo3(signature = (handle, termwise_conserved, max_bytes))]
+    fn compile_eager_hybrid_handle(
+        &self,
+        py: Python<'_>,
+        handle: &NativeHybridOperatorHandle,
+        termwise_conserved: bool,
+        max_bytes: u128,
+    ) -> PyResult<NativeChargeEagerMvpPlan> {
+        let plan = Arc::clone(&self.plan);
+        let layout = self.layout.clone();
+        py.allow_threads(move || {
+            build_native_charge_eager_plan(
+                plan,
+                layout,
+                charge_terms_from_hybrid_handle(handle),
+                termwise_conserved,
+                max_bytes,
             )
         })
     }
@@ -353,6 +436,7 @@ impl NativeChargeSectorPlan {
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativeChargeMvpPlan {
     plan: PreparedChargeMvpPlan,
+    sector_layout_bytes: u128,
 }
 
 #[pymethods]
@@ -364,7 +448,11 @@ impl NativeChargeMvpPlan {
 
     #[getter]
     fn estimated_bytes(&self) -> u128 {
-        self.plan.estimated_bytes().unwrap_or(u128::MAX)
+        self.plan
+            .estimated_bytes()
+            .ok()
+            .and_then(|bytes| bytes.checked_add(self.sector_layout_bytes))
+            .unwrap_or(u128::MAX)
     }
 
     /// Return the executor selected by native plan construction.
@@ -449,7 +537,11 @@ impl NativeChargeMvpPlan {
     ) -> PyResult<NativeChargeEagerMvpPlan> {
         py.allow_threads(|| {
             let result = self.plan.compile_eager(max_bytes).map_err(map_error)?;
-            NativeChargeEagerMvpPlan::from_csr(result, self.native_variant())
+            NativeChargeEagerMvpPlan::from_csr(
+                result,
+                self.native_variant(),
+                self.sector_layout_bytes,
+            )
         })
     }
 
@@ -465,7 +557,11 @@ impl NativeChargeMvpPlan {
                 .plan
                 .compile_eager_with_chunk_capacity(max_bytes, chunk_capacity)
                 .map_err(map_error)?;
-            NativeChargeEagerMvpPlan::from_csr(result, self.native_variant())
+            NativeChargeEagerMvpPlan::from_csr(
+                result,
+                self.native_variant(),
+                self.sector_layout_bytes,
+            )
         })
     }
 }
@@ -490,7 +586,11 @@ pub(crate) struct NativeChargeEagerMvpPlan {
 }
 
 impl NativeChargeEagerMvpPlan {
-    fn from_csr(result: ChargeCsrResult, native_variant: &'static str) -> PyResult<Self> {
+    fn from_csr(
+        result: ChargeCsrResult,
+        native_variant: &'static str,
+        sector_layout_bytes: u128,
+    ) -> PyResult<Self> {
         let graph = CsrGraph::try_from_u64(
             result.dimension,
             result.indptr,
@@ -500,8 +600,20 @@ impl NativeChargeEagerMvpPlan {
         .map_err(map_error)?;
         Ok(Self {
             graph,
-            estimated_bytes: result.estimated_bytes,
-            estimated_construction_peak_bytes: result.estimated_construction_peak_bytes,
+            estimated_bytes: result
+                .estimated_bytes
+                .checked_add(sector_layout_bytes)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating retained eager charge plan",
+                })
+                .map_err(map_error)?,
+            estimated_construction_peak_bytes: result
+                .estimated_construction_peak_bytes
+                .checked_add(sector_layout_bytes)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating eager charge construction peak",
+                })
+                .map_err(map_error)?,
             schedule_count: result.schedule_count,
             native_variant,
             generation_nanos: result.generation_nanos,
@@ -747,9 +859,19 @@ pub(crate) fn charge_sector_plan_compact(
     target: Vec<i128>,
     max_bytes: u128,
 ) -> PyResult<NativeChargeSectorPlan> {
-    let plan = py
+    let (plan, layout) = py
         .allow_threads(|| {
-            build_compact_charge_sector_plan(
+            let layout =
+                NativeChargeLayout::from_compact(&local_dimensions, &axis_kinds, &axis_indices)?;
+            let layout_bytes = layout.estimated_bytes()?;
+            let plan_budget =
+                max_bytes
+                    .checked_sub(layout_bytes)
+                    .ok_or(PauliError::MemoryLimit {
+                        requested: layout_bytes,
+                        limit: max_bytes,
+                    })?;
+            let plan = build_compact_charge_sector_plan(
                 local_dimensions,
                 axis_kinds,
                 axis_indices,
@@ -758,11 +880,16 @@ pub(crate) fn charge_sector_plan_compact(
                 qubit_levels,
                 qudit_weights,
                 target,
-                max_bytes,
-            )
+                plan_budget,
+            )?;
+            Ok((plan, layout))
         })
         .map_err(crate::convert::map_error)?;
     Ok(NativeChargeSectorPlan {
         plan: Arc::new(plan),
+        layout_estimated_bytes: layout
+            .estimated_bytes()
+            .map_err(crate::convert::map_error)?,
+        layout,
     })
 }

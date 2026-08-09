@@ -11,7 +11,7 @@ import numpy as np
 
 from . import _native
 from .circuit import _coerce_parameters
-from .hamiltonian import DEFAULT_MAX_BYTES, _validate_max_bytes
+from .hamiltonian import DEFAULT_MAX_BYTES, _effective_max_bytes, _validate_max_bytes
 from .pauli import PauliOperator
 
 
@@ -70,7 +70,7 @@ class GateTape:
         self.nqubits = nqubits
         self._operations: list[tuple[int, int, int, int, float, tuple[float, ...]]] = []
         self._version = 0
-        self._native_cache: Optional[tuple[int, Optional[int], Any]] = None
+        self._native_cache: Optional[tuple[int, int, Any]] = None
 
     def __len__(self) -> int:
         return len(self._operations)
@@ -309,13 +309,14 @@ class GateTape:
         return tuple(self._operations)
 
     def _native_handle(self, max_bytes: Optional[int]) -> Any:
+        effective_max_bytes = _effective_max_bytes(max_bytes)
         cached = self._native_cache
-        if cached is not None and cached[:2] == (self._version, max_bytes):
+        if cached is not None and cached[:2] == (self._version, effective_max_bytes):
             return cached[2]
         handle = _native.pauli_gate_tape(
-            self.nqubits, self._native_operations(), max_bytes
+            self.nqubits, self._native_operations(), effective_max_bytes
         )
-        self._native_cache = (self._version, max_bytes, handle)
+        self._native_cache = (self._version, effective_max_bytes, handle)
         return handle
 
 
@@ -403,7 +404,7 @@ class PropagationEngine:
             bits,
             values,
             max_weight,
-            max_bytes,
+            _effective_max_bytes(max_bytes),
         )
         self.nqubits = int(self._native.nqubits)
         self.nparameters = int(self._native.nparameters)
@@ -540,7 +541,7 @@ class PropagationBatch:
             bits,
             values,
             max_weight,
-            max_bytes,
+            _effective_max_bytes(max_bytes),
         )
         self.nqubits = int(self._native.nqubits)
         self.nparameters = int(self._native.nparameters)

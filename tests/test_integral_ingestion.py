@@ -69,13 +69,17 @@ def test_from_integrals_rejects_ambiguous_input_contract(
         tcp.FermionOperator.from_integrals(one_body, two_body)
 
 
-def test_from_integrals_checks_constant_and_memory_budget() -> None:
+def test_from_integrals_checks_constant_and_ignores_advisory_memory_budget() -> None:
     zeros = np.zeros((1, 1), dtype=np.float64)
     two_body = np.zeros((1, 1, 1, 1), dtype=np.float64)
     with pytest.raises(ValueError, match="constant must be real"):
         tcp.FermionOperator.from_integrals(zeros, two_body, constant=1.0 + 1.0j)
-    with pytest.raises(MemoryError):
-        tcp.FermionOperator.from_integrals(zeros, two_body, constant=1.0, max_bytes=1)
+    assert (
+        tcp.FermionOperator.from_integrals(
+            zeros, two_body, constant=1.0, max_bytes=1
+        ).term_count
+        == 1
+    )
 
 
 def test_from_integrals_rejects_nonfinite_values_in_native_validation() -> None:

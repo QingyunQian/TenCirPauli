@@ -23,6 +23,9 @@ from ._native_mvp import (
     _effective_max_bytes as _effective_max_bytes,
 )
 from ._native_mvp import (
+    _enforced_max_bytes as _enforced_max_bytes,
+)
+from ._native_mvp import (
     _validate_apply_into_buffers as _validate_apply_into_buffers,
 )
 from ._native_mvp import (

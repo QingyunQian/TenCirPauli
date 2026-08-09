@@ -2,10 +2,6 @@
 pub struct PreparedChargeTransitionPlanLayout {
     pub(super) dimension: usize,
     pub(super) local_dimensions: Vec<u64>,
-    pub(super) fermion_positions: Vec<usize>,
-    pub(super) boson_positions: Vec<usize>,
-    pub(super) qubit_positions: Vec<usize>,
-    pub(super) qudit_positions: Vec<usize>,
     pub(super) qudit_dimension: u64,
     pub(super) schedules: Vec<CompiledChargeSchedule>,
     pub(super) full_strides: Option<Box<[usize]>>,
@@ -853,10 +849,6 @@ pub fn prepare_charge_transition_plan_layout(
     Ok(PreparedChargeTransitionPlanLayout {
         dimension,
         local_dimensions,
-        fermion_positions,
-        boson_positions,
-        qubit_positions,
-        qudit_positions,
         qudit_dimension,
         schedules,
         full_strides,

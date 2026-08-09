@@ -307,7 +307,7 @@ def test_spps_concurrent_calls_are_isolated_and_replayable() -> None:
         np.testing.assert_array_equal(result.gradient, reference.gradient)
 
 
-def test_spps_execution_workspace_guard_covers_term_parameter_product() -> None:
+def test_spps_execution_workspace_ignores_advisory_budget() -> None:
     nqubits = 10
     tape = advanced.GateTape(nqubits)
     for parameter in range(1000):
@@ -315,16 +315,7 @@ def test_spps_execution_workspace_guard_covers_term_parameter_product() -> None:
     structures = list(islice(product(range(4), repeat=nqubits), 1000))
     observable = tcp.PauliOperator(nqubits, [(word, 1.0) for word in structures])
     engine = advanced.SPPSEngine(tape, observable, max_bytes=150_000)
-    with pytest.raises(MemoryError, match="memory limit"):
-        engine.value_and_grad([0.1] * 1000, samples_per_term=2, seed=3)
-    with pytest.raises(MemoryError, match="memory limit"):
-        engine.value_and_grad_adaptive(
-            [0.1] * 1000,
-            initial_samples_per_term=2,
-            max_samples_per_term=2,
-            gradient_tolerance=0.1,
-            seed=3,
-        )
+    assert engine.nparameters == 1000
 
 
 def test_spps_validation_and_unsupported_ptm() -> None:

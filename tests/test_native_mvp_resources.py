@@ -9,16 +9,18 @@ import numpy as np
 import pytest
 
 import tencirpauli as tcp
+from tencirpauli._native_mvp import MIN_ENFORCED_MAX_BYTES, _check_allocation
 
 
-def test_pauli_storage_is_fixed_and_eager_budget_is_strict() -> None:
+def test_pauli_storage_is_fixed_and_eager_budget_is_advisory_below_one_gib() -> None:
     operator = tcp.PauliOperator.from_terms(3, [("XZI", 1.0), ("IXX", 0.5)])
     lazy = operator.compile("native_mvp")
     assert lazy.storage == "lazy"
     assert lazy.execution_family == "pauli"
     assert lazy.retained_format == "compiled_actions"
-    with pytest.raises(MemoryError):
-        operator.compile("native_mvp", storage="eager", max_bytes=1)
+    assert (
+        operator.compile("native_mvp", storage="eager", max_bytes=1).storage == "eager"
+    )
     eager = operator.compile("native_mvp", storage="eager", max_bytes=None)
     assert eager.storage == "eager"
     assert eager.execution_family == "pauli"
@@ -85,21 +87,17 @@ def test_restricted_facade_concurrent_first_materialization_shares_cache() -> No
     assert restricted._eager_plan is not None
 
 
-def test_restricted_materialization_preflights_before_cache_and_allows_retry() -> None:
+def test_restricted_materialization_ignores_advisory_budget() -> None:
     space = tcp.OperatorSpace(fermions=10)
     number = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(10)})
     operator = space.fermion.create(0) * space.fermion.annihilate(1)
     restricted = operator.restrict_charge(number.sector(5))
-    before = restricted.estimated_bytes
-    with pytest.raises(MemoryError):
-        restricted.dense(max_bytes=100_000)
-    assert restricted.estimated_bytes == before
-    dense = restricted.dense(max_bytes=None)
+    dense = restricted.dense(max_bytes=100_000)
     assert dense.shape == (restricted.dimension, restricted.dimension)
 
 
 @pytest.mark.parametrize("target", ["coo", "csr"])
-def test_sparse_materialization_failure_does_not_publish_cache(target: str) -> None:
+def test_sparse_materialization_ignores_advisory_budget(target: str) -> None:
     space = tcp.OperatorSpace(fermions=6)
     number = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(6)})
     operator = space.fermion.create(0) * space.fermion.annihilate(1)
@@ -112,14 +110,11 @@ def test_sparse_materialization_failure_does_not_publish_cache(target: str) -> N
     )
     before = restricted.estimated_bytes
     limit = before + reference.estimated_bytes + target_bytes - 1
-    with pytest.raises(MemoryError):
-        getattr(restricted, target)(max_bytes=limit)
-    assert restricted.estimated_bytes == before
-    matrix = getattr(restricted, target)(max_bytes=None)
+    matrix = getattr(restricted, target)(max_bytes=limit)
     assert matrix.shape == (restricted.dimension, restricted.dimension)
 
 
-def test_spinful_cache_budget_falls_back_without_exceeding_plan_budget() -> None:
+def test_spinful_component_cache_ignores_advisory_budget() -> None:
     sites = 16
     space = tcp.OperatorSpace(fermions=2 * sites)
     total = tcp.AdditiveCharge(space, fermions={index: 1 for index in range(2 * sites)})
@@ -133,7 +128,8 @@ def test_spinful_cache_budget_falls_back_without_exceeding_plan_budget() -> None
     )
     bounded = operator.restrict_charge(sector, max_bytes=350_000)
     plan = bounded.mvp_plan()
-    assert plan.estimated_bytes <= 350_000
+    state = np.arange(plan.dimension, dtype=np.float64).astype(np.complex128)
+    np.testing.assert_allclose(plan.apply(state), plan.apply(state, max_bytes=None))
 
 
 def test_large_eager_charge_parallel_rows_match_serial_rows() -> None:
@@ -159,17 +155,18 @@ def test_large_eager_charge_parallel_rows_match_serial_rows() -> None:
     np.testing.assert_array_equal(serial, parallel)
 
 
-def test_cached_eager_plan_still_obeys_call_budget_and_exposes_csr_storage() -> None:
+def test_cached_eager_plan_ignores_advisory_budget_and_exposes_csr_storage() -> None:
     space = tcp.OperatorSpace(fermions=3)
     number = tcp.AdditiveCharge(space, fermions={0: 1, 1: 1, 2: 1})
     operator = space.fermion.create(0) * space.fermion.annihilate(1)
     restricted = operator.restrict_charge(number.sector(1))
     eager = restricted.mvp_plan(storage="eager", max_bytes=None)
     assert eager.indptr.shape == (restricted.dimension + 1,)
-    with pytest.raises(MemoryError):
-        restricted.mvp_plan(storage="eager", max_bytes=0)
-    with pytest.raises(MemoryError):
-        restricted.csr(max_bytes=0)
+    assert restricted.mvp_plan(storage="eager", max_bytes=0) is eager
+    assert restricted.csr(max_bytes=0).shape == (
+        restricted.dimension,
+        restricted.dimension,
+    )
     assert restricted.mvp_plan(storage="eager", max_bytes=None) is eager
 
 
@@ -210,28 +207,22 @@ def test_apply_into_overwrite_overlap_and_concurrent_reuse() -> None:
         plan.apply_into(overlapping[:-1], overlapping[1:])
 
 
-def test_u1_lazy_apply_into_accounts_for_native_scratch() -> None:
+def test_u1_lazy_apply_into_ignores_advisory_budget() -> None:
     operator = tcp.PauliOperator.from_terms(
         8, [("XX" + "I" * 6, 1.0), ("YY" + "I" * 6, 1.0)]
     )
     restricted = operator.restrict_charge(tcp.U1Sector(8, 1))
-    with pytest.raises(MemoryError):
-        restricted.mvp_plan(max_bytes=0)
-    plan = restricted.mvp_plan()
+    plan = restricted.mvp_plan(max_bytes=0)
     state = np.ones(plan.dimension, dtype=np.complex128)
     output = np.empty_like(state)
-    with pytest.raises(MemoryError):
-        plan.apply_into(state, output, max_bytes=0)
+    plan.apply_into(state, output, max_bytes=0)
+    np.testing.assert_allclose(output, plan.apply(state))
 
 
-def test_u1_materialization_preflights_before_publishing_eager_cache() -> None:
+def test_u1_materialization_ignores_advisory_budget() -> None:
     operator = tcp.PauliOperator.from_terms(8, [("Z" + "I" * 7, 1.0)])
     restricted = operator.restrict_charge(tcp.U1Sector(8, 1))
-    before = restricted.estimated_bytes
-    with pytest.raises(MemoryError):
-        restricted.dense(max_bytes=700)
-    assert restricted.estimated_bytes == before
-    dense = restricted.dense(max_bytes=None)
+    dense = restricted.dense(max_bytes=700)
     assert dense.shape == (restricted.dimension, restricted.dimension)
 
 
@@ -278,9 +269,8 @@ def test_cpu_native_apply_into_is_strict_and_matches_apply(factory: str) -> None
             np.testing.assert_allclose(buffer, plan.apply(state, max_bytes=None))
     elif factory in {"charge", "u1"}:
         output.fill(9.0 + 4.0j)
-        with pytest.raises(MemoryError):
-            plan.apply_into(state, output, max_bytes=0)
-        np.testing.assert_array_equal(output, np.full_like(output, 9.0 + 4.0j))
+        plan.apply_into(state, output, max_bytes=0)
+        np.testing.assert_allclose(output, plan.apply(state, max_bytes=None))
     with pytest.raises(ValueError, match="overlap"):
         plan.apply_into(state, state, max_bytes=None)
     wrong_shape = np.full(plan.dimension + 1, 9.0 + 4.0j, dtype=np.complex128)
@@ -289,6 +279,14 @@ def test_cpu_native_apply_into_is_strict_and_matches_apply(factory: str) -> None
     np.testing.assert_array_equal(wrong_shape, np.full_like(wrong_shape, 9.0 + 4.0j))
     with pytest.raises(TypeError, match="complex128"):
         plan.apply_into(state.astype(np.complex64), output, max_bytes=None)
+
+
+def test_max_bytes_has_a_one_gib_enforcement_floor() -> None:
+    _check_allocation(MIN_ENFORCED_MAX_BYTES, 0, "advisory allocation")
+    with pytest.raises(MemoryError, match="exceeding max_bytes"):
+        _check_allocation(
+            MIN_ENFORCED_MAX_BYTES + 1, MIN_ENFORCED_MAX_BYTES, "major allocation"
+        )
 
 
 def test_u1_restriction_alias_is_deprecated_and_unified_entry_point_is_supported() -> (
