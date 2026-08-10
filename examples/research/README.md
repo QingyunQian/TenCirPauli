@@ -14,3 +14,4 @@ Each study has its own directory. Keep the first version small: one executable s
 - [`u1_vqe_60q/`](u1_vqe_60q/): a 60-qubit, two-particle, 10-layer U(1) VQE comparison between native TenCirPauli gradients and TensorCircuit/JAX `jit(value_and_grad)`.
 - [`pauli_propagation_julia_vqe/`](pauli_propagation_julia_vqe/): a matched 28-qubit, six-layer Pauli-propagation VQE comparison against PauliPropagation.jl, with an independent dense/parameter-shift correctness gate.
 - [`measurement_grouping/`](measurement_grouping/): measurement-ready QWC grouping and bitstring reconstruction against an independent NumPy/Python baseline, with an optional Qiskit comparison.
+- [`fermion_timeevolution_2d/`](fermion_timeevolution_2d/): two-dimensional Fermi–Hubbard Krylov/Chebyshev evolution through raw Fermion native MVP and mapped TensorCircuit-NG/JAX backend MVP paths.
