@@ -15,6 +15,18 @@
 
 TenCirPauli brings a compact Rust core and a Python-first API to the Pauli-heavy parts of quantum workflows. Build Hamiltonians, group measurements, reduce symmetries, work in fixed-particle-number sectors, and propagate observables without leaving the TensorCircuit ecosystem.
 
+## Performance highlights
+
+Representative research workloads show TenCirPauli leading across native U(1) execution, observable propagation, restricted Hamiltonian MVPs, and fermion mappings. See the [benchmark highlights](docs/performance.md) for the complete comparison set and links to every runnable study.
+
+| Workload | Comparison | Result |
+| --- | --- | --- |
+| 60-qubit, two-particle U(1) VQE | TensorCircuit/JAX | 688× faster first compiled value-and-gradient call, and 2.6× faster steady execution |
+| 28-qubit Pauli-propagation VQE | PauliPropagation.jl | 7.8× faster first call and 1.43× faster steady value-and-gradient execution |
+| 4×4 half-filled Fermi–Hubbard MVP | QuSpin | 1.73× faster with 2.16× lower peak memory |
+| 12-mode fermion mapping | OpenFermion | 22× faster Jordan–Wigner mapping and 12.6× faster Bravyi–Kitaev mapping |
+| 6-site eager Holstein sparse execution | QuSpin | About 6× lower peak memory and 1.8× faster at four threads |
+
 ## Why TenCirPauli?
 
 | Workflow | What you get |

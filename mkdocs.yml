@@ -57,6 +57,7 @@ exclude_docs: |
 
 nav:
   - Home: index.md
+  - Performance: performance.md
   - Concepts: concepts.md
   - Quickstart: quickstart.md
   - API reference: api.md
