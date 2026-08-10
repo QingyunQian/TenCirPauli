@@ -180,6 +180,22 @@ Promotion criteria: a representative interaction graph, a target metric, explici
 
 ## Seed ideas
 
+### JAX-compatible gradients for parameterized PTMs
+
+Status: `seed`.
+
+Priority: near-term; estimated implementation effort: low.
+
+Motivation: allow a PTM whose entries are produced by an upstream JAX parameterization to participate in the same native value-and-gradient contract as parameterized Pauli rotations. This covers differentiable unitary-derived PTMs, parameterized noise channels, and user-defined local linear maps without making the Rust core depend on JAX.
+
+Current design: retain the existing static `PropagationCircuit.ptm()` API and add a parameterized PTM path with a fixed local sparsity/layout and runtime matrix values. The native reverse pass returns the VJP with respect to the runtime PTM entries, using the local rule `dL/dR[out,in] = adjoint[out] * input[in]`. The existing JAX custom-VJP bridge then composes that PTM-entry cotangent with the upstream `R(theta)` function and returns the gradient to JAX. PTM structure must remain fixed during one compiled execution; dynamic zero/nonzero pattern changes are not part of the first contract.
+
+Dependencies: a runtime PTM payload in the propagation tape/engine, native PTM-entry VJP read-back, one coarse JAX callback carrying the PTM values, and differential tests against dense one- and two-qubit references. The implementation should reuse the current PTM transition and aggregation machinery rather than add a second local-map representation.
+
+Open questions: whether the first public API accepts one flattened PTM buffer for all parameterized gates or exposes a small parameterized-PTM descriptor; whether dense fixed-layout and sparse fixed-pattern PTMs share one ABI; and whether physical-channel validation is performed only at construction or also for each runtime matrix value.
+
+Promotion criteria: exact finite-difference and dense-VJP tests for one- and two-qubit unitary-derived PTMs, depolarizing and amplitude-damping parameterizations; JAX `jit`/`grad` coverage with shared upstream parameters; frozen-layout behavior for zero entries; deterministic concurrent calls; and a release-mode end-to-end benchmark showing that PTM values and their VJP cross the boundary in one batched call.
+
 ### Specialized quadratic-algebra analysis
 
 Status: `seed`.
