@@ -1,42 +1,69 @@
 <div align="center">
   <img src="docs/assets/tencirpauli-logo.png" alt="TenCirPauli logo" width="180">
   <h1>TenCirPauli</h1>
-  <p><strong>Fast, Rust-native Pauli algebra and quantum-circuit primitives for TensorCircuit.</strong></p>
+  <p><strong>Rust-native Pauli algebra and structured quantum execution for TensorCircuit.</strong></p>
   <p>
     <a href="https://github.com/tensorcircuit/TenCirPauli/actions/workflows/ci.yml"><img src="https://github.com/tensorcircuit/TenCirPauli/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
     <a href="https://tensorcircuit.github.io/TenCirPauli/"><img src="https://img.shields.io/badge/docs-latest-blue.svg" alt="Documentation"></a>
     <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/v/tencirpauli.svg" alt="PyPI version"></a>
-    <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/pyversions/tencirpauli.svg" alt="Python versions"></a>
-    <a href="https://pypi.org/project/tencirpauli/"><img src="https://img.shields.io/pypi/dm/tencirpauli.svg" alt="PyPI downloads"></a>
-    <a href="https://github.com/tensorcircuit/TenCirPauli/stargazers"><img src="https://img.shields.io/github/stars/tensorcircuit/TenCirPauli.svg?style=flat" alt="GitHub stars"></a>
     <a href="https://github.com/tensorcircuit/TenCirPauli/blob/main/LICENSE"><img src="https://img.shields.io/github/license/tensorcircuit/TenCirPauli.svg" alt="Apache 2.0 license"></a>
   </p>
 </div>
 
-TenCirPauli brings a compact Rust core and a Python-first API to the Pauli-heavy parts of quantum workflows. Build Hamiltonians, group measurements, reduce symmetries, work in fixed-particle-number sectors, and propagate observables without leaving the TensorCircuit ecosystem.
+TenCirPauli moves Pauli-heavy quantum workflows from Python object graphs into compact native data and Rust execution. It is the TensorCircuit-facing layer for Hamiltonians, measurement grouping, symmetry reduction, restricted sectors, structured operators, and observable propagation.
 
-## Performance highlights
+## What it does
 
-Representative research workloads show TenCirPauli leading across native U(1) execution, observable propagation, restricted Hamiltonian MVPs, and fermion mappings. See the [benchmark highlights](docs/performance.md) for the complete comparison set and links to every runnable study.
+| Capability | Main entry points |
+| --- | --- |
+| Pauli algebra and Hamiltonians | `PauliWord`, `PauliOperator`, products, commutators, dense/COO/CSR targets, matrix-free MVP |
+| Measurement planning | `group_commuting(mode="qubit_wise")`, `QWCGroupingResult`, basis-aware bitstring reconstruction |
+| Symmetry reduction | `find_z2_symmetries()`, `taper_z2()`, `restrict_charge()` with `U1Sector` or `ChargeSector` |
+| Native circuit execution | `U1Circuit`, `PropagationCircuit`, `SPPSCircuit`, value/gradient and expectation terminals |
+| Structured quantum operators | `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, `HybridOperator`, `MajoranaOperator` |
+| Fermion and chemistry workflows | Jordan–Wigner, parity, Bravyi–Kitaev, optional PySCF ingestion, TensorCircuit integration |
+
+## Why it is fast
+
+- Scalable symbolic work stays in Rust over packed Pauli, occupation, charge, and structured representations.
+- Public results are lazy native-backed handles by default; Python materializes terms or arrays only when an API explicitly asks for them.
+- Matrix-free and restricted-sector plans avoid dense matrices and full Hilbert spaces when the workload has useful structure.
+- TensorCircuit and JAX can remain at the backend boundary through reusable `backend_mvp_plan()` plans, while native CPU paths use coarse-grained Rust execution and default parallelism.
+
+## Performance snapshots
+
+These are representative runs from the linked research studies, not universal maxima. The [benchmark page](docs/performance.md) collects the workload definitions and runnable examples.
 
 | Workload | Comparison | Result |
 | --- | --- | --- |
-| 60-qubit, two-particle U(1) VQE | TensorCircuit/JAX | 688× faster first compiled value-and-gradient call, and 2.6× faster steady execution |
-| 28-qubit Pauli-propagation VQE | PauliPropagation.jl | 7.8× faster first call and 1.43× faster steady value-and-gradient execution |
-| 4×4 half-filled Fermi–Hubbard MVP | QuSpin | 1.73× faster with 2.16× lower peak memory |
-| 12-mode fermion mapping | OpenFermion | 22× faster Jordan–Wigner mapping and 12.6× faster Bravyi–Kitaev mapping |
-| 6-site eager Holstein sparse execution | QuSpin | About 6× lower peak memory and 1.8× faster at four threads |
+| 60-qubit, two-particle U(1) VQE | TensorCircuit/JAX | 688× faster on the first compiled value-and-gradient call; 2.6× faster when steady |
+| 28-qubit Pauli-propagation VQE | PauliPropagation.jl | 7.8× faster on the first call; 1.43× faster when steady |
+| 12-mode fermion mapping | OpenFermion | 22× faster for Jordan–Wigner; 12.6× faster for Bravyi–Kitaev |
+| 64-qubit, 1,024-term QWC grouping | Qiskit | 38× faster grouping on the linked workload, with native reconstruction included in the study |
+| 4×4 Fermi–Hubbard restricted MVP | QuSpin | 1.73× faster and 2.16× lower peak memory |
 
-## Why TenCirPauli?
+## Choose an entry point
 
-| Workflow | What you get |
+| If you need to... | Start with... |
 | --- | --- |
-| **Pauli algebra** | Canonical words, products, phases, commutation, support, and deterministic term aggregation. |
-| **Hamiltonians** | Dense, COO, CSR, matrix-vector products, and reusable native or TensorCircuit backend plans. |
-| **Scientific interop** | Required SciPy `LinearOperator` wrappers and optional direct PySCF RHF/UHF Hamiltonian ingestion. |
-| **Measurement and symmetry** | QWC/general commuting groups, Z2 tapering, and U(1) sector restriction. |
-| **Native circuit execution** | Fixed-particle-number circuits, deterministic Pauli propagation, gradients, and stochastic Pauli-path estimates. |
-| **Structured fermion workflows** | Majorana algebra, Jordan–Wigner/parity/Bravyi–Kitaev plans, exact additive charges, and guarded restricted sectors. |
+| Build or transform Pauli operators | `PauliOperator.from_terms()` and `PauliWord.from_string()` |
+| Group terms for measurements | `operator.group_commuting()`; use QWC mode for measurement-ready bases |
+| Apply a large Hamiltonian without a matrix | `operator.native_mvp_plan()` or `operator.mvp()` |
+| Keep TensorCircuit/JAX active | `operator.backend_mvp_plan()` and `tencirpauli.backend_mvp()` |
+| Reduce a symmetry sector | `operator.find_z2_symmetries()` / `operator.taper_z2()` |
+| Work at fixed particle number or additive charge | `U1Sector`, `ChargeSector`, and `operator.restrict_charge()` |
+| Run a native circuit objective | `U1Circuit`, `PropagationCircuit`, or `SPPSCircuit` |
+| Map or compile structured operators | `FermionQubitMapping`, `MajoranaOperator`, and the structured operator classes |
+
+`mode="general"` is available for algebraic commuting groups, but its result is intentionally `measurement_ready=False`; use QWC grouping when the output must directly describe product-basis measurements.
+
+## TensorCircuit ecosystem
+
+TenCirPauli is designed as a TensorCircuit companion, not a replacement for the TensorCircuit frontend. TensorCircuit circuits can be converted with `U1Circuit.from_circuit()` or `PropagationCircuit.from_circuit()`, and Pauli backend plans can be called through TensorCircuit's NumPy or JAX backend. The Rust core itself has no Python or TensorCircuit dependency.
+
+## Research examples
+
+The [research index](examples/research/README.md) links to reproducible, manual studies covering [Fermi–Hubbard](examples/research/fermi_hubbard/), [Holstein](examples/research/holstein/), [SYK Majorana](examples/research/syk_majorana/), [BCH convergence](examples/research/bch_convergence/), [Lie closure](examples/research/lie_closure/), [fermion mapping](examples/research/fermion_mapping/), [U(1) VQE](examples/research/u1_vqe_60q/), [Pauli propagation](examples/research/pauli_propagation_julia_vqe/), and [measurement grouping](examples/research/measurement_grouping/).
 
 ## Install
 
@@ -44,200 +71,11 @@ Representative research workloads show TenCirPauli leading across native U(1) ex
 python -m pip install tencirpauli
 ```
 
-Released wheels target CPython 3.9+ on Linux x86_64/aarch64, macOS x86_64/arm64, and Windows x64. A matching wheel does not require a local Rust toolchain.
+Released wheels cover common CPython 3.9+ platforms. Source builds require Rust, Cargo, and maturin; chemistry interop is optional via `python -m pip install 'tencirpauli[chemistry]'`.
 
-## Quick start
+## Documentation and development
 
-```python
-import tencirpauli as tcp
-
-hamiltonian = tcp.PauliOperator.from_terms(
-    2,
-    (("XX", 0.5), ("ZI", -1.25j)),
-)
-
-matrix = hamiltonian.compile(target="dense")
-print(matrix.shape)  # (4, 4)
-```
-
-For a complete circuit example, see [`examples/`](examples/) and the TensorCircuit integration guide below.
-
-## Built for the ecosystem
-
-TenCirPauli is designed for TensorCircuit users, while its Rust core remains independent of Python and TensorCircuit. The public package is distributed on PyPI with wheels and an sdist; source builds require Rust 1.85+, Cargo, and maturin.
-
-## Architecture
-
-```text
-TensorCircuit / Python facade
-        │
-        ├── PauliOperator, grouping, symmetry, backend MVP
-        ├── U1Circuit
-        ├── PropagationCircuit       (deterministic native facade)
-        ├── SPPSCircuit              (stochastic native facade)
-        └── Majorana/mapping/charge  (structured Majorana and charge facade)
-        │
-        ▼
-PyO3 batch boundary
-        │
-        ├── Rust U(1) restricted-state executor
-        ├── Rust deterministic Heisenberg propagation executor
-        └── Rust stochastic Pauli-path executor
-```
-
-The three circuit facades share Python-level construction, parameter and objective conventions. Their native executors remain independent because they implement different numerical contracts.
-
-## Core conventions
-
-External Pauli codes are `0=I`, `1=X`, `2=Y`, `3=Z`. Internal packed words use qubit zero as the least-significant bit. Matrix and TensorCircuit computational-basis interfaces use qubit zero as the most-significant bit. Coefficients are complex128-compatible, duplicate Pauli terms are aggregated deterministically, and public arrays are returned read-only where the API promises immutable results.
-
-## Main objects
-
-| Task | Entry point |
-| --- | --- |
-| Pauli algebra | `PauliWord`, `PauliOperator` |
-| Hamiltonian targets | `.dense()`, `.coo()`, `.csr()`, `.mvp()` |
-| SciPy iterative solvers | `.to_scipy_linear_operator()` on MVP plans or `PauliOperator` |
-| Reusable native MVP | `.native_mvp_plan()` |
-| TensorCircuit backend MVP | `.backend_mvp_plan()`, `backend_mvp()` |
-| QWC/general grouping | `.group_commuting()` |
-| Z2 symmetry/tapering | `.find_z2_symmetries()`, `.taper_z2()` |
-| Fixed-particle-number operator | `U1Sector`, `.restrict_charge()` |
-| Fixed-particle-number circuit | `U1Circuit` |
-| Majorana algebra and fermion mappings | `MajoranaOperator`, `FermionQubitMapping` |
-| Additive-charge sectors | `AdditiveCharge`, `ChargeSector`, `.restrict_charge()` |
-| Deterministic Pauli propagation | `PropagationCircuit` (advanced `GateTape`/`PropagationEngine` remain available) |
-| Stochastic Pauli-path estimation | `SPPSCircuit` (low-level `SPPSEngine` remains available) |
-
-Pauli algebra uses native-backed lazy results by default. Each result remains a lightweight `PauliOperator` backed by a private Rust handle; `term_count`, algebra, and matrix/MVP targets do not construct Python `PauliTerm` objects. Use `result.to_dict()` for a plain `{pauli_string: coefficient}` mapping, or access `result.terms` when the full Python term objects are explicitly needed.
-
-```python
-native_result = hamiltonian.commutator(hamiltonian)
-weights = native_result.to_dict()
-python_terms = native_result.terms  # explicit, cached materialization
-```
-
-Fermion, Boson, Qudit, Hybrid, and Majorana operators follow the same default lazy boundary with family-specific canonical native arrays and `to_dict()` exports. The exact native coverage and intentionally retained Python fallbacks are listed in [`docs/vibe/operator-lazy-results.md`](docs/vibe/operator-lazy-results.md).
-
-## Structured operator algebra
-
-The structured API adds `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, and `OperatorSpace` for canonical fermionic CAR, symbolic bosonic CCR, hybrid mixed-radix layouts, and uniform-dimension Weyl words. Native `compile("native_mvp")` executes raw Fermion descriptors by default in the Jordan–Wigner occupation-basis order; call `map_fermions("jordan_wigner")`, or select parity/Bravyi–Kitaev explicitly, when a mapped Pauli representation is required. Boson cutoffs are required only at finite compilation and use the projected open-boundary Fock convention. The batch `OperatorBuilder` is available under [`tencirpauli.advanced`](python/tencirpauli/advanced.py).
-
-Majorana and charge workflows add exact `MajoranaWord`/`MajoranaOperator` conversion, reusable Jordan–Wigner, parity, and Bravyi–Kitaev occupation mappings, and integer `AdditiveCharge`/`ChargeSector` workflows. Charge sectors use exact conservation checks, infer simple finite boson bounds, retain uncharged qudit spectators, and expose guarded dense/COO/CSR plus matrix-free restricted plans. See [`examples/majorana_charge.py`](examples/majorana_charge.py) and the design index under [`docs/vibe/README.md`](docs/vibe/README.md).
-
-Optional chemistry interop imports converged PySCF RHF or UHF results directly into the canonical `FermionOperator` form, including nuclear repulsion by default. Standard fermionic CAR requires orthonormal orbitals; spin-orbital ordering and the fixed integral convention are explicit adapter inputs. OpenFermion is not required. See [`examples/quantum_chemistry_pyscf.py`](examples/quantum_chemistry_pyscf.py) after installing `pip install "tencirpauli[chemistry]"`.
-
-CPU-native MVP plans default to `storage="lazy"`; use `storage="eager"` when a reusable retained representation fits the budget. A restricted facade starts compact, and `mvp_plan(storage="eager")`, `dense()`, `coo()`, or `csr()` explicitly authorizes a thread-safe eager transition cache that later facade calls may reuse. Fixed plans never change storage, and `apply_into(input_state, output_state)` writes into caller-owned non-overlapping `complex128` buffers.
-
-Finite targets are selected explicitly with `compile("dense" | "coo" | "csr" | "native_mvp" | "backend_mvp")`. Dense/COO/CSR and native MVP are available for guarded finite structured layouts. `backend_mvp` is available for Pauli plans and uniform pure-qudit Weyl plans through direct TensorCircuit NumPy/JAX backend operations; finite boson and mixed-dimension hybrid backend plans raise `NotImplementedError` rather than falling back silently. See the separate minimal Weyl example in [`examples/qudit_backend.py`](examples/qudit_backend.py) and the manual Holstein study in [`examples/research/holstein/`](examples/research/holstein/).
-
-## Common circuit facade
-
-The circuit facade accepts actual gate angles through `theta=` and exposes `angle_count`. Direct gradients are returned in deterministic gate-occurrence order; JAX owns any outer parameter sharing or arithmetic. Circuit facades do not expose public compile plans.
-
-```python
-import tencirpauli as tcp
-
-circuit = tcp.U1Circuit(nqubits=4, particle_number=2, occupied=[0, 1])
-circuit.iswap(0, 1, theta=0.2)
-circuit.rzz(1, 2, theta=-0.5)
-
-hamiltonian = tcp.PauliOperator.from_terms(
-    4,
-    (("XXII", 0.5), ("YYII", 0.5), ("ZIZI", -0.2)),
-)
-
-result = circuit.value_and_grad(hamiltonian)
-energy = circuit.expectation(hamiltonian)
-```
-
-The same high-level shape is used by the implemented `PropagationCircuit` and `SPPSCircuit` facades:
-
-```python
-circuit = tcp.PropagationCircuit(nqubits=4, initial_state=tcp.ZeroState())
-circuit.ry(0, theta=0.2)
-circuit.cnot(0, 1)
-circuit.rz(1, theta=-0.3)
-
-result = circuit.value_and_grad(hamiltonian)
-energy = circuit.expectation(hamiltonian)
-```
-
-`expectation_jax()` accepts scalar JAX values or tracers and uses one host callback plus a first-order custom VJP. Build the circuit inside the traced objective when outer parameters are shared or transformed; TenCirPauli sees only independent gate-angle occurrences. The first JAX route requires `jax_enable_x64=True` and does not promise higher-order derivatives, `jvp`, or implicit batching.
-
-The current implementation contract and rollout status are recorded in the [`docs/vibe` index](docs/vibe/README.md).
-
-## Backend MVP
-
-Use the TensorCircuit backend path when JAX/JIT/autodiff or a TensorCircuit backend tensor must remain active:
-
-```python
-import numpy as np
-import tensorcircuit as tc
-import tencirpauli as tcp
-
-tc.set_backend("numpy")
-tc.set_dtype("complex128")
-
-h = tcp.PauliOperator.from_terms(2, (("XY", 0.5), ("ZI", -1.25j)))
-plan = h.backend_mvp_plan()
-state = np.arange(4, dtype=np.complex128)
-result = tcp.backend_mvp(plan)(state)
-```
-
-The plan structure is static; coefficients may be supplied as backend tensors where the plan API permits it. This path is distinct from native deterministic or stochastic circuit gradients.
-
-## Existing low-level propagation API
-
-The low-level API remains available when an Agent needs explicit tape or engine control:
-
-```python
-from tencirpauli import advanced
-
-tape = advanced.GateTape(3)
-tape.h(0)
-tape.cnot(0, 1)
-tape.rz(1, parameter=0)
-
-observable = tcp.PauliOperator.from_terms(3, (("ZII", 1.0),))
-engine = advanced.PropagationEngine(tape, observable, max_weight=3)
-result = engine.value_and_grad([0.125])
-```
-
-`PropagationEngine` propagates the observable in reverse Heisenberg order. `max_weight=None` or a cutoff at least as large as `nqubits` is exact; a finite cutoff applies deterministic Pauli-weight projection after same-word contributions have been aggregated. The gradient is for the executed frozen sparse trace, not a dense derivative at support-change points.
-
-The circuit facade adds a value-only `expectation(observable)` terminal; it agrees with `value_and_grad(observable).value` and does not allocate a gradient buffer.
-
-`SPPSEngine` provides seeded stochastic value-and-gradient estimates with fixed or adaptive per-term sample budgets. Its result includes standard-error and stopping-proxy metadata and must not be interpreted as a deterministic gradient result.
-
-## U(1) semantics
-
-`U1Sector` and `U1Circuit` use TensorCircuit computational-basis integer ordering. `U1Circuit` stores and executes only the fixed-Hamming-weight sector; `state()`/`probability()` are restricted-space terminals and `state_full()`/`probability_full()` are explicit full-space terminals. The native restricted implementation supports arbitrary-width packed occupation limbs, while full-space materialization remains subject to the public `DEFAULT_MAX_BYTES` guard.
-
-`max_bytes` is a coarse guard for cheaply estimated major outputs and workspaces, not a peak-RSS promise. Values below 1 GiB are advisory and are treated as unbounded; at or above 1 GiB, readily estimated major allocations are preflighted. Checked dimensions and arithmetic always apply, and an allocator-level out-of-memory failure remains possible for requests that cannot be estimated cheaply.
-
-## TensorCircuit conversion
-
-TensorCircuit is the required ecosystem dependency. User-facing conversion uses target-type classmethods:
-
-```python
-native_u1 = tcp.U1Circuit.from_circuit(tc_u1_circuit)
-native_propagation = tcp.PropagationCircuit.from_circuit(tc_circuit)
-```
-
-Low-level QIR restoration remains available through `from_qir()` for concrete numeric gate records. JAX-traced angles belong in a circuit built inside the `expectation_jax()` objective rather than in a serialized QIR payload. TensorCircuit gate objects are normalized at the boundary to a static logical payload, especially for `diagonal` gates.
-
-## Development
-
-The local quality gate is:
-
-```bash
-python scripts/check.py --benchmark smoke
-```
-
-The full release checks include Rust formatting, Clippy, Rust tests, Black, Ruff, strict mypy, release maturin installation, Python tests, and benchmark harness smoke tests. TensorCircuit differential tests use the supported TensorCircuit installation and compare ordering, gate conventions, state/observable values, backend MVP results, and native conversion behavior.
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md), [`docs/vibe/phase-alpha-spec.md`](docs/vibe/phase-alpha-spec.md), [`docs/vibe/semantics.md`](docs/vibe/semantics.md), and [`docs/vibe/releasing.md`](docs/vibe/releasing.md).
+Read the [documentation](https://tensorcircuit.github.io/TenCirPauli/) for concepts and API details, [performance notes](docs/performance.md) for benchmark context, and [CONTRIBUTING.md](CONTRIBUTING.md) for local development. The local quality gate is `python scripts/check.py --benchmark smoke`.
 
 ## License
 
