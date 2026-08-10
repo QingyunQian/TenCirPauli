@@ -9,6 +9,8 @@ conda run -p .conda python examples/research/lie_closure/run_tencirpauli.py
 conda run -p .conda python examples/research/lie_closure/run_python_dict.py
 ```
 
+The default performance workload uses 64 qubits and stops at closure dimension 512. The recorded run generated 45,341 candidate brackets and measured about 7.7x faster native closure than the Python dictionary baseline; it is a bounded workload, not a claim to construct the full `4**64 - 1`-dimensional algebra.
+
 Run exact small reference cases:
 
 ```bash

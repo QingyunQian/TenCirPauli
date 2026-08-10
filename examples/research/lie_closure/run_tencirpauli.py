@@ -31,8 +31,8 @@ def parse_args() -> argparse.Namespace:
         "--case", choices=("su2", "su4", "sum2", "chain"), default="chain"
     )
     parser.add_argument("--mode", choices=("word", "sum"), default="word")
-    parser.add_argument("--nqubits", type=int, default=4)
-    parser.add_argument("--max-dimension", type=int, default=128)
+    parser.add_argument("--nqubits", type=int, default=64)
+    parser.add_argument("--max-dimension", type=int, default=512)
     parser.add_argument("--tolerance", type=float, default=1.0e-10)
     parser.add_argument("--max-bytes", type=int, default=512 * 1024**2)
     return parser.parse_args()

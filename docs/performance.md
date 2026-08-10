@@ -56,6 +56,6 @@ These studies compare the native implementation with small independent Python di
 | Workload | Baseline | Measured result | Research example |
 | --- | --- | --- | --- |
 | Fourth-order Pauli BCH; 8 qubits and 44 terms per generator | Python dictionary recurrence | About 4.7× faster native end-to-end | [BCH convergence example](https://github.com/tensorcircuit/TenCirPauli/tree/main/examples/research/bch_convergence) |
-| Bounded four-qubit Pauli Lie closure | Python dictionary recurrence | About 1.6× faster native closure | [Lie-closure example](https://github.com/tensorcircuit/TenCirPauli/tree/main/examples/research/lie_closure) |
+| Bounded 64-qubit Pauli Lie closure; dimension cap 512 | Python dictionary recurrence | About 7.7× faster native closure | [Lie-closure example](https://github.com/tensorcircuit/TenCirPauli/tree/main/examples/research/lie_closure) |
 
 All numbers are representative results from the linked studies, not universal maxima. Each example contains the workload definition, correctness checks, and the command used to reproduce the comparison.
