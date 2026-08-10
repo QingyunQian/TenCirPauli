@@ -11,3 +11,4 @@ Each study has its own directory. Keep the first version small: one executable s
 - [`lie_closure/`](lie_closure/): bounded Pauli-word and Pauli-sum Lie closure, dimension/rank reporting, Jacobi checks, and a pure-Python dictionary baseline.
 - [`fermion_mapping/`](fermion_mapping/): cross-environment correctness and timing comparison for Jordan–Wigner, parity, and Bravyi–Kitaev mappings against OpenFermion.
 - [`holstein/`](holstein/): a one-dimensional spinful Holstein electron–phonon Hamiltonian with native MVP/Lanczos execution and an optional QuSpin tensor-basis comparison.
+- [`u1_vqe_60q/`](u1_vqe_60q/): a 60-qubit, two-particle, 10-layer U(1) VQE comparison between native TenCirPauli gradients and TensorCircuit/JAX `jit(value_and_grad)`.

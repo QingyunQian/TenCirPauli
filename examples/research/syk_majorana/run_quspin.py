@@ -1,4 +1,4 @@
-"""Manual SYK ground-state study using QuSpin's fermion Hamiltonian."""
+"""Manual SYK ground-state study with matched matrix-free or CSR paths."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 from quspin.basis import spinless_fermion_basis_1d
-from quspin.operators import hamiltonian
+from quspin.operators import hamiltonian, quantum_LinearOperator
 from scipy.sparse.linalg import LinearOperator, eigsh
 
 
@@ -82,6 +82,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coupling", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=20260806)
     parser.add_argument("--state-seed", type=int, default=20260807)
+    parser.add_argument(
+        "--mode",
+        choices=("matrix_free", "explicit"),
+        default="matrix_free",
+        help="use quantum_LinearOperator MVPs or construct an explicit CSR matrix",
+    )
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--tol", type=float, default=1.0e-9)
     parser.add_argument("--maxiter", type=int, default=300)
@@ -108,15 +114,26 @@ def main() -> None:
     basis_seconds = time.perf_counter() - basis_start
     build_start = time.perf_counter()
     static = quspin_static(raw_terms)
-    operator = hamiltonian(
-        static,
-        [],
-        basis=basis,
-        dtype=np.complex128,
-        check_symm=False,
-        check_herm=False,
-        check_pcon=False,
-    )
+    if args.mode == "matrix_free":
+        operator = quantum_LinearOperator(
+            static,
+            basis=basis,
+            dtype=np.complex128,
+            check_symm=False,
+            check_herm=False,
+            check_pcon=False,
+        )
+    else:
+        operator = hamiltonian(
+            static,
+            [],
+            basis=basis,
+            dtype=np.complex128,
+            static_fmt="csr",
+            check_symm=False,
+            check_herm=False,
+            check_pcon=False,
+        )
     build_seconds = time.perf_counter() - build_start
 
     state = random_state(operator.Ns, args.state_seed)
@@ -157,6 +174,7 @@ def main() -> None:
         "n_majorana": 2 * args.n_modes,
         "coupling": args.coupling,
         "seed": args.seed,
+        "mode": args.mode,
         "majorana_term_count": len(raw_terms),
         "quspin_static_contributions": sum(len(entries) for _, entries in static),
         "quspin_operator_strings": len(static),

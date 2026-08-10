@@ -2,6 +2,10 @@
 
 TenCirPauli is an experimental, vibe-coded project. Working specifications, architecture decisions, implementation plans, acceptance gates, and operational design notes live in this directory so that the repository root remains a stable open-source project entry point.
 
+## Reading and maintenance policy
+
+The durable trunk documents are [`architecture.md`](architecture.md), [`semantics.md`](semantics.md), [`implementation-status.md`](implementation-status.md), [`maintainability.md`](maintainability.md), [`benchmarking.md`](benchmarking.md), and [`releasing.md`](releasing.md); use them for current architecture, public contracts, status, performance-preserving maintenance direction, benchmark protocol, and release procedure. Phase-, round-, audit-, and experiment-specific documents are historical working records, not a continuously self-consistent knowledge base. Read and maintain those records while the corresponding work is active, or consult them later only to reconstruct historical reasoning or diagnose regressions. When an archived record conflicts with a trunk document or the current source tree, the trunk document and current source tree are authoritative; record durable decisions in the trunk documents without rewriting old history for consistency.
+
 ## Documents
 
 - [Phase 9.5 circuit differentiation boundary](phase-9.5-spec.md): superseding contract for actual gate angles, occurrence-space native gradients, private compilation, JAX callbacks, and fixed-budget SPPS integration.
@@ -13,6 +17,7 @@ TenCirPauli is an experimental, vibe-coded project. Working specifications, arch
 - [Deep-scan checklist](audit-scan-checklist.md): reusable prompt-shaped checklist for future deep audits — generic defects, performance/architecture, test coverage, AI-authored-code failure modes, and project-specific hot spots, plus a known-open ledger and an output contract for scan findings.
 - [Pre-release review, 2026-08-03](pre-release-review-2026-08-03.md): archived open-source and PyPI release-readiness audit, verification evidence, blockers, and manual release actions.
 - [Architecture and roadmap](architecture.md): scope, module boundaries, algorithms, differentiation strategy, risks, benchmarks, and go/no-go gates.
+- [Performance-preserving maintainability direction](maintainability.md): durable rules for reducing accidental implementation entropy without sacrificing numerical correctness, representative performance, memory behavior, specialized kernels, or coarse-grained ABI boundaries.
 - [Rust quantum operator competitor research](competitor-research.md): open-source survey of Zixy, Struqture, pauli_tracker, qoqo/roqoqo, qsym-rs, and the TenCirPauli positioning across operator algebra, mapping, symmetry, grouping, propagation, and execution preparation.
 - [Core semantics](semantics.md): Pauli representation, phase, ordering, coefficients, canonicalization, matrix conventions, and owner decisions that must be frozen before autonomous implementation.
 - [P0 reference vectors](reference-vectors.md): the independent NumPy dense oracle, fixed regression vectors, random seed, dtype, and tolerances.

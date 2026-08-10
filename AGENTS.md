@@ -23,6 +23,7 @@ Judge against representative scientific workloads. Do not over-engineer for impl
 - `tensorcircuit-ng` is a required Python runtime dependency; `python/tencirpauli/integrations/tensorcircuit.py` remains the boundary that may directly import TensorCircuit.
 - `docs/vibe/architecture.md` is the architecture and scope source of truth.
 - `docs/vibe/` contains experimental specifications, design decisions, release notes, and other vibe-coding working documents. Keep this material out of the repository root and maintain `docs/vibe/README.md` as its index.
+- Vibe-document lifecycle: treat `docs/vibe/architecture.md`, `docs/vibe/semantics.md`, `docs/vibe/implementation-status.md`, `docs/vibe/maintainability.md`, `docs/vibe/benchmarking.md`, and `docs/vibe/releasing.md` as the durable trunk documents. Phase-, round-, audit-, and experiment-specific files are historical working records by default; consult and maintain them only while that work is active, or when reconstructing historical context. Do not spend maintenance effort keeping inactive phase documents globally self-consistent, and do not treat them as current requirements after their phase has ended. When a historical record conflicts with a trunk document or current source, the trunk document and current source win; update the trunk status when a decision becomes durable instead of retroactively rewriting the historical record.
 
 ## Non-Negotiable Rules
 

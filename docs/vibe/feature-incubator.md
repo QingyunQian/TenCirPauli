@@ -134,6 +134,26 @@ Open questions: whether table offsets are semantic or canonicalized, whether het
 
 Promotion criteria: a concrete workload that cannot use canonical spin-z; owner approval of table and offset semantics; flat native transport; independent dense conservation and rank/unrank references; and release evidence that the added generality does not force ordinary canonical spin-z sectors through Generic execution.
 
+### Occupation-parity sectors and simultaneous U(1)+Z2 restrictions
+
+Status: `deferred`.
+
+Motivation: support practical restricted-Hilbert-space workflows in which a user selects a sector by an integer weighted occupation parity, such as particle parity, spin parity, or another conserved mod-2 charge, and in some cases combines that parity with an exact U(1) charge. The desired public behavior is analogous to `U1Sector`: construct a deterministic selected basis, validate that an operator preserves the selected sector, and expose restricted dense/COO/CSR and matrix-free MVP targets.
+
+Semantic boundary: this is an occupation-space parity sector, not the existing Pauli `Z2SymmetryAnalysis`/`Z2TaperingPlan`. Pauli Z2 tapering finds Pauli generators, applies a Clifford transform, and removes qubits; an occupation-parity sector filters and indexes basis states. The two features may share small GF(2) row-reduction utilities, but they must not share one high-level executor or one ambiguous public `Z2Sector` type.
+
+Current design direction: represent parity weights modulo two and solve the selected basis as a finite constraint system over exact integer equations and GF(2) equations. A narrow first implementation could use a separate internal parity indexer for one binary parity constraint and expose it through the common restricted-plan contract. Pure-binary parity can use direct free-bit/pivot-bit rank and unrank; multiple parity constraints require deterministic GF(2) reduction. If U(1) and parity are combined, the internal constraint group is conceptually `Z × (Z2)^r`, with redundant, inconsistent, and genuinely independent constraints canonicalized before plan selection.
+
+Execution boundary: once a selected basis has been compiled into one validated transition graph or CSR representation, the numerical MVP apply can reuse the common restricted executor. Lazy MVP is not completely representation-independent: it must compute destination membership and rank/unrank on the fly, so the parity or mixed-constraint indexer remains part of the lazy hot path. Eager CSR therefore has a simpler reuse story, while a performant lazy path needs a dedicated indexer or a benchmark-proven generic constraint indexer.
+
+Reason for deferral: adding a modulus flag directly to `AdditiveCharge` would spread exact-versus-modular branches through sector dimension, rank/unrank, factorized/Product/Generic classification, conservation validation, transition compilation, Python types, PyO3 handles, and the private ABI. Simultaneous U(1)+parity also creates a new constraint-combination dimension, including cases where parity is already implied by total particle number. The feature is realistic, but its main complexity is sector compilation and basis indexing rather than the final CSR SpMV arithmetic; an unisolated implementation would increase the current symmetry-path entropy substantially.
+
+Open questions: whether the first public form supports only one parity constraint or several independent constraints; whether parity contributions are defined for boson and qudit levels as well as binary occupations; whether conservation means global commutation or only invariance of the selected sector; whether combined U(1)+parity is required in the first release; how redundant constraints are reported; and which public mixed-radix ordering and memory contract apply to the selected basis.
+
+Dependencies: a reusable exact-plus-GF(2) constraint model; deterministic row reduction and redundancy detection; direct rank/unrank or bounded fallback indexing for mixed-radix spaces; a common restricted-plan/CSR execution contract; flat native transport; and differential references for basis ordering, conservation, leakage, dense matrices, lazy MVP, eager CSR, and wide systems.
+
+Promotion criteria: one concrete workload that cannot be expressed adequately with the current U(1) or Pauli-tapering APIs; an owner decision separating parity-sector restriction from Pauli Z2 tapering; a bounded first scope, preferably one parity constraint before arbitrary simultaneous constraints; exact small-system and wide-system references; proof that ordinary U(1) paths do not regress; and release-mode end-to-end evidence for setup, lazy steady MVP, eager CSR/steady MVP, memory, and numerical agreement. Promotion must introduce a separate parity-aware indexer or constraint-plan owner and must not expand every existing charge kernel into an explicit U(1)×Z2 variant.
+
 ### Fast Block-factorized charge sectors
 
 Status: `deferred` from Phase 10.5 by owner decision D11.
