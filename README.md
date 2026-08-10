@@ -1,7 +1,7 @@
 <div align="center">
   <img src="docs/assets/tencirpauli-logo.png" alt="TenCirPauli logo" width="180">
   <h1>TenCirPauli</h1>
-  <p><strong>Rust-native Pauli algebra and structured quantum execution for TensorCircuit.</strong></p>
+  <p><strong>Rust-native Pauli algebra and structured quantum execution for <a href="https://github.com/tensorcircuit/tensorcircuit-ng">TensorCircuit-NG</a>.</strong></p>
   <p>
     <a href="https://github.com/tensorcircuit/TenCirPauli/actions/workflows/ci.yml"><img src="https://github.com/tensorcircuit/TenCirPauli/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
     <a href="https://tensorcircuit.github.io/TenCirPauli/"><img src="https://img.shields.io/badge/docs-latest-blue.svg" alt="Documentation"></a>
@@ -10,7 +10,7 @@
   </p>
 </div>
 
-TenCirPauli moves Pauli-heavy quantum workflows from Python object graphs into compact native data and Rust execution. It is the TensorCircuit-facing layer for Hamiltonians, measurement grouping, symmetry reduction, restricted sectors, structured operators, and observable propagation.
+TenCirPauli moves Pauli-heavy quantum workflows from Python object graphs into compact native data and Rust execution. It is the [TensorCircuit-NG](https://github.com/tensorcircuit/tensorcircuit-ng)-facing layer for Hamiltonians, measurement grouping, symmetry reduction, restricted sectors, structured operators, and observable propagation.
 
 ## What it does
 
@@ -21,14 +21,14 @@ TenCirPauli moves Pauli-heavy quantum workflows from Python object graphs into c
 | Symmetry reduction | `find_z2_symmetries()`, `taper_z2()`, `restrict_charge()` with `U1Sector` or `ChargeSector` |
 | Native circuit execution | `U1Circuit`, `PropagationCircuit`, `SPPSCircuit`, value/gradient and expectation terminals |
 | Structured quantum operators | `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, `HybridOperator`, `MajoranaOperator` |
-| Fermion and chemistry workflows | Jordan–Wigner, parity, Bravyi–Kitaev, optional PySCF ingestion, TensorCircuit integration |
+| Fermion and chemistry workflows | Jordan–Wigner, parity, Bravyi–Kitaev, optional PySCF ingestion, TensorCircuit-NG integration |
 
 ## Why it is fast
 
 - Scalable symbolic work stays in Rust over packed Pauli, occupation, charge, and structured representations.
 - Public results are lazy native-backed handles by default; Python materializes terms or arrays only when an API explicitly asks for them.
 - Matrix-free and restricted-sector plans avoid dense matrices and full Hilbert spaces when the workload has useful structure.
-- TensorCircuit and JAX can remain at the backend boundary through reusable `backend_mvp_plan()` plans, while native CPU paths use coarse-grained Rust execution and default parallelism.
+- TensorCircuit-NG and JAX can remain at the backend boundary through reusable `backend_mvp_plan()` plans, while native CPU paths use coarse-grained Rust execution and default parallelism.
 
 ## Performance snapshots
 
@@ -36,7 +36,7 @@ These are representative runs from the linked research studies, not universal ma
 
 | Workload | Comparison | Result |
 | --- | --- | --- |
-| 60-qubit, two-particle U(1) VQE | TensorCircuit/JAX | 688× faster on the first compiled value-and-gradient call; 2.6× faster when steady |
+| 60-qubit, two-particle U(1) VQE | [TensorCircuit-NG Python/JAX path](https://github.com/tensorcircuit/tensorcircuit-ng) | 688× faster on the first compiled value-and-gradient call; 2.6× faster when steady |
 | 28-qubit Pauli-propagation VQE | PauliPropagation.jl | 7.8× faster on the first call; 1.43× faster when steady |
 | 12-mode fermion mapping | OpenFermion | 22× faster for Jordan–Wigner; 12.6× faster for Bravyi–Kitaev |
 | 64-qubit, 1,024-term QWC grouping | Qiskit | 38× faster grouping on the linked workload, with native reconstruction included in the study |
@@ -49,7 +49,7 @@ These are representative runs from the linked research studies, not universal ma
 | Build or transform Pauli operators | `PauliOperator.from_terms()` and `PauliWord.from_string()` |
 | Group terms for measurements | `operator.group_commuting()`; use QWC mode for measurement-ready bases |
 | Apply a large Hamiltonian without a matrix | `operator.native_mvp_plan()` or `operator.mvp()` |
-| Keep TensorCircuit/JAX active | `operator.backend_mvp_plan()` and `tencirpauli.backend_mvp()` |
+| Keep TensorCircuit-NG/JAX active | `operator.backend_mvp_plan()` and `tencirpauli.backend_mvp()` |
 | Reduce a symmetry sector | `operator.find_z2_symmetries()` / `operator.taper_z2()` |
 | Work at fixed particle number or additive charge | `U1Sector`, `ChargeSector`, and `operator.restrict_charge()` |
 | Run a native circuit objective | `U1Circuit`, `PropagationCircuit`, or `SPPSCircuit` |
@@ -57,9 +57,9 @@ These are representative runs from the linked research studies, not universal ma
 
 `mode="general"` is available for algebraic commuting groups, but its result is intentionally `measurement_ready=False`; use QWC grouping when the output must directly describe product-basis measurements.
 
-## TensorCircuit ecosystem
+## TensorCircuit-NG ecosystem
 
-TenCirPauli is designed as a TensorCircuit companion, not a replacement for the TensorCircuit frontend. TensorCircuit circuits can be converted with `U1Circuit.from_circuit()` or `PropagationCircuit.from_circuit()`, and Pauli backend plans can be called through TensorCircuit's NumPy or JAX backend. The Rust core itself has no Python or TensorCircuit dependency.
+TenCirPauli is designed as a [TensorCircuit-NG](https://github.com/tensorcircuit/tensorcircuit-ng) companion, not a replacement for its circuit frontend. TensorCircuit-NG circuits can be converted with `U1Circuit.from_circuit()` or `PropagationCircuit.from_circuit()`, and Pauli backend plans can be called through TensorCircuit-NG's NumPy or JAX backend. The Rust core itself has no Python or TensorCircuit-NG dependency.
 
 ## Research examples
 
