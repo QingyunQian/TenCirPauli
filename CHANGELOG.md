@@ -4,6 +4,23 @@ All notable changes to TenCirPauli will be documented in this file.
 
 The project follows Semantic Versioning.
 
+## 0.4.0 - 2026-08-10
+
+This release extends structured Hamiltonian execution and adds chemistry and scientific-computing integrations while the project remains pre-1.0.
+
+### Added
+
+- Added SciPy `LinearOperator` adapters for Pauli operators and native MVP plans, allowing iterative solvers to use matrix-free execution.
+- Added optional PySCF RHF/UHF and molecular Hamiltonian ingestion through `tencirpauli.integrations.pyscf`, producing canonical `FermionOperator` instances with explicit orbital and integral conventions.
+- Added native raw-Fermion `compile("native_mvp")` execution in occupation-basis order while retaining explicit Jordan–Wigner, parity, and Bravyi–Kitaev mapping paths.
+- Added factorized native execution for separable additive-charge constraints; genuinely coupled constraints continue to use the general restricted execution path.
+
+### Changed
+
+- SciPy is now a required runtime dependency for the public iterative-solver and `LinearOperator` integration paths; PySCF, JAX, and Optax are available through the `chemistry` extra.
+- Expanded and optimized native lazy/eager MVP execution for structured and charge-restricted operators, including reusable eager sparse representations and direct native sparse-data paths.
+- Improved raw-Fermion, charge-sector, and structured-operator execution and memory behavior without changing the public circuit boundary introduced in 0.3.0.
+
 ## 0.3.0 - 2026-08-06
 
 This release intentionally changes the public circuit boundary while the project is still pre-1.0. The API remains subject to change while the project has no stable user base.

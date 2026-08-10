@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "tencirpauli"
-version = "0.3.0"
-description = "Rust-native Pauli algebra and propagation with a first-class Python API"
+version = "0.4.0"
+description = "Rust-native Pauli algebra, Hamiltonian, symmetry, and quantum-circuit primitives for TensorCircuit"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
@@ -24,6 +24,8 @@ dependencies = ["numpy>=1.23", "scipy>=1.10", "tensorcircuit-ng>=1.8,<2"]
 Homepage = "https://github.com/tensorcircuit/TenCirPauli"
 Repository = "https://github.com/tensorcircuit/TenCirPauli"
 Issues = "https://github.com/tensorcircuit/TenCirPauli/issues"
+Documentation = "https://tensorcircuit.github.io/TenCirPauli/"
+Changelog = "https://github.com/tensorcircuit/TenCirPauli/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
