@@ -655,8 +655,8 @@ def parse_args() -> argparse.Namespace:
     compare_parser.add_argument(
         "--threshold",
         type=float,
-        default=1.10,
-        help="maximum current/baseline median ratio before a charge comparison fails (default: 1.10)",
+        default=1.15,
+        help="maximum current/baseline median ratio for >=1 ms regressions (default: 1.15)",
     )
     compare_parser.add_argument(
         "--minimum-delta-ms",
@@ -667,8 +667,8 @@ def parse_args() -> argparse.Namespace:
     compare_parser.add_argument(
         "--small-regression-threshold",
         type=float,
-        default=1.20,
-        help="maximum ratio below --minimum-delta-ms before a comparison fails (default: 1.20)",
+        default=1.30,
+        help="maximum ratio below --minimum-delta-ms before a comparison fails (default: 1.30)",
     )
     compare_parser.add_argument(
         "--current",

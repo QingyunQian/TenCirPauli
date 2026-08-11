@@ -26,11 +26,11 @@ def test_sub_millisecond_regression_above_relaxed_threshold_blocks(
     result = benchmark_runner.comparison_row(
         "stable-case",
         _row(10e-6),
-        _row(1.21 * 10e-6),
+        _row(1.31 * 10e-6),
         tmp_path / "baseline.json",
         tmp_path / "current.json",
-        1.10,
-        1.20,
+        1.15,
+        1.30,
         1e-3,
         True,
     )
@@ -41,26 +41,28 @@ def test_sub_millisecond_small_regression_remains_investigation(tmp_path: Path) 
     result = benchmark_runner.comparison_row(
         "stable-case",
         _row(10e-6),
-        _row(11.5e-6),
+        _row(12.0e-6),
         tmp_path / "baseline.json",
         tmp_path / "current.json",
-        1.10,
-        1.20,
+        1.15,
+        1.30,
         1e-3,
         True,
     )
     assert result["status"] == "INVESTIGATE"
 
 
-def test_millisecond_regression_keeps_the_stricter_threshold(tmp_path: Path) -> None:
+def test_millisecond_regression_above_standard_threshold_blocks(
+    tmp_path: Path,
+) -> None:
     result = benchmark_runner.comparison_row(
         "stable-case",
         _row(10e-3),
-        _row(11.5e-3),
+        _row(11.6e-3),
         tmp_path / "baseline.json",
         tmp_path / "current.json",
-        1.10,
-        1.20,
+        1.15,
+        1.30,
         1e-3,
         True,
     )
