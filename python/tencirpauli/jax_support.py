@@ -15,10 +15,6 @@ def _require_jax() -> Any:
         raise ImportError(
             "expectation_jax() requires the optional 'jax' dependency"
         ) from error
-    if not bool(jax.config.read("jax_enable_x64")):
-        raise ValueError(
-            "expectation_jax() requires jax_enable_x64=True for float64 callbacks"
-        )
     return jax
 
 
@@ -31,19 +27,24 @@ def native_expectation_jax(
     """Stage one native value-and-gradient callback with a custom VJP."""
     jax = _require_jax()
     jnp = jax.numpy
+    use_x64 = bool(jax.config.read("jax_enable_x64"))
+    jax_real_dtype = jnp.float64 if use_x64 else jnp.float32
+    numpy_real_dtype = np.float64 if use_x64 else np.float32
     angle_values = tuple(angles)
     count = len(angle_values)
     if count:
         values = jnp.stack(
-            [jnp.asarray(angle, dtype=jnp.float64) for angle in angle_values], axis=0
+            [jnp.asarray(angle, dtype=jax_real_dtype) for angle in angle_values], axis=0
         )
     else:
-        values = jnp.zeros((0,), dtype=jnp.float64)
-    value_spec = jax.ShapeDtypeStruct((), jnp.float64)
-    gradient_spec = jax.ShapeDtypeStruct((count,), jnp.float64)
+        values = jnp.zeros((0,), dtype=jax_real_dtype)
+    value_spec = jax.ShapeDtypeStruct((), jax_real_dtype)
+    gradient_spec = jax.ShapeDtypeStruct((count,), jax_real_dtype)
 
-    def callback(runtime_angles: Any) -> tuple[np.float64, np.ndarray[Any, Any]]:
-        concrete = np.ascontiguousarray(np.asarray(runtime_angles, dtype=np.float64))
+    def callback(runtime_angles: Any) -> tuple[Any, np.ndarray[Any, Any]]:
+        concrete = np.ascontiguousarray(
+            np.asarray(runtime_angles, dtype=numpy_real_dtype)
+        )
         if checkpoint_interval is None:
             result = engine.value_and_grad(concrete)
         else:
@@ -51,9 +52,9 @@ def native_expectation_jax(
                 concrete, checkpoint_interval=checkpoint_interval
             )
         gradient = np.ascontiguousarray(
-            np.asarray(result.gradient, dtype=np.float64).reshape((count,))
+            np.asarray(result.gradient, dtype=numpy_real_dtype).reshape((count,))
         )
-        return np.float64(result.value), gradient
+        return numpy_real_dtype(result.value), gradient
 
     def call_native(runtime_angles: Any) -> tuple[Any, Any]:
         return cast(

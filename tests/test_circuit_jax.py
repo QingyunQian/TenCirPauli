@@ -216,16 +216,25 @@ def test_spps_jax_pytree_repeated_leaf_scatter_matches_native() -> None:
     )
 
 
-def test_jax_terminal_requires_float64() -> None:
+def test_jax_terminal_adapts_native_double_to_float32() -> None:
     jax = pytest.importorskip("jax")
     previous = bool(jax.config.read("jax_enable_x64"))
     jax.config.update("jax_enable_x64", False)
     try:
-        circuit = tcp.PropagationCircuit(1)
-        circuit.ry(0, 0.2)
         observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
-        with pytest.raises(ValueError, match="jax_enable_x64"):
-            circuit.expectation_jax(observable)
+
+        def objective(angle: object) -> object:
+            circuit = tcp.PropagationCircuit(1)
+            circuit.ry(0, theta=angle)
+            return circuit.expectation_jax(observable)
+
+        value, gradient = jax.value_and_grad(objective)(
+            jax.numpy.asarray(0.2, dtype=jax.numpy.float32)
+        )
+        assert value.dtype == jax.numpy.dtype(jax.numpy.float32)
+        assert gradient.dtype == jax.numpy.dtype(jax.numpy.float32)
+        np.testing.assert_allclose(value, np.cos(0.2), atol=2.0e-6)
+        np.testing.assert_allclose(gradient, -np.sin(0.2), atol=2.0e-6)
     finally:
         jax.config.update("jax_enable_x64", previous)
 

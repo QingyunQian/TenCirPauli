@@ -192,15 +192,14 @@ def backend_mvp(
     dimension = _dimension(plan.nqubits)
     estimated_bytes = dimension * ((len(plan.coefficients) + 1) * 8 + 48)
     _check_allocation(estimated_bytes, max_bytes, "TensorCircuit MVP adapter")
+    coefficient_values: Any
     if coefficients is None:
-        coefficient_values = runtime_backend.convert_to_tensor(plan.coefficients)
+        coefficient_values = plan.coefficients
     elif hasattr(coefficients, "shape"):
         coefficient_values = coefficients
     else:
-        coefficient_values = runtime_backend.convert_to_tensor(coefficients)
-    if len(plan.coefficients) != int(
-        runtime_backend.shape_tuple(coefficient_values)[0]
-    ):
+        coefficient_values = np.asarray(coefficients, dtype=np.complex128)
+    if len(plan.coefficients) != int(np.shape(coefficient_values)[0]):
         raise ValueError("coefficient buffer length does not match backend MVP plan")
 
     term_masks: list[Any] = []
@@ -238,6 +237,9 @@ def backend_mvp(
         else:
             raise ValueError("state must be flat or rank-nqubits with binary axes")
         dtype = runtime_backend.dtype(tensor_state)
+        coefficient_tensor = _cast_backend_coefficients(
+            coefficient_values, runtime_backend, dtype
+        )
         total = runtime_backend.zeros_like(tensor_state)
         for term_index, mask in enumerate(term_masks):
             term_state = tensor_state * runtime_backend.cast(mask, dtype)
@@ -251,7 +253,8 @@ def backend_mvp(
                     for axis in range(plan.nqubits)
                 )
                 term_state = term_state[slices]
-            weight = coefficient_values[term_index] * (1j ** y_counts[term_index])
+            phase = runtime_backend.cast(1j ** y_counts[term_index], dtype)
+            weight = coefficient_tensor[term_index] * phase
             total = total + term_state * weight
         return runtime_backend.reshape(total, (-1,)) if flat else total
 
@@ -277,14 +280,14 @@ def _direct_weyl_backend_mvp(
     d = plan.qudit_dimension
     estimated_bytes = dimension * 32 + int(plan.estimated_bytes)
     _check_allocation(estimated_bytes, max_bytes, "TensorCircuit Weyl MVP adapter")
+    coefficient_values: Any
     if coefficients is None:
-        coefficient_values = runtime_backend.convert_to_tensor(plan.coefficients)
+        coefficient_values = plan.coefficients
     elif hasattr(coefficients, "shape"):
         coefficient_values = coefficients
     else:
-        coefficient_values = runtime_backend.convert_to_tensor(coefficients)
-    coefficient_shape = runtime_backend.shape_tuple(coefficient_values)
-    if tuple(coefficient_shape) != (len(plan.coefficients),):
+        coefficient_values = np.asarray(coefficients, dtype=np.complex128)
+    if np.shape(coefficient_values) != (len(plan.coefficients),):
         raise ValueError("coefficient buffer length does not match backend MVP plan")
     phase_masks: list[list[Optional[Any]]] = []
     omega = np.exp(2j * np.pi / d)
@@ -314,6 +317,9 @@ def _direct_weyl_backend_mvp(
                 f"state must be flat with length {dimension} or have shape {dimensions}"
             )
         dtype = runtime_backend.dtype(tensor_state)
+        coefficient_tensor = _cast_backend_coefficients(
+            coefficient_values, runtime_backend, dtype
+        )
         total = runtime_backend.zeros_like(tensor_state)
         for term_index in range(len(plan.coefficients)):
             term_state = tensor_state
@@ -329,10 +335,25 @@ def _direct_weyl_backend_mvp(
                     term_state = runtime_backend.concat(
                         (term_state[tuple(tail)], term_state[tuple(head)]), axis=axis
                     )
-            total = total + term_state * coefficient_values[term_index]
+            total = total + term_state * coefficient_tensor[term_index]
         return runtime_backend.reshape(total, (-1,)) if flat else total
 
     return mvp
+
+
+def _cast_backend_coefficients(
+    coefficients: Any, runtime_backend: Any, dtype: str
+) -> Any:
+    """Cast complex coefficients to the TensorCircuit state dtype."""
+    if dtype not in {"complex64", "complex128"}:
+        raise TypeError(
+            "TensorCircuit backend MVP requires a complex64 or complex128 state"
+        )
+    if isinstance(coefficients, np.ndarray):
+        host_dtype = np.complex64 if dtype == "complex64" else np.complex128
+        coefficients = np.asarray(coefficients, dtype=host_dtype)
+        return runtime_backend.convert_to_tensor(coefficients, dtype=dtype)
+    return runtime_backend.cast(coefficients, dtype)
 
 
 def _plan_code(plan: BackendMVPPlan, term_index: int, qubit: int) -> int:
