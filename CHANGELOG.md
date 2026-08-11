@@ -4,6 +4,24 @@ All notable changes to TenCirPauli will be documented in this file.
 
 The project follows Semantic Versioning.
 
+## 0.4.1 - 2026-08-11
+
+This patch release improves backend compatibility and tightens native structured-operator execution while the project remains pre-1.0.
+
+### Fixed
+
+- Fixed TensorCircuit and JAX integration to preserve the active `complex64` or `complex128` state dtype, including JIT-compiled backend MVP and value-and-gradient paths.
+- Fixed repeated backend MVP calls to reuse static coefficient and phase conversions without freezing caller-provided backend tensors.
+
+### Changed
+
+- Improved structured eager CSR execution for large transition graphs with thresholded native parallel application while retaining serial behavior for smaller workloads.
+- Tightened native charge, symmetry, Pauli, and structured-plan metadata, typing, budget checks, and numerical regression coverage.
+
+### Documentation
+
+- Added reproducible Hubbard time-evolution, measurement-grouping, and Pauli-propagation research workflows and expanded the performance documentation.
+
 ## 0.4.0 - 2026-08-10
 
 This release extends structured Hamiltonian execution and adds chemistry and scientific-computing integrations while the project remains pre-1.0.
