@@ -2,7 +2,7 @@
 
 ## Scope and verdict
 
-审查范围为提交 `cbbf45c`、`9df99fe`、`02c6f0a`，基线为 `1172ea6`，验收合同为 `docs/vibe/phase-6-spec.md`。本次仅新增本评审报告，没有修改任何实现源码、测试或基准文件。
+审查范围为提交 `cbbf45c`、`9df99fe`、`02c6f0a`，基线为 `1172ea6`，验收合同为 `docs/vibe/specs/phase-6-spec.md`。本次仅新增本评审报告，没有修改任何实现源码、测试或基准文件。
 
 结论：这些提交已经形成一个有实际价值的 Phase 6 checkpoint，主路径 gate/state/observable/adjoint-gradient 数值结果基本可信，Rust core、PyO3 和 Python facade 的分层也正确；但目前不能按冻结规格认定 Phase 6 完成。没有发现 `CRITICAL` 级数值错误，存在 5 个应在阶段验收前处理的 `MAJOR` 问题，主要是 required fusion 未实现、diagonal 热路径仍做逐 amplitude 三角函数、facade cache/observable reducer 未落地、gradient 每 gate 克隆 state，以及 P0–P4 验收矩阵和 benchmark/documentation handoff 明显不完整。
 
@@ -36,7 +36,7 @@ None found.
 
 ### M1. Required same-pair SWAP/iSWAP fusion is not implemented
 
-位置：`crates/tencir-pauli-core/src/u1_circuit.rs:150-157` 对每个 non-diagonal operation 单独调用 `compile_non_diagonal_gate`，而 `crates/tencir-pauli-core/src/u1_circuit.rs:781-807` 只返回单个 `Swap` 或 `Iswap`；这与 `docs/vibe/phase-6-spec.md:377-383` 要求的 maximal same-unordered-pair block fusion 不符。
+位置：`crates/tencir-pauli-core/src/u1_circuit.rs:150-157` 对每个 non-diagonal operation 单独调用 `compile_non_diagonal_gate`，而 `crates/tencir-pauli-core/src/u1_circuit.rs:781-807` 只返回单个 `Swap` 或 `Iswap`；这与 `docs/vibe/specs/phase-6-spec.md:377-383` 要求的 maximal same-unordered-pair block fusion 不符。
 
 实际影响：20 个连续同-pair iSWAP 编译后仍报告 20 个 compiled gates。release-mode 40q/k=5、32 个同-pair iSWAP 与一个等价合成 iSWAP 的结果完全一致，但 steady run 分别约 `4.05 ms` 和 `0.82 ms`，前者慢约 `4.9×`。当前 benchmark workload 在每个 iSWAP 后插入 CPhase，恰好绕开了 required repeated-same-pair case，因此没有暴露这个缺口。
 
@@ -44,7 +44,7 @@ None found.
 
 ### M2. DiagonalBlock only reduces outer traversals; trigonometry remains inside the amplitude × operation loop
 
-位置：`crates/tencir-pauli-core/src/u1_circuit.rs:420-425` 对每个 amplitude 遍历 block 内所有 operation，`crates/tencir-pauli-core/src/u1_circuit.rs:463-506` 又为每个 RZ/RZZ/CPhase 调用 `from_polar`。因此 compiled `gate_count == 1` 并不代表 phase work 已融合或预计算，违反 `docs/vibe/phase-6-spec.md:377-383` 的 static trigonometric/block precomputation 要求。
+位置：`crates/tencir-pauli-core/src/u1_circuit.rs:420-425` 对每个 amplitude 遍历 block 内所有 operation，`crates/tencir-pauli-core/src/u1_circuit.rs:463-506` 又为每个 RZ/RZZ/CPhase 调用 `from_polar`。因此 compiled `gate_count == 1` 并不代表 phase work 已融合或预计算，违反 `docs/vibe/specs/phase-6-spec.md:377-383` 的 static trigonometric/block precomputation 要求。
 
 实际影响：release-mode 20q/k=10、32 个同-wire `rz(0, 0.01)` 与单个等价 `rz(0, 0.32)` 的输出最大误差为 `3.4e-16`，运行时间约 `19.85 ms` 对 `1.03 ms`，前者慢约 `19.2×`。这会直接打击 diagonal-heavy、深度较大的目标 workload。
 
@@ -60,7 +60,7 @@ None found.
 
 ### M4. Adjoint reverse allocates and copies a full state for every compiled gate
 
-位置：`crates/tencir-pauli-core/src/u1_circuit.rs:315-330` 的 reverse loop 每次执行 `let mut before = state.clone()`，随后 inverse、计算 derivative，再用 `state = before` 替换。这不造成 `depth × dimension` 的峰值驻留，但会造成 `O(depth × dimension)` 的额外复制和 allocator traffic，违反 `docs/vibe/phase-6-spec.md:388-390` 的 scratch reuse 要求；M1 未融合又会放大这个问题。
+位置：`crates/tencir-pauli-core/src/u1_circuit.rs:315-330` 的 reverse loop 每次执行 `let mut before = state.clone()`，随后 inverse、计算 derivative，再用 `state = before` 替换。这不造成 `depth × dimension` 的峰值驻留，但会造成 `O(depth × dimension)` 的额外复制和 allocator traffic，违反 `docs/vibe/specs/phase-6-spec.md:388-390` 的 scratch reuse 要求；M1 未融合又会放大这个问题。
 
 处理建议：预分配一个 scratch state 并在两个 buffer 间 swap，或对当前 gate 类型改写 derivative 使 forward state 可先原位 inverse 后再用 local data 计算；实现 PairBlock 后在 block 内完成 local reverse/VJP。应增加 allocation-sensitive benchmark，而不必为了精确 RSS 引入复杂 allocator instrumentation。
 
@@ -76,7 +76,7 @@ None found.
 
 ### N1. `expectation_ps` silently accepts mutually exclusive or duplicate friendly inputs
 
-位置：`python/tencirpauli/u1_circuit.py:137-158` 在 `ps is not None` 时直接返回并忽略同时传入的 `x/y/z`；同一个 x/y/z list 内的重复 index 也被当作合法输入。已复现 `expectation_ps(x=[0], ps=[0, 0])` 静默返回 identity expectation，`expectation_ps(x=[0, 0])` 也不报错。这违反 `docs/vibe/phase-6-spec.md:290-292` 的 fail-fast 输入合同，可能掩盖调用者错误。
+位置：`python/tencirpauli/u1_circuit.py:137-158` 在 `ps is not None` 时直接返回并忽略同时传入的 `x/y/z`；同一个 x/y/z list 内的重复 index 也被当作合法输入。已复现 `expectation_ps(x=[0], ps=[0, 0])` 静默返回 identity expectation，`expectation_ps(x=[0, 0])` 也不报错。这违反 `docs/vibe/specs/phase-6-spec.md:290-292` 的 fail-fast 输入合同，可能掩盖调用者错误。
 
 处理建议：`ps` 与任一 x/y/z 同时非 `None` 时抛 `ValueError`，并分别检查每个 index sequence 内无重复。
 

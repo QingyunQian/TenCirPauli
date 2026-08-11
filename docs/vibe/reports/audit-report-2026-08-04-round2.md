@@ -1,6 +1,6 @@
 # TenCirPauli Deep Audit — Round 2 (2026-08-04)
 
-> **Scope.** An independent second-pass scan of the **current working tree** (Rust core + PyO3 native + Python), run after the Round‑1 archive (`docs/vibe/audit-report-2026-08-04.md`) was applied. Round‑1 recorded 72 findings; this pass deliberately excludes every item Round‑1 marked **Deferred**, **Rejected**, **Refuted**, or **Real‑but‑not‑worth‑fixing**, and does not re‑raise the **Adopted** fixes (they are already in the tree — a finding only appears here if it is genuinely new, or shows an adopted fix is incomplete/buggy).
+> **Scope.** An independent second-pass scan of the **current working tree** (Rust core + PyO3 native + Python), run after the Round‑1 archive (`docs/vibe/reports/audit-report-2026-08-04.md`) was applied. Round‑1 recorded 72 findings; this pass deliberately excludes every item Round‑1 marked **Deferred**, **Rejected**, **Refuted**, or **Real‑but‑not‑worth‑fixing**, and does not re‑raise the **Adopted** fixes (they are already in the tree — a finding only appears here if it is genuinely new, or shows an adopted fix is incomplete/buggy).
 >
 > **No code was changed.** This is a report only.
 

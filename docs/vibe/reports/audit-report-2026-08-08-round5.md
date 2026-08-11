@@ -1,5 +1,7 @@
 # TenCirPauli Deep Audit — Round 5 (2026-08-08)
 
+> **Status: Deprecated / 已废弃。** This report is retained as a historical record of the `ceab218`-dirty tree. It has been superseded by [the current-tree reconciliation report](audit-report-2026-08-11-current.md), which rechecks these findings against `e38533f`. Do not use this document as the current open-item ledger.
+
 > **Scope.** A fifth-pass scan of the **current working tree** (commit `ceab218`-dirty, post-Phase-10.5 second-round review), focused on the four user-requested dimensions: dead code & dead branches, over-verbose/unnecessary narration ("think" residue), inconsistent user-facing API and Python↔Rust ABI, and bugs/perf bottlenecks that wrongly fall back to slow branches.
 >
 > **Method.** Five finder dimensions fanned out in parallel (dead-code, verbose-residue, py-api-consistency, py-rust-abi, slow-fallback-bugs); each raw finding was adversarially re-read against the current tree by an independent verifier that confirmed the cited code, checked the open/closed ledger, and sanity-checked the magnitude estimate. **The dead-code finder stalled on all 6 attempts (no model progress for 180 s each) and produced no findings** — dead-code/dead-branch coverage is therefore *incomplete this round*; the verbose-residue dimension partially absorbed dead-code findings (it surfaced 4 dead-code items: `checked_integer_to_f64`, dead `let a`, redundant `mapped_present` clause, `ChargeApplyCounters`). A future round should re-run the dead-code dimension.

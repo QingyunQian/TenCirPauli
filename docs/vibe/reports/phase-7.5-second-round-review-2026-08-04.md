@@ -42,7 +42,7 @@ The recommended outcome is conditional acceptance of the implemented feature set
 
 ### SR1 — MAJOR: `ChargeSector` rejects small selected sectors when the full Hilbert space exceeds platform indexing
 
-Locations: `python/tencirpauli/charge.py:429-441` and `crates/tencir-pauli-core/src/charge.rs:519-528`; contract: `docs/vibe/phase-7.5-spec.md:348-364,382,414`.
+Locations: `python/tencirpauli/charge.py:429-441` and `crates/tencir-pauli-core/src/charge.rs:519-528`; contract: `docs/vibe/specs/phase-7.5-spec.md:348-364,382,414`.
 
 `_local_dimensions()` computes `math.prod(local_dimensions)` and compares the full finite Hilbert-space dimension with NumPy `intp` before the selected charge-sector dimension is known. On a 64-bit platform, a fixed-particle-number-one sector succeeds at 62 fermion modes but fails at 63 modes, even though the selected sector has only 63 states and its suffix-DP rank/unrank plan is small.
 
@@ -61,7 +61,7 @@ Closure gate: a 65-mode small charge sector constructs, ranks/unranks, restricts
 
 ### SR2 — MAJOR: mapping-plan `estimated_bytes` and low-budget behavior omit predictable major retained storage
 
-Locations: `python/tencirpauli/mapping.py:42-46,177-223` and `crates/tencir-pauli-core/src/mapping.rs:24-79,419-465`; contract: `docs/vibe/architecture.md:279` and `docs/vibe/phase-7.5-spec.md:185-192,401-418`.
+Locations: `python/tencirpauli/mapping.py:42-46,177-223` and `crates/tencir-pauli-core/src/mapping.rs:24-79,419-465`; contract: `docs/vibe/architecture.md:279` and `docs/vibe/specs/phase-7.5-spec.md:185-192,401-418`.
 
 The native estimate counts the public encoding matrices and canonical CNOT pairs but omits the retained packed X/Z transform matrices. The Python wrapper then retains additional encoding/inverse NumPy arrays, a Python tuple-of-tuples CNOT representation, a NumPy Clifford array, and the native plan containing the original Rust buffers. These are not allocator trivia or temporary RSS noise; several are predictable, long-lived, same-order copies created by the public plan itself.
 
@@ -73,7 +73,7 @@ Closure gate: the documented logical-major-byte estimate includes every eagerly 
 
 ### SR3 — MEDIUM: `PauliOperator.tensor_product(max_bytes=...)` validates but ignores the budget
 
-Location: `python/tencirpauli/pauli.py:892-919`; contract: `docs/vibe/phase-7-spec.md:272` and the unified public memory policy.
+Location: `python/tencirpauli/pauli.py:892-919`; contract: `docs/vibe/specs/phase-7-spec.md:272` and the unified public memory policy.
 
 The method calls `_validate_max_bytes(max_bytes)` but constructs the full Python pair list and calls unbounded `PauliOperator.from_terms()`. A four-output fixture succeeds with `max_bytes=1`.
 
@@ -81,7 +81,7 @@ Required resolution: perform a cheap checked pair-count/output preflight before 
 
 ### SR4 — MEDIUM: exact Pauli charge analysis reintroduces per-term PyO3 calls and scales in Python `Fraction` space
 
-Locations: `python/tencirpauli/charge.py:1140-1209`; contract: `docs/vibe/phase-7.5-spec.md:433`.
+Locations: `python/tencirpauli/charge.py:1140-1209`; contract: `docs/vibe/specs/phase-7.5-spec.md:433`.
 
 The Pauli branch iterates `operator.terms` and invokes `term.word.to_codes()` once per term. A direct probe confirms one native call per canonical term. This violates the frozen no-per-term-FFI requirement and is inconsistent with the cached-array fixes applied to mapping, tensor product, and restricted compilation.
 
@@ -91,7 +91,7 @@ Required resolution: consume `PauliOperator._arrays()` once. If subsequent profi
 
 ### SR5 — MEDIUM: the clean Phase 7.5 release matrix does not cover the full first-review mapping scale request
 
-Locations: `docs/vibe/phase-7.5-review-2026-08-03.md:241-251` and `benchmarks/python/test_majorana_mapping_charge_benchmark.py:340-521`.
+Locations: `docs/vibe/reports/phase-7.5-review-2026-08-03.md:241-251` and `benchmarks/python/test_majorana_mapping_charge_benchmark.py:340-521`.
 
 The repaired benchmarks correctly assert their actual canonical term counts, but committed mapping-plan cases stop at 128 modes and mapping batches stop at 128 terms. The first review requested safe coverage through 512 modes and 1,024 unique terms, mapping-sensitive long parity strings, and first-plan versus reused-plan timing.
 
@@ -101,7 +101,7 @@ Closure gate: extend the release source and record a clean comparison that cover
 
 ### SR6 — DEFERRED NON-T7.5 DEBT: SPPS `value_standard_error` retains the population-variance convention
 
-Location: `crates/tencir-pauli-core/src/spps.rs:987-1064`; audit ledger: `docs/vibe/audit-report-2026-08-04.md:720-808`.
+Location: `crates/tencir-pauli-core/src/spps.rs:987-1064`; audit ledger: `docs/vibe/reports/audit-report-2026-08-04.md:720-808`.
 
 The third-party audit recorded two conflicting recommendations and the implementation selected the compatibility-preserving branch: document the MLE/population-variance convention and defer the Bessel-corrected estimator until downstream consumers are audited. The result is still biased low by `sqrt((N-1)/N)` at finite sample count, including approximately 29% at two samples.
 

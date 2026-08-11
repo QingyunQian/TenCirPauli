@@ -259,4 +259,4 @@ TenCirPauli 可以继续吸收三类实践：每个 matrix/sector/mapping target
 - [qsym-rs repository](https://github.com/QudeLeap/qsym-rs)
 - [TenCirPauli fermion mapping module](../../python/tencirpauli/mapping.py)
 - [TenCirPauli structured fermion operators](../../python/tencirpauli/structured.py)
-- [TenCirPauli chemistry interoperability contract](phase-10-spec.md)
+- [TenCirPauli chemistry interoperability contract](specs/phase-10-spec.md)

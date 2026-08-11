@@ -66,7 +66,7 @@ Owner 已选择当前 Phase II 明确限制 native restriction `< usize::BITS`�
 
 位置：`tests/test_symmetry.py:23-53,56-113`，`crates/tencir-pauli-core/src/tests.rs:235-304`。唯一 Z2 谱测试是 `XX + ZZ + I` 的 2-qubit 完全可对易特例，只把所有 tapered sector eigenvalues 合并后与 full spectrum 比较；它没有逐 sector 构造 projector，也没有验证每个 original generator 在所选 sector 中变成指定标量。因此 C1 即使把 sector 标签/符号交换也不会被发现。U1 测试主要是 3-qubit real `XX+YY`，没有 tracked randomized/property coverage、complex/Y phase cases、multiword boundary 或 budget peak cases。
 
-这不满足 `AGENTS.md` 的 property/differential-test 要求及 `docs/vibe/phase-2-spec.md:210-228,242-246` 的 independent GF(2)/dense-sector reference 验收要求。手工“随机 smoke”写在状态文档中不能替代可重复的 regression tests。
+这不满足 `AGENTS.md` 的 property/differential-test 要求及 `docs/vibe/specs/phase-2-spec.md:210-228,242-246` 的 independent GF(2)/dense-sector reference 验收要求。手工“随机 smoke”写在状态文档中不能替代可重复的 regression tests。
 
 ### M5. 性能验收证据不完整，部分 JAX setup timing 未同步
 
@@ -76,7 +76,7 @@ Owner 已选择当前 Phase II 明确限制 native restriction `< usize::BITS`�
 
 ### M6. [SCOPED OUT] 公开 tapering plan 不提供稳定持久化
 
-位置：`docs/vibe/phase-2-spec.md:107-110`，`crates/tencirpauli-native/src/symmetry.rs:58-69`，`python/tencirpauli/symmetry.py:40-86`。原 spec 曾要求 versioned/serializable plan，而当前对象只支持进程内 native reuse，默认 pickle 会失败。Owner 的实际需求是同一 Python 进程内调用 sparse matrices、MVP plans 和 functions，不需要把 tapering plan 写入磁盘、跨进程发送或跨库版本恢复，因此稳定 serialization 已正式 de-scope；当前只需保证 runtime plan 能反复 transform compatible operators。
+位置：`docs/vibe/specs/phase-2-spec.md:107-110`，`crates/tencirpauli-native/src/symmetry.rs:58-69`，`python/tencirpauli/symmetry.py:40-86`。原 spec 曾要求 versioned/serializable plan，而当前对象只支持进程内 native reuse，默认 pickle 会失败。Owner 的实际需求是同一 Python 进程内调用 sparse matrices、MVP plans 和 functions，不需要把 tapering plan 写入磁盘、跨进程发送或跨库版本恢复，因此稳定 serialization 已正式 de-scope；当前只需保证 runtime plan 能反复 transform compatible operators。
 
 ## MINOR
 

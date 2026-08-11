@@ -2,7 +2,7 @@
 
 Review date: 2026-08-03
 
-Scope: commits `56300eb`, `56407e3`, and `2a32c34` against the frozen contract in `docs/vibe/phase-7-spec.md`, including correctness, target availability, performance architecture, memory behavior, tests, benchmarks, and P0–P5 delivery.
+Scope: commits `56300eb`, `56407e3`, and `2a32c34` against the frozen contract in `docs/vibe/specs/phase-7-spec.md`, including correctness, target availability, performance architecture, memory behavior, tests, benchmarks, and P0–P5 delivery.
 
 ## Verdict
 
@@ -56,7 +56,7 @@ Resolution: validate map names, exact source coverage, integer types, injectivit
 
 ### M1. Uniform-qudit `backend_mvp` cannot execute nonbinary local dimensions, while one unsupported mixed layout is silently accepted
 
-Locations: `python/tencirpauli/structured.py:1114-1146`, `python/tencirpauli/structured.py:2227-2237`, and `python/tencirpauli/integrations/tensorcircuit.py:231-311`; contract: `docs/vibe/phase-7-spec.md:403-424,517-521`.
+Locations: `python/tencirpauli/structured.py:1114-1146`, `python/tencirpauli/structured.py:2227-2237`, and `python/tencirpauli/integrations/tensorcircuit.py:231-311`; contract: `docs/vibe/specs/phase-7-spec.md:403-424,517-521`.
 
 `QuditWeylOperator.compile("backend_mvp")` returns a `BackendMVPPlan` with `nqubits=0`, empty Pauli structural arrays and coefficients, and a private generic COO payload. `BackendMVPPlan.apply()` happens to execute that payload with NumPy, but the public TensorCircuit backend adapter derives a binary dimension from `plan.nqubits`, iterates the empty coefficient array, and rejects a length-`d` qudit state as incompatible. The missing capability is direct execution of the Weyl Hamiltonian through TensorCircuit's NumPy/JAX backend operations; converting the Hamiltonian to `QuditCircuit` is not needed and, by owner decision during this review, should be removed from the Phase 7 acceptance contract.
 
@@ -71,7 +71,7 @@ This is a moderate, localized fix rather than a difficult new algorithm: every d
 5. Continue to reject finite-boson and genuinely mixed local-dimension backend plans with a direct `NotImplementedError`.
 6. Add backend differential tests: compare `backend_mvp(plan)(state)` with `operator.compile("dense") @ state` for `d=3,4,5,6`, flat and rank-`n_sites` states, default and overridden coefficients, and TensorCircuit NumPy/JAX backends. Here “differential” means comparing two independent executions of the same Hamiltonian, not converting to `QuditCircuit`.
 
-The frozen spec should be amended at `docs/vibe/phase-7-spec.md:420-422,519-521` to remove `QuditCircuit` conversion as an acceptance requirement while retaining uniform-qudit backend-MVP execution and differential tests.
+The frozen spec should be amended at `docs/vibe/specs/phase-7-spec.md:420-422,519-521` to remove `QuditCircuit` conversion as an acceptance requirement while retaining uniform-qudit backend-MVP execution and differential tests.
 
 ### M2. Structured `native_mvp` is implemented as a retained COO matrix rather than the required matrix-free MVP
 
@@ -121,7 +121,7 @@ Resolution: make adjoint and tensor product direct canonical transformations wit
 
 ### M7. The P0–P5 handoff is materially incomplete despite the smoke gate passing
 
-Locations: `docs/vibe/phase-7-spec.md:440-472,491-531`, `tests/test_structured_algebra.py:1-287`, and `benchmarks/python/test_structured_algebra_benchmark.py:1-288`.
+Locations: `docs/vibe/specs/phase-7-spec.md:440-472,491-531`, `tests/test_structured_algebra.py:1-287`, and `benchmarks/python/test_structured_algebra_benchmark.py:1-288`.
 
 The current 13 focused tests do not cover direct-Weyl multiplication/adjoint/commutation/Hermiticity, explicit embedding, partial-mapping algebra, uniform-qudit backend MVP, TensorCircuit NumPy/JAX execution, deterministic thread-count outputs, expansion limits, or property-based identities. The benchmark source has no uniform-Weyl chain benchmark, Holstein/spin-boson scaling, aggregation-heavy duplicate workload, guarded expansion case, or required memory/transition/thread/error metadata. `benchmarks/run.py list` contains no Phase 7/HEAD release record.
 
@@ -139,7 +139,7 @@ Locations: `python/tencirpauli/structured.py:480-503`; compare `QuditWeylWord` v
 
 ### N2. Domain-specific compile signatures still accept irrelevant mapping keywords
 
-Locations: `python/tencirpauli/structured.py:1107-1146` and contract `docs/vibe/phase-7-spec.md:368-383`.
+Locations: `python/tencirpauli/structured.py:1107-1146` and contract `docs/vibe/specs/phase-7-spec.md:368-383`.
 
 Boson and qudit operators inherit the generic `**kwargs` compile path and accept an explicit `fermion_mapping="jordan_wigner"` even though the contract requires domain-specific typed signatures that reject unrelated keywords. Replace the generic public signature with explicit overrides while retaining a shared private implementation.
 

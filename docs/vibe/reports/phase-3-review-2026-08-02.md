@@ -2,7 +2,7 @@
 
 Review date: 2026-08-02
 
-Review scope: Phase 3 Rust-native Pauli propagation changes from `84d4a5e..HEAD`, with `docs/vibe/phase-3-spec.md` as the acceptance contract. The review covers numerical correctness, error behavior, memory guards, hot-path performance, FFI/materialization, test coverage, benchmarks, and documentation accuracy.
+Review scope: Phase 3 Rust-native Pauli propagation changes from `84d4a5e..HEAD`, with `docs/vibe/specs/phase-3-spec.md` as the acceptance contract. The review covers numerical correctness, error behavior, memory guards, hot-path performance, FFI/materialization, test coverage, benchmarks, and documentation accuracy.
 
 No source files were changed. This report is the only file added by the review.
 
@@ -62,7 +62,7 @@ Resolution: validate the result immediately after every deterministic coefficien
 
 `PropagationEngine::expectation()` calls `self.propagate()` at `crates/tencir-pauli-core/src/propagation.rs:158-168`. `propagate()` converts every `PackedKey` to a heap-backed public `PauliWord`, computes full weight counts, constructs `PauliTerm` values, and sorts them at `crates/tencir-pauli-core/src/propagation.rs:240-253`; only afterward does expectation scan those public terms at `crates/tencir-pauli-core/src/propagation.rs:866-898`.
 
-This conflicts with `docs/vibe/phase-3-spec.md:125`, which reserves canonical sorting and public-word construction for operator materialization/profile calls, and with `docs/vibe/phase-3-spec.md:247-251`, which defines scalar expectation as the main Rust-only hot path. It adds allocation, wide-key cloning, conversion, weight counting, and `O(T log T)` sorting to every scalar evaluation.
+This conflicts with `docs/vibe/specs/phase-3-spec.md:125`, which reserves canonical sorting and public-word construction for operator materialization/profile calls, and with `docs/vibe/specs/phase-3-spec.md:247-251`, which defines scalar expectation as the main Rust-only hot path. It adds allocation, wide-key cloning, conversion, weight counting, and `O(T log T)` sorting to every scalar evaluation.
 
 Resolution: split propagation into an internal dynamic-term result and optional diagnostics. Evaluate the product-state expectation directly from `PackedKey` plus coefficients; only `propagate_operator()` should convert/sort public words, and only `profile()` should compute full structural statistics and timing. Add a benchmark that compares scalar, profile, Rust propagation-only, and full Python materialization boundaries on the same workload.
 
@@ -70,9 +70,9 @@ Resolution: split propagation into an internal dynamic-term result and optional 
 
 `PackedKey::multiply()` scans every qubit to accumulate phase at `crates/tencir-pauli-core/src/propagation.rs:378-415`. Two-qubit Clifford mapping invokes full-key multiplication twice at `crates/tencir-pauli-core/src/propagation.rs:724-748`, even though the map changes only two local codes. Rotation creates a full generator key and uses the same full scan at `crates/tencir-pauli-core/src/propagation.rs:590-614`, although commutation/sign can be derived from one or two local codes or packed parity operations.
 
-The engine stores no scratch state at `crates/tencir-pauli-core/src/propagation.rs:49-60`; each Clifford gate creates a new vector at `crates/tencir-pauli-core/src/propagation.rs:561-588`, and every branching gate creates fresh contribution vectors and a fresh hash map at `crates/tencir-pauli-core/src/propagation.rs:596-671`. This contradicts the reusable current/next storage requirement in `docs/vibe/phase-3-spec.md:306-312`.
+The engine stores no scratch state at `crates/tencir-pauli-core/src/propagation.rs:49-60`; each Clifford gate creates a new vector at `crates/tencir-pauli-core/src/propagation.rs:561-588`, and every branching gate creates fresh contribution vectors and a fresh hash map at `crates/tencir-pauli-core/src/propagation.rs:596-671`. This contradicts the reusable current/next storage requirement in `docs/vibe/specs/phase-3-spec.md:306-312`.
 
-The project profile already reports `PackedKey::multiply` in 3,236 of 3,868 native samples at `docs/vibe/implementation-status.md:107`, yet the known bottleneck was deferred without the Phase 3 structural optimization required by `docs/vibe/phase-3-spec.md:461-468`. The same release record reports the matched 12-qubit native steady path at about 3.92 ms versus JAX at 0.74 ms (`docs/vibe/implementation-status.md:105`); there is no fixed speed ratio gate, but the frozen process requires continued bottleneck-driven optimization.
+The project profile already reports `PackedKey::multiply` in 3,236 of 3,868 native samples at `docs/vibe/implementation-status.md:107`, yet the known bottleneck was deferred without the Phase 3 structural optimization required by `docs/vibe/specs/phase-3-spec.md:461-468`. The same release record reports the matched 12-qubit native steady path at about 3.92 ms versus JAX at 0.74 ms (`docs/vibe/implementation-status.md:105`); there is no fixed speed ratio gate, but the frozen process requires continued bottleneck-driven optimization.
 
 Resolution: replace two-qubit Clifford composition with a 16-entry `(output codes, sign)` table and direct bit updates; implement local rotation commutation/product/sign without a full-width identity generator. Re-profile before doing anything else. Introduce capacity reuse within a call only if allocations remain material; do not introduce a cross-call scratch pool without separate evidence.
 
@@ -80,7 +80,7 @@ Resolution: replace two-qubit Clifford composition with a 16-entry `(output code
 
 Engine construction estimates every observable term as `size_of::<PackedKey>() + size_of::<Complex64>()` at `crates/tencir-pauli-core/src/propagation.rs:91-101`, but a `PackedKey::Wide` owns two heap vectors whose size grows with `ceil(nqubits/64)`. Runtime accounting similarly takes the maximum of individual vector sizes at `crates/tencir-pauli-core/src/propagation.rs:196-237` instead of accounting for simultaneously live current terms, contributions, aggregation payload, ordered output, and public materialization. Final wide `PauliWord` masks and code output are also omitted.
 
-This is not allocator-overhead exactness: the omitted packed vector lengths and major output arrays are explicitly and cheaply known. A 10,000-qubit, one-term engine successfully constructs and propagates with `max_bytes=1000`; `profile()` reports 72 bytes even though the key alone owns 314 `u64` mask words (2,512 bytes) and operator materialization creates a 10,000-byte code row. This violates `docs/vibe/phase-3-spec.md:259-261` and the public promise in `README.md:76`.
+This is not allocator-overhead exactness: the omitted packed vector lengths and major output arrays are explicitly and cheaply known. A 10,000-qubit, one-term engine successfully constructs and propagates with `max_bytes=1000`; `profile()` reports 72 bytes even though the key alone owns 314 `u64` mask words (2,512 bytes) and operator materialization creates a 10,000-byte code row. This violates `docs/vibe/specs/phase-3-spec.md:259-261` and the public promise in `README.md:76`.
 
 Resolution: the bounded P1 fix is to make wide-key storage representation-aware using `packed_word_count(nqubits)` and add one small-budget regression. More complete simultaneous-buffer or materialized-output accounting is optional and should remain simple; hash bucket overhead, allocator fragmentation, PyO3 objects, and exact RSS must stay excluded.
 
@@ -88,7 +88,7 @@ Resolution: the bounded P1 fix is to make wide-key storage representation-aware 
 
 `propagate()` computes `exact` but retains the raw `self.max_weight` as `cutoff` at `crates/tencir-pauli-core/src/propagation.rs:177-180`, then passes that cutoff into every operation at `crates/tencir-pauli-core/src/propagation.rs:208-228`. Consequently Clifford and aggregated paths still call `weight()` at `crates/tencir-pauli-core/src/propagation.rs:568-584` and `crates/tencir-pauli-core/src/propagation.rs:661-668` when `max_weight == nqubits` or larger.
 
-This violates the exact-path requirement at `docs/vibe/phase-3-spec.md:298-304` and `docs/vibe/phase-3-spec.md:434-441`. A review microbenchmark with one 128-qubit term and 1,000 H gates measured about 18.36 microseconds per call for `max_weight=None` and 20.22 microseconds for `max_weight=128`, roughly 10% avoidable overhead.
+This violates the exact-path requirement at `docs/vibe/specs/phase-3-spec.md:298-304` and `docs/vibe/specs/phase-3-spec.md:434-441`. A review microbenchmark with one 128-qubit term and 1,000 H gates measured about 18.36 microseconds per call for `max_weight=None` and 20.22 microseconds for `max_weight=128`, roughly 10% avoidable overhead.
 
 Resolution: derive an effective cutoff of `None` whenever `is_exact()` is true while preserving the public configured value for introspection, and add a regression/benchmark asserting that `None`, `nqubits`, and larger cutoffs select the same no-projection kernel.
 
@@ -96,7 +96,7 @@ Resolution: derive an effective cutoff of `None` whenever `is_exact()` is true w
 
 The dense oracle constructs the full initial matrix and applies projection only inside the reversed gate loop at `tests/propagation_reference.py:106-133`. It therefore does not implement initial projection for an empty tape. The test named `test_projection_is_initial_and_per_gate_after_aggregation` at `tests/test_propagation.py:90-105` includes a gate and does not isolate initial projection or create a duplicate collision that proves aggregation-before-projection.
 
-The committed suite has no seeded randomized exact/projected property loop required by `docs/vibe/phase-3-spec.md:344-353`, no exhaustive correctness test for `RXX/RYY/RZZ`, no random two-qubit unitary-derived PTM test, no post-aggregation overflow case, no propagation-specific small-budget wide-key test, and no test that demonstrates another Python thread progresses while a long native call releases the GIL. The Rust workspace reports only the 12 pre-Phase-3-style core tests and contains no propagation unit/property test, despite `docs/vibe/phase-3-spec.md:416-423` requiring Rust local-rule tests.
+The committed suite has no seeded randomized exact/projected property loop required by `docs/vibe/specs/phase-3-spec.md:344-353`, no exhaustive correctness test for `RXX/RYY/RZZ`, no random two-qubit unitary-derived PTM test, no post-aggregation overflow case, no propagation-specific small-budget wide-key test, and no test that demonstrates another Python thread progresses while a long native call releases the GIL. The Rust workspace reports only the 12 pre-Phase-3-style core tests and contains no propagation unit/property test, despite `docs/vibe/specs/phase-3-spec.md:416-423` requiring Rust local-rule tests.
 
 As an audit cross-check, 80 additional seeded random exact cases and 60 additional seeded random projected cases passed against the dense oracle after the reviewer independently applied initial projection. This reduces concern about ordinary recurrence correctness but does not replace durable regression coverage.
 
@@ -104,15 +104,15 @@ Resolution: correct the oracle's initial step; add isolated initial projection, 
 
 ### MAJOR-6: The performance evidence does not satisfy the frozen benchmark contract
 
-The Rust propagation Criterion file contains only one rotation case and three whole-tape cases at `crates/tencir-pauli-core/benches/propagation.rs:81-156`. It does not separately cover inline key hash/equality/weight, Clifford updates, rotation commute versus branch, custom PTM apply, duplicate aggregation, finite projection, or product-state expectation as required by `docs/vibe/phase-3-spec.md:399-403`.
+The Rust propagation Criterion file contains only one rotation case and three whole-tape cases at `crates/tencir-pauli-core/benches/propagation.rs:81-156`. It does not separately cover inline key hash/equality/weight, Clifford updates, rotation commute versus branch, custom PTM apply, duplicate aggregation, finite projection, or product-state expectation as required by `docs/vibe/specs/phase-3-spec.md:399-403`.
 
 The ten Python benchmark functions at `benchmarks/python/test_propagation_benchmark.py:45-209` omit explicit `profile()` overhead, major storage/RSS, a duplicate-heavy workload, `max_weight=2/3/4` and exact-small scans, sparse one-qubit versus sparse/dense two-qubit PTM execution, thread-count scaling, and separate Rust propagation/packed-return/Python-object materialization boundaries. The operator materialization case measures the combined public call only. The full manifest records `RAYON_NUM_THREADS=unset`, so the required 1/2/4/fixed-max thread matrix was not run.
 
-Resolution: benchmark the paths actually changed and re-profile the 12q/100q representative workloads. Implement the full matrix from `docs/vibe/phase-3-spec.md:384-403` only if the owner explicitly retains it as an acceptance requirement; thread scaling is meaningless while propagation is sequential.
+Resolution: benchmark the paths actually changed and re-profile the 12q/100q representative workloads. Implement the full matrix from `docs/vibe/specs/phase-3-spec.md:384-403` only if the owner explicitly retains it as an acceptance requirement; thread scaling is meaningless while propagation is sequential.
 
 ### MAJOR-7: Explicit operator materialization uses nested code vectors and repacks every term in Python instead of the specified packed-array boundary
 
-The native materializer converts every public word to a fresh `Vec<u8>` at `crates/tencirpauli-native/src/propagation.rs:246-255`. Python then copies those nested rows to tuples and repacks every code back into x/z words at `python/tencirpauli/pauli.py:874-909`. This is a double conversion with per-term/per-qubit Python work, not the contiguous packed/code array plus complex128 buffer required by `docs/vibe/phase-3-spec.md:247-251`.
+The native materializer converts every public word to a fresh `Vec<u8>` at `crates/tencirpauli-native/src/propagation.rs:246-255`. Python then copies those nested rows to tuples and repacks every code back into x/z words at `python/tencirpauli/pauli.py:874-909`. This is a double conversion with per-term/per-qubit Python work, not the contiguous packed/code array plus complex128 buffer required by `docs/vibe/specs/phase-3-spec.md:247-251`.
 
 Resolution: first benchmark a representative large final operator. Only if this conversion dominates should native return contiguous packed x/z and complex128 buffers and a private packed constructor be added. Do not redesign `PauliOperator` or make `.terms` lazy based on the current evidence alone.
 
@@ -120,7 +120,7 @@ Resolution: first benchmark a representative large final operator. Only if this 
 
 ### MINOR-1: Public `max_bytes=0` is accepted although the frozen contract says positive integer or `None`
 
-`python/tencirpauli/hamiltonian.py:167-176` rejects only negative integers, so zero is accepted across migrated public APIs. `docs/vibe/phase-3-spec.md:255-261` requires a positive integer or `None`.
+`python/tencirpauli/hamiltonian.py:167-176` rejects only negative integers, so zero is accepted across migrated public APIs. `docs/vibe/specs/phase-3-spec.md:255-261` requires a positive integer or `None`.
 
 Resolution: no standalone code change is recommended. Decide whether zero usefully means “reject all nonzero allocations”; either document it or adjust the specification when adjacent validation is already being changed.
 
@@ -163,7 +163,7 @@ Recommended acceptance decision: focused remediation required. Treat MAJOR-0, MA
 
 ## SELF-CONTAINED REMEDIATION EXECUTION PLAN
 
-This section is an implementation handoff and a catalogue of possible remediation. It must not be executed wholesale. The default high-value path is R0 (targeted tests/status), R1, R2, R3, the minimal subset of R6, and the documentation portion of R8. From R4, implement only simple representation-aware wide-key accounting unless allocation profiling proves scratch reuse worthwhile. R5 and the broad R7 matrix are conditional. Read `AGENTS.md`, `AGENTS.local.md`, `docs/vibe/semantics.md`, and `docs/vibe/phase-3-spec.md` before editing, keep each chosen slice independently testable, and do not combine Phase 4 gradient work.
+This section is an implementation handoff and a catalogue of possible remediation. It must not be executed wholesale. The default high-value path is R0 (targeted tests/status), R1, R2, R3, the minimal subset of R6, and the documentation portion of R8. From R4, implement only simple representation-aware wide-key accounting unless allocation profiling proves scratch reuse worthwhile. R5 and the broad R7 matrix are conditional. Read `AGENTS.md`, `AGENTS.local.md`, `docs/vibe/semantics.md`, and `docs/vibe/specs/phase-3-spec.md` before editing, keep each chosen slice independently testable, and do not combine Phase 4 gradient work.
 
 Default scoped sequence:
 

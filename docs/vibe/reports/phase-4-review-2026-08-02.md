@@ -6,7 +6,7 @@
 
 ## 审核范围与证据
 
-- 权威合同：`docs/vibe/phase-4-spec.md`，重点核对第 4–12 节和第 14 节一次性验收标准。
+- 权威合同：`docs/vibe/specs/phase-4-spec.md`，重点核对第 4–12 节和第 14 节一次性验收标准。
 - 实现：`crates/tencir-pauli-core/src/propagation.rs`、`crates/tencir-pauli-core/src/spps.rs`、两层 PyO3 binding、Python facade 和 TensorCircuit adapter。
 - 测试与 reference：`tests/test_propagation_gradient.py`、`tests/test_spps.py`、`tests/spps_reference.py` 及相关 Phase 1–3 regression。
 - 性能证据：Criterion、`benchmarks/python/test_propagation_engines_benchmark.py`、large matched comparison、`implementation-status.md` 的历史 profile/benchmark 记录，以及本 review 的两个定向实验。

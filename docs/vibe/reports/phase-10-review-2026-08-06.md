@@ -4,7 +4,7 @@ Status: open remediation report. Phase 10 is not acceptance-closed at commit `36
 
 ## 1. Review scope and verdict
 
-This review covers commits `32bc7d8` (`Implement Phase 10 chemistry and SciPy interop`) and `366e46e` (`Fix PySCF example with JAX Adam VQE`) against `docs/vibe/phase-10-spec.md`. The audit focuses on numerical correctness, native/Python ownership, GIL and allocation behavior, PySCF RHF/UHF conversion, SciPy iterative-solver interoperability, representative performance, and closure evidence. It intentionally excludes hypothetical extreme inputs, exact allocator accounting, broad defensive validation, and speculative optimizations that are not tied to a measured hot path.
+This review covers commits `32bc7d8` (`Implement Phase 10 chemistry and SciPy interop`) and `366e46e` (`Fix PySCF example with JAX Adam VQE`) against `docs/vibe/specs/phase-10-spec.md`. The audit focuses on numerical correctness, native/Python ownership, GIL and allocation behavior, PySCF RHF/UHF conversion, SciPy iterative-solver interoperability, representative performance, and closure evidence. It intentionally excludes hypothetical extreme inputs, exact allocator accounting, broad defensive validation, and speculative optimizations that are not tied to a measured hot path.
 
 The primary API direction should be preserved. `FermionOperator.from_integrals()` and the PySCF compact-block route share one coarse native ingestion implementation; RHF and UHF avoid a zero-padded complete spin-orbital tensor; PySCF remains lazily loaded; native, charge-restricted, and U1 plans delegate to one SciPy helper; the two ED research examples use the public wrapper; and the chemistry example reaches a mapped Pauli operator and TensorCircuit backend-MVP/JAX energy evaluation. The complete formatting, static-analysis, release-build, Rust, Python, and doctest gates pass.
 
@@ -80,7 +80,7 @@ Minimal closure: construct small RHF and genuinely distinct-alpha/beta UHF refer
 
 Priority: P1 performance-evidence blocker. This is not a demonstrated regression in the compact native kernel.
 
-Evidence: every test in `benchmarks/python/test_chemistry_interop_benchmark.py` uses the same two-spatial-orbital H2 fixture. `test_native_compact_integral_ingestion()` compares only dense result shapes, and `test_complete_pyscf_conversion()` stores `max_abs_error: 0.0` without computing an independent error. The package does not measure a medium chemistry workload, plan construction, or dense/sparse materialization baselines as required by `docs/vibe/phase-10-spec.md:270-276`; no completed Phase 10 record exists for the reviewed commits.
+Evidence: every test in `benchmarks/python/test_chemistry_interop_benchmark.py` uses the same two-spatial-orbital H2 fixture. `test_native_compact_integral_ingestion()` compares only dense result shapes, and `test_complete_pyscf_conversion()` stores `max_abs_error: 0.0` without computing an independent error. The package does not measure a medium chemistry workload, plan construction, or dense/sparse materialization baselines as required by `docs/vibe/specs/phase-10-spec.md:270-276`; no completed Phase 10 record exists for the reviewed commits.
 
 Impact: the current benchmark source cannot establish realistic AO-to-MO versus ingestion dominance, conversion scaling, medium-workload memory, actual numerical accuracy, or the SciPy callback overhead relative to plan construction and materialization. A hard-coded zero error is metadata, not accuracy evidence.
 

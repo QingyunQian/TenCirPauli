@@ -4,7 +4,7 @@ Status: open remediation report. The current worktree is not acceptance-closed.
 
 ## 1. Scope and verdict
 
-This second-round review audits the uncommitted remediation work layered on commit `2937537` against `docs/vibe/phase-9-review-2026-08-06.md`, `docs/vibe/phase-9-spec.md`, and the repository rules in `AGENTS.md`. It focuses only on findings that remain open or were introduced by the remediation. Findings from the first review that are now closed are intentionally not restated.
+This second-round review audits the uncommitted remediation work layered on commit `2937537` against `docs/vibe/reports/phase-9-review-2026-08-06.md`, `docs/vibe/specs/phase-9-spec.md`, and the repository rules in `AGENTS.md`. It focuses only on findings that remain open or were introduced by the remediation. Findings from the first review that are now closed are intentionally not restated.
 
 The remediation implements most of the intended native data plane, but seven closure items remain. Two scalable native paths still execute while holding the GIL, equality and hashing violate Python's equal-values/equal-hash contract for signed zero, native embedding changes specialized public facade types, the required residency/GIL/performance evidence is incomplete, numbered development-stage labels remain outside `docs/vibe/`, and the generic-charge steady-apply performance result has not yet been closed with the required controlled A/B.
 

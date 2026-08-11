@@ -93,7 +93,7 @@
 
 ### MAJOR-4 — 当前 clean commit 缺少完整 release record，文档证据锚点早于收口提交
 
-位置：`docs/vibe/implementation-status.md:7,19`、`docs/vibe/phase-8.5-review-2026-08-04.md` post-review table；本机 ignored `.benchmarks/runs/`。
+位置：`docs/vibe/implementation-status.md:7,19`、`docs/vibe/reports/phase-8.5-review-2026-08-04.md` post-review table；本机 ignored `.benchmarks/runs/`。
 
 文档声称当前实现已有 complete local release recordings，但本机最新完整 artifacts 仍锚定 `2ca1d72...-dirty`，时间早于 `01e92b1` 和 `aa5bf0e`。本次 current-commit 定向 benchmark 显示没有观察到回退，甚至 4x3 spinful 从文档约 `203 ms` 到约 `199 ms`，large CSR parallel 仍显著快于 serial；因此性能方向可信，但“当前 clean commit 的完整可复现记录”这一证据声明不成立。
 
@@ -103,7 +103,7 @@
 
 ### MINOR-1 — Structured eager/lazy 的 owner decision 尚未写回 frozen specification
 
-位置：`docs/vibe/phase-8.5-spec.md` §5.2；`tests/test_native_mvp_resources.py:220-229`；`phase-8.5-second-round-review-2026-08-04.md` 的 structured disposition。
+位置：`docs/vibe/specs/phase-8.5-spec.md` §5.2；`tests/test_native_mvp_resources.py:220-229`；`phase-8.5-second-round-review-2026-08-04.md` 的 structured disposition。
 
 拒绝无实测收益的 stride cache 是正确的，不应为了 metadata 差异制造无意义分配。但 spec 仍写着只有 retained data 不同时才报告 distinct storage metadata，而实现返回 `storage="eager"`、相同 strategy 和相同 estimated bytes。收口报告称这是明确 owner decision，却没有修改 frozen contract。
 

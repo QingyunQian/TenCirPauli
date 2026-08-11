@@ -44,7 +44,7 @@ R1–R7 were remediated in commit `35f9adc`; the full local quality gate, strict
 
 ### R1 — MAJOR: `SPPSCircuit` deterministic-only methods remain inherited and can be called through the class
 
-Locations: `python/tencirpauli/propagation_circuit.py:205-253,388-397,527-559,581-623` and `python/tencirpauli/spps_circuit.py:138-153`; contract: `docs/vibe/phase-8-api-coherence-spec.md`, sections 3.1 and 12.
+Locations: `python/tencirpauli/propagation_circuit.py:205-253,388-397,527-559,581-623` and `python/tencirpauli/spps_circuit.py:138-153`; contract: `docs/vibe/specs/phase-8-api-coherence-spec.md`, sections 3.1 and 12.
 
 The new private `_CircuitBuilder` still contains `ptm()`, `propagate_operator()`, `profile()`, and the deterministic compile/terminal implementation. `SPPSCircuit` inherits that complete class and hides three names only through instance `__getattribute__()` and `__dir__()`. Consequently `hasattr(SPPSCircuit(1), "ptm")` is false, but `hasattr(SPPSCircuit, "ptm")` is true and the inherited descriptor can be invoked directly.
 
@@ -72,7 +72,7 @@ Closure gate: neither instance lookup, class lookup, static typing, nor QIR/Tens
 
 ### R2 — MEDIUM: empty bool, float, and object Pauli code arrays bypass dtype validation
 
-Location: `python/tencirpauli/pauli.py:1052-1080`; contract: `docs/vibe/phase-8-api-coherence-spec.md`, section 3.3.
+Location: `python/tencirpauli/pauli.py:1052-1080`; contract: `docs/vibe/specs/phase-8-api-coherence-spec.md`, section 3.3.
 
 `_normalize_code_arrays()` guards both the dtype check and range check with `if code_array.size`. As a result, an invalid dtype is rejected only when the array contains at least one scalar. Empty arrays and zero-width arrays silently convert to `uint8` and are accepted:
 
@@ -97,7 +97,7 @@ Required resolution: validate `code_array.dtype.kind in ("i", "u")` unconditiona
 
 ### R3 — MEDIUM: U1 gradient terminals repeat the exact-Hermiticity scan on every hot execution
 
-Locations: `python/tencirpauli/u1_circuit.py:321-343,599-615` and `python/tencirpauli/pauli.py:591-604`; contract: `docs/vibe/phase-8-api-coherence-spec.md`, section 3.2.
+Locations: `python/tencirpauli/u1_circuit.py:321-343,599-615` and `python/tencirpauli/pauli.py:591-604`; contract: `docs/vibe/specs/phase-8-api-coherence-spec.md`, section 3.2.
 
 Both `U1CircuitPlan.value_and_grad()` and `U1Circuit.value_and_grad()` call `observable.is_hermitian(tolerance=0.0)` on every execution. `PauliOperator.is_hermitian()` performs a native call over the operator arrays, so repeated U1 evaluations incur an extra full operator scan and PyO3 round trip before the actual gradient call. This contradicts the explicit Phase 8 requirement that exact Hermiticity be cached in the immutable operator/compiled handle or reused from construction-time information rather than rechecked on every hot execution.
 
@@ -105,7 +105,7 @@ Required resolution: cache exact Hermiticity on immutable `PauliOperator` constr
 
 ### R4 — MEDIUM: the raw `FermionQubitMapping` constructor remains a top-level construction path
 
-Locations: `python/tencirpauli/mapping.py:155-285` and `python/tencirpauli/__init__.py:22,79`; contract: `docs/vibe/phase-8-api-coherence-spec.md`, sections 2.1, 9, 10, and 11.
+Locations: `python/tencirpauli/mapping.py:155-285` and `python/tencirpauli/__init__.py:22,79`; contract: `docs/vibe/specs/phase-8-api-coherence-spec.md`, sections 2.1, 9, 10, and 11.
 
 `FermionQubitMapping` remains top-level and its public `__init__()` accepts `mapping_name`, an arbitrary invertible encoding matrix, and positional `max_bytes`. A caller can therefore construct an object named `"jordan_wigner"` whose encoding matrix is actually parity-like or otherwise custom. The read-only `name` property then advertises provenance that does not match the stored transform.
 
@@ -115,7 +115,7 @@ Required resolution: make raw construction private/factory-only, retain the clas
 
 ### R5 — MEDIUM: deterministic single-observable propagation lacks required `term_count` metadata
 
-Locations: `python/tencirpauli/propagation.py:345-394`, `crates/tencirpauli-native/src/propagation.rs:16-57`, and `python/tencirpauli/_native.pyi:410-432`; contract: `docs/vibe/phase-8-api-coherence-spec.md`, section 4.
+Locations: `python/tencirpauli/propagation.py:345-394`, `crates/tencirpauli-native/src/propagation.rs:16-57`, and `python/tencirpauli/_native.pyi:410-432`; contract: `docs/vibe/specs/phase-8-api-coherence-spec.md`, section 4.
 
 `SPPSEngine.observable_terms` was migrated to `SPPSEngine.term_count`, but `PropagationEngine` exposes no corresponding `term_count`. The specification explicitly requires both single-observable engines to use the canonical algebraic-term metadata name.
 
@@ -123,7 +123,7 @@ Required resolution: store or expose the canonical observable term count during 
 
 ### R6 — MINOR: the advanced reference and several public docstrings do not describe the implemented Phase 8 contract
 
-Locations: `docs/api.md:1-19`, `mkdocs.yml:58-62`, `python/tencirpauli/hamiltonian.py:417-437`, `python/tencirpauli/u1_circuit.py:246-343,553-615`, and the scalar facade methods in `python/tencirpauli/propagation_circuit.py` and `python/tencirpauli/spps_circuit.py`; contract: `docs/vibe/phase-8-api-coherence-spec.md`, sections 3.2, 6, 8, 10, and 11.
+Locations: `docs/api.md:1-19`, `mkdocs.yml:58-62`, `python/tencirpauli/hamiltonian.py:417-437`, `python/tencirpauli/u1_circuit.py:246-343,553-615`, and the scalar facade methods in `python/tencirpauli/propagation_circuit.py` and `python/tencirpauli/spps_circuit.py`; contract: `docs/vibe/specs/phase-8-api-coherence-spec.md`, sections 3.2, 6, 8, 10, and 11.
 
 The MkDocs navigation contains only one API page rendering `tencirpauli`; there is no separate `tencirpauli.advanced` reference with its stability boundary and complete signatures. A strict build succeeds because the missing page is not a build error, but advanced types are absent from the published reference.
 
@@ -133,7 +133,7 @@ Required resolution: add an advanced API reference page and navigation entry, co
 
 ### R7 — MINOR: the explicit Phase 8 contract tests do not freeze the complete promised surface
 
-Location: `tests/test_phase8_api.py:14-113`; contract: `docs/vibe/phase-8-api-coherence-spec.md`, sections 10 and 12.
+Location: `tests/test_phase8_api.py:14-113`; contract: `docs/vibe/specs/phase-8-api-coherence-spec.md`, sections 10 and 12.
 
 The new test file checks that a selected set of advanced names is disjoint from top-level `__all__`, but it does not assert exact top-level and advanced manifests. The SPPS test checks only instance `hasattr()`, which is why R1 passes. Array validation uses only nonempty arrays, which misses R2. The MVP test exercises one native Pauli plan rather than the shared four-plan protocol, construction/execution budget independence, `__call__` default-budget behavior, output ownership, and all factory-only constructor cases. Hermitian tests cover representative facade calls but not the cached-hot-path requirement.
 

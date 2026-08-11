@@ -192,11 +192,11 @@ Closure evidence:
 
 Priority: P1 acceptance-evidence and handoff blocker. First-round mapping: R5 remains open.
 
-Evidence: the owner decision log still marks D20 as `reopened; partial implementation only` at `docs/vibe/phase-10.5-owner-decision-log.md:237-243` and D21 as `open; implementation in progress` at lines 245-251. `docs/vibe/implementation-status.md:23` nevertheless says owner acceptance is closed, and `docs/vibe/phase-10.5-acceptance-evidence.md:59` marks R1-R5 closed.
+Evidence: the owner decision log still marks D20 as `reopened; partial implementation only` at `docs/vibe/reports/phase-10.5-owner-decision-log.md:237-243` and D21 as `open; implementation in progress` at lines 245-251. `docs/vibe/implementation-status.md:23` nevertheless says owner acceptance is closed, and `docs/vibe/reports/phase-10.5-acceptance-evidence.md:59` marks R1-R5 closed.
 
 Evidence: `docs/vibe/implementation-status.md:37` and the acceptance evidence claim pure binary structured inputs reuse the packed Pauli primitive, but the actual construction and apply path remains the Structured plan described in SR2.
 
-Evidence: the first-round closure contract required a remediation table mapping R1-R5 to exact commits, files, tests, and benchmarks. The current ledger at `docs/vibe/phase-10.5-acceptance-evidence.md:65-73` lists broad file names and test descriptions but no implementing commits. The complete implementation is still an uncommitted working tree at `c50038bac50d-dirty`, so an immutable closure mapping does not yet exist.
+Evidence: the first-round closure contract required a remediation table mapping R1-R5 to exact commits, files, tests, and benchmarks. The current ledger at `docs/vibe/reports/phase-10.5-acceptance-evidence.md:65-73` lists broad file names and test descriptions but no implementing commits. The complete implementation is still an uncommitted working tree at `c50038bac50d-dirty`, so an immutable closure mapping does not yet exist.
 
 Evidence: all current tests can pass while the architecture remains wrong. Most family tests assert the public string and numerical equality; no test proves the packed Pauli native variant, spectator evaluation counts, zero hot-loop allocation, a shared Fermion descriptor, or multi-chunk CSR complexity.
 

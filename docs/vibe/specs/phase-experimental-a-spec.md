@@ -215,7 +215,7 @@ B 只有在 structured operator 的真实工作流中取得明显收益，并且
 
 ## 参考
 
-- [Rust quantum operator competitor research](competitor-research.md)
+- [Rust quantum operator competitor research](../competitor-research.md)
 - [Zixy term containers](https://github.com/Quantinuum/zixy/blob/main/zixy-py/zixy/container/terms.py)
 - [Zixy native term views](https://github.com/Quantinuum/zixy/blob/main/zixy/src/container/word_iters/term_set.rs)
 - [Zixy TermData](https://github.com/Quantinuum/zixy/blob/main/zixy-py/zixy/container/data.py)

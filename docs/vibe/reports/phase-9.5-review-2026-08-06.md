@@ -4,7 +4,7 @@ Status: open focused remediation report. Phase 9.5 is not acceptance-closed at c
 
 ## 1. Review scope and verdict
 
-This review compares commit `9e07a2c` (`feat: implement phase 9.5 circuit differentiation boundary`) with its parent against `docs/vibe/phase-9.5-spec.md`. It covers the actual-angle public circuit contract, occurrence-space native gradients, JAX callback/VJP execution, removal of the public and Rust expression systems, private compilation, numerical acceptance evidence, release benchmarks, repeated-MVP scratch review, and live-document migration.
+This review compares commit `9e07a2c` (`feat: implement phase 9.5 circuit differentiation boundary`) with its parent against `docs/vibe/specs/phase-9.5-spec.md`. It covers the actual-angle public circuit contract, occurrence-space native gradients, JAX callback/VJP execution, removal of the public and Rust expression systems, private compilation, numerical acceptance evidence, release benchmarks, repeated-MVP scratch review, and live-document migration.
 
 The main implementation direction is correct and should be preserved. `Parameter` and `ParameterExpr` are removed from the ordinary facade, the three circuit families expose observable-first `expectation()`, `value_and_grad()`, and `expectation_jax()`, gradient lowering assigns one private runtime slot per angle occurrence, forward execution retains static-angle plans, U1 uses a numerical `AngleRef`, and one shared JAX helper performs a coarse native value-and-gradient callback with a custom VJP. The full local quality and correctness gate passes.
 

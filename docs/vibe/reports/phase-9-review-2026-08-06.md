@@ -4,7 +4,7 @@ Status: open remediation report. Phase 9 is not acceptance-closed at commit `293
 
 ## 1. Review scope and verdict
 
-This review covers commits `b7f51a0` (`feat: close native lazy operator remediation`) and `2937537` (`feat: implement phase 9 native data plane`) against their common pre-change baseline `3b9c58b`, with `docs/vibe/phase-9-spec.md` as the frozen acceptance contract. The review inspected the public Python facades, private PyO3 ABI, Rust core ownership of scalable work, ordinary production call paths, tests, and release-mode benchmarks.
+This review covers commits `b7f51a0` (`feat: close native lazy operator remediation`) and `2937537` (`feat: implement phase 9 native data plane`) against their common pre-change baseline `3b9c58b`, with `docs/vibe/specs/phase-9-spec.md` as the frozen acceptance contract. The review inspected the public Python facades, private PyO3 ABI, Rust core ownership of scalable work, ordinary production call paths, tests, and release-mode benchmarks.
 
 The two commits make substantial and useful progress: ordinary Pauli and structured algebra is now predominantly lazy and native-backed; the main mapping, conversion, terminal-compilation, Z2, Pauli U1, and propagation-observable paths use handles; flat NumPy read-back exists for the principal operator and matrix/vector terminals; `Fraction` and `_native_data` are gone; and the full correctness/quality gate passes. The current lazy BCH paths are also materially faster than deliberately eager term materialization.
 

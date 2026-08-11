@@ -109,7 +109,7 @@ Required resolution:
 
 ### R6 — MEDIUM: the implementation-status document overclaims Qudit and tensor-product coverage
 
-Location: `docs/vibe/operator-lazy-results.md:12-13`.
+Location: `docs/vibe/reports/operator-lazy-results.md:12-13`.
 
 The status table claims native-default Qudit multiply and commutator even though those operations currently fail as described in R1. It also lists Qudit and Hybrid tensor products among native-default operations even though `python/tencirpauli/structured.py:1440-1502` explicitly materializes terms and native tensor products are owner-deferred.
 

@@ -67,7 +67,7 @@
 
 ### M4. 多个长时间 native 路径没有释放 GIL
 
-证据：binding 中只有 reusable MVP apply（`crates/tencirpauli-native/src/lib.rs:94`）和 one-shot MVP kernel（`crates/tencirpauli-native/src/lib.rs:495`）调用 `py.allow_threads`。dense、COO、CSR 分别直接执行 core 计算（`crates/tencirpauli-native/src/lib.rs:386`、`crates/tencirpauli-native/src/lib.rs:422`、`crates/tencirpauli-native/src/lib.rs:461`），MVP plan construction 与 grouping 也在持有 GIL 时运行（`crates/tencirpauli-native/src/lib.rs:523`、`crates/tencirpauli-native/src/lib.rs:559`）。Phase 1 checklist 明确把“长计算释放 GIL”标成已完成（`docs/vibe/phase-1-spec.md:103`）。
+证据：binding 中只有 reusable MVP apply（`crates/tencirpauli-native/src/lib.rs:94`）和 one-shot MVP kernel（`crates/tencirpauli-native/src/lib.rs:495`）调用 `py.allow_threads`。dense、COO、CSR 分别直接执行 core 计算（`crates/tencirpauli-native/src/lib.rs:386`、`crates/tencirpauli-native/src/lib.rs:422`、`crates/tencirpauli-native/src/lib.rs:461`），MVP plan construction 与 grouping 也在持有 GIL 时运行（`crates/tencirpauli-native/src/lib.rs:523`、`crates/tencirpauli-native/src/lib.rs:559`）。Phase 1 checklist 明确把“长计算释放 GIL”标成已完成（`docs/vibe/specs/phase-1-spec.md:103`）。
 
 影响：100 ms 级 sparse construction、large grouping 和 plan construction 会阻塞同一 Python process 的其他线程；文档完成状态与实现不一致。
 

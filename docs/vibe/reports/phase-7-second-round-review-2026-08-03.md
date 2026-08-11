@@ -4,7 +4,7 @@ Review date: 2026-08-03
 
 Reviewed commit: `2b0f0dc5818226389c16174db5559d42af9bf118` (`Remediate phase 7 structured operator review`).
 
-Scope: the remediation of `docs/vibe/phase-7-review-2026-08-03.md`, with adversarial checks of partially mapped hybrid algebra, CAR/CCR expansion guards, direct-Weyl backend dimensions, the Phase 7 correctness matrix, benchmark records and metadata, and P0–P5 delivery against `docs/vibe/phase-7-spec.md`.
+Scope: the remediation of `docs/vibe/reports/phase-7-review-2026-08-03.md`, with adversarial checks of partially mapped hybrid algebra, CAR/CCR expansion guards, direct-Weyl backend dimensions, the Phase 7 correctness matrix, benchmark records and metadata, and P0–P5 delivery against `docs/vibe/specs/phase-7-spec.md`.
 
 No implementation, test, benchmark, specification, or status source file was changed during this second-round review. This report is the only repository file added by the review.
 
@@ -71,7 +71,7 @@ Resolution path:
 
 ### M1. The fermion expansion preflight is safe but structurally useless for simple valid inputs
 
-Locations: `crates/tencir-pauli-core/src/structured.rs:859-910`; contract: `docs/vibe/phase-7-spec.md:25,279-285,444-455,499-503`.
+Locations: `crates/tencir-pauli-core/src/structured.rs:859-910`; contract: `docs/vibe/specs/phase-7-spec.md:25,279-285,444-455,499-503`.
 
 `fermion_rewrite()` computes `2**sequence.len()` before inspecting the sequence and charges 192 bytes for every hypothetical branch. An already canonical sequence of 40 distinct creation operators has exactly one output term and requires no contraction branch, but the public constructor raises:
 
@@ -108,7 +108,7 @@ Required regressions:
 
 ### M2. Direct-Weyl and generic local-dimension plan metadata can silently overflow
 
-Locations: `python/tencirpauli/hamiltonian.py:125-130,224-229,240-256` and `python/tencirpauli/structured.py:2298-2345`; contract: `docs/vibe/phase-7-spec.md:17,116,274-285,395-397,451-453`.
+Locations: `python/tencirpauli/hamiltonian.py:125-130,224-229,240-256` and `python/tencirpauli/structured.py:2298-2345`; contract: `docs/vibe/specs/phase-7-spec.md:17,116,274-285,395-397,451-453`.
 
 Both `NativeMVPPlan.dimension` and `BackendMVPPlan.dimension` use `np.prod(self.local_dimensions, dtype=np.intp)`. NumPy integer multiplication wraps at platform width instead of raising. A reviewed direct-Weyl plan with dimension 3 and 50 sites reports `6048575297968530377`, while the exact value `3**50` exceeds the platform-index range. Subsequent memory checks and shape validation therefore operate on a false dimension.
 
@@ -121,7 +121,7 @@ Resolution path:
 
 ### M3. The frozen Phase 7 correctness and property matrix remains incomplete
 
-Locations: `tests/test_structured_algebra.py:81-353`; contract: `docs/vibe/phase-7-spec.md:440-455,493-521`.
+Locations: `tests/test_structured_algebra.py:81-353`; contract: `docs/vibe/specs/phase-7-spec.md:440-455,493-521`.
 
 The focused file has increased from 13 to 18 passing tests, but the additions are narrow regressions rather than the required acceptance matrix. The direct-Weyl parameterized test at `tests/test_structured_algebra.py:112-130` checks one monomial against dense/COO/CSR/native MVP. It does not test Weyl multiplication phases, adjoint, commutation, Hermiticity, modular properties, or coefficient aggregation. The backend test at `tests/test_structured_algebra.py:335-353` covers only TensorCircuit NumPy, `d=3`, one coefficient set, and one two-site layout; JAX, `d=4/5/6`, coefficient override, JIT-compatible execution, and invalid-dimension boundaries are absent.
 
@@ -137,7 +137,7 @@ Resolution path:
 
 ### M4. The release benchmark handoff is still not an accepted record and lacks required workloads/metadata
 
-Locations: `benchmarks/python/test_structured_algebra_benchmark.py:15-338`, `.benchmarks/runs/phase7-remediation-20260803.json:1-25`, and `docs/vibe/phase-7-spec.md:457-472,523-531`.
+Locations: `benchmarks/python/test_structured_algebra_benchmark.py:15-338`, `.benchmarks/runs/phase7-remediation-20260803.json:1-25`, and `docs/vibe/specs/phase-7-spec.md:457-472,523-531`.
 
 A clean focused pytest-benchmark JSON exists for commit `2b0f0dc`, but the official harness manifest `phase7-remediation-20260803` is marked `"status": "failed"`. It therefore does not satisfy the P5 requirement for a completed clean release record through the benchmark harness.
 
@@ -153,7 +153,7 @@ Resolution path:
 
 ### M5. Public plan metadata, typing, and docstring delivery is still below the frozen P0/P5 contract
 
-Locations: `python/tencirpauli/hamiltonian.py:63-161`, `python/tencirpauli/structured.py:759-877,1104-1228,1884-2087,2224-2345`; contract: `docs/vibe/phase-7-spec.md:390-399,426-438,523-527`.
+Locations: `python/tencirpauli/hamiltonian.py:63-161`, `python/tencirpauli/structured.py:759-877,1104-1228,1884-2087,2224-2345`; contract: `docs/vibe/specs/phase-7-spec.md:390-399,426-438,523-527`.
 
 `NativeMVPPlan` exposes dimension, local dimensions, term count, estimated bytes, basis ordering, and strategy, but not the frozen target/schema version, mapping label, boson cutoffs, projected-Fock boundary label, or direct-Weyl convention where applicable. `BackendMVPPlan.required_operations` defaults to Pauli operations even for a `direct_weyl` plan because `_direct_weyl_backend_plan()` does not override it. Public factories, `terms`, arithmetic dunder methods, mapping, and compile returns still use `Any`, and `structured.py` has only 12 docstring blocks across roughly 138 class/property/method definitions. Passing mypy under these annotations does not demonstrate the strict public typing requested by P5.
 

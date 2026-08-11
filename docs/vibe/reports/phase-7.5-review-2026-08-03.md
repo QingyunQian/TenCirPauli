@@ -43,7 +43,7 @@ Phase 7.5 works correctly on the committed small-system fixtures, and the native
 
 ### C1. Exact integer charge analysis becomes lossy complex128 arithmetic and can return a false symmetry
 
-Locations: `python/tencirpauli/charge.py:178-252,985-1015`; contract: `docs/vibe/phase-7.5-spec.md:35-44,245-270,471-475`.
+Locations: `python/tencirpauli/charge.py:178-252,985-1015`; contract: `docs/vibe/specs/phase-7.5-spec.md:35-44,245-270,471-475`.
 
 #### Current problem
 
@@ -94,7 +94,7 @@ C1 closes only when the large-integer false-positive reproducer fails before the
 
 ### C2. Majorana mapping uses an exponential fermion intermediate even when the exact output has one Pauli word
 
-Locations: `python/tencirpauli/majorana.py:385-458`, `python/tencirpauli/mapping.py:411-423`, and `crates/tencir-pauli-core/src/majorana.rs:171-250`; contract: `docs/vibe/phase-7.5-spec.md:84-107,109-198,459-469`.
+Locations: `python/tencirpauli/majorana.py:385-458`, `python/tencirpauli/mapping.py:411-423`, and `crates/tencir-pauli-core/src/majorana.rs:171-250`; contract: `docs/vibe/specs/phase-7.5-spec.md:84-107,109-198,459-469`.
 
 #### Current problem
 
@@ -140,7 +140,7 @@ C2 closes when direct mapping no longer calls `to_fermion()`, degree scaling is 
 
 ### M1. The Rust Majorana core does not implement the frozen packed-support representation, and inverse conversion remains a Python branch loop
 
-Locations: `crates/tencir-pauli-core/src/majorana.rs:8-13,53-123,125-163,253-294` and `python/tencirpauli/majorana.py:36-70,487-525`; contract: `docs/vibe/phase-7.5-spec.md:103-107,459-463`.
+Locations: `crates/tencir-pauli-core/src/majorana.rs:8-13,53-123,125-163,253-294` and `python/tencirpauli/majorana.py:36-70,487-525`; contract: `docs/vibe/specs/phase-7.5-spec.md:103-107,459-463`.
 
 #### Current problem
 
@@ -174,7 +174,7 @@ M1 closes when production multiplication and conversion use packed native keys, 
 
 ### M2. Charge-sector memory guards run after the largest Python allocation, and the Pauli analysis path does not honor the caller budget
 
-Locations: `python/tencirpauli/charge.py:441-518,603-625,985-1015`, `crates/tencir-pauli-core/src/charge_sector.rs:189-315`, and `python/tencirpauli/pauli.py:486-504,841-846`; contract: `docs/vibe/phase-7.5-spec.md:35-44,401-418,433`.
+Locations: `python/tencirpauli/charge.py:441-518,603-625,985-1015`, `crates/tencir-pauli-core/src/charge_sector.rs:189-315`, and `python/tencirpauli/pauli.py:486-504,841-846`; contract: `docs/vibe/specs/phase-7.5-spec.md:35-44,401-418,433`.
 
 #### Current problem
 
@@ -211,7 +211,7 @@ M2 closes when low-budget rejection occurs before material Python expansion, the
 
 ### M3. Parity execution replays an O(n²) provenance circuit, while the mapping benchmark silently collapses every term-count scale to four canonical terms
 
-Locations: `crates/tencir-pauli-core/src/mapping.rs:44-98,102-177,222-250`, `python/tencirpauli/mapping.py:336-472`, and `benchmarks/python/test_majorana_mapping_charge_benchmark.py:52-75,315-383`; contract: `docs/vibe/phase-7.5-spec.md:123-194,435-449,465-469`.
+Locations: `crates/tencir-pauli-core/src/mapping.rs:44-98,102-177,222-250`, `python/tencirpauli/mapping.py:336-472`, and `benchmarks/python/test_majorana_mapping_charge_benchmark.py:52-75,315-383`; contract: `docs/vibe/specs/phase-7.5-spec.md:123-194,435-449,465-469`.
 
 #### Current problem
 
@@ -256,7 +256,7 @@ M3 closes when the timed implementation no longer loops over the full parity pro
 
 ### M4. The generic restricted compiler materializes allocation-heavy basis maps and clones one occupation vector per source-term pair
 
-Locations: `python/tencirpauli/charge.py:720-982`, `crates/tencir-pauli-core/src/charge.rs:232-403`, and `crates/tencir-pauli-core/src/charge_sector.rs:17-185`; contract: `docs/vibe/phase-7.5-spec.md:301-399,435-449,477-481`.
+Locations: `python/tencirpauli/charge.py:720-982`, `crates/tencir-pauli-core/src/charge.rs:232-403`, and `crates/tencir-pauli-core/src/charge_sector.rs:17-185`; contract: `docs/vibe/specs/phase-7.5-spec.md:301-399,435-449,477-481`.
 
 #### Current problem
 
@@ -303,7 +303,7 @@ M4 closes when restricted construction no longer materializes owned basis-row ke
 
 ### M5. The current acceptance tests and benchmark manifest do not cover several frozen Phase 7.5 gates
 
-Locations: `tests/test_charge.py`, `tests/test_majorana_mapping.py`, `benchmarks/python/test_majorana_mapping_charge_benchmark.py`, and `docs/vibe/implementation-status.md:81-108`; contract: `docs/vibe/phase-7.5-spec.md:420-487`.
+Locations: `tests/test_charge.py`, `tests/test_majorana_mapping.py`, `benchmarks/python/test_majorana_mapping_charge_benchmark.py`, and `docs/vibe/implementation-status.md:81-108`; contract: `docs/vibe/specs/phase-7.5-spec.md:420-487`.
 
 #### Current problem
 
