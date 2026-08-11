@@ -199,6 +199,22 @@ def holstein_workload() -> Tuple[tcp.HybridOperator, dict[int, int]]:
     return operator, {0: 3, 1: 3}
 
 
+def structured_parallel_crossover_workload() -> (
+    Tuple[tcp.HybridOperator, dict[int, int]]
+):
+    """Build the large eager CSR graph used to select row parallelism."""
+    space = tcp.OperatorSpace(bosons=12)
+    operator = space.boson.create(0) * space.boson.annihilate(1) + space.boson.create(
+        1
+    ) * space.boson.annihilate(0)
+    for mode in range(1, 5):
+        operator = operator + (
+            space.boson.create(mode) * space.boson.annihilate(mode + 1)
+            + space.boson.create(mode + 1) * space.boson.annihilate(mode)
+        )
+    return operator, {mode: 2 for mode in range(12)}
+
+
 STRUCTURED_SPARSE_CASES = (
     (
         "small_native",
@@ -605,6 +621,39 @@ def test_structured_holstein_native_mvp_first_apply(
         output_bytes=result.nbytes,
         numerical_error=error,
         workload="holstein_mixed_native_mvp_first_apply",
+    )
+
+
+@pytest.mark.performance_large
+def test_structured_eager_csr_parallel_crossover(
+    benchmark: BenchmarkFixture,
+) -> None:
+    """Retain one large eager graph above the measured CSR parallel threshold."""
+    operator, cutoffs = structured_parallel_crossover_workload()
+    plan = operator.compile("native_mvp", storage="eager", boson_cutoffs=cutoffs)
+    assert plan.dimension == 3**12
+    assert plan.transition_count is not None and plan.transition_count > 1 << 20
+    lazy = operator.compile("native_mvp", storage="lazy", boson_cutoffs=cutoffs)
+    state = (
+        np.random.default_rng(20260811)
+        .normal(size=plan.dimension)
+        .astype(np.complex128)
+    )
+    expected = lazy.apply(state)
+    output = np.empty_like(state)
+    benchmark(plan.apply_into, state, output)
+    np.testing.assert_allclose(output, expected)
+    _record_metadata(
+        benchmark,
+        input_terms=operator.term_count,
+        canonical_terms=operator.term_count,
+        generated_contributions=operator.term_count * plan.dimension,
+        dimension=plan.dimension,
+        nonzeros_or_transitions=int(plan.transition_count or 0),
+        plan_bytes=plan.estimated_bytes,
+        output_bytes=output.nbytes,
+        numerical_error=float(np.max(np.abs(output - expected))),
+        workload="structured_eager_csr_parallel_crossover",
     )
 
 
