@@ -290,6 +290,9 @@ class _U1CircuitPlan:
 
         The result is a read-only ``float64`` vector in parameter-slot order.
         ``ValueError`` is raised for a non-Hermitian observable.
+        The reverse pass uses inverse-gate replay with a constant number of
+        sector state vectors and therefore has no propagation-style checkpoint
+        interval.
         """
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
@@ -581,6 +584,9 @@ class U1Circuit:
         The returned owned array is read-only ``float64`` with one entry per
         gate-angle occurrence. ``ValueError`` is raised for a non-Hermitian
         observable.
+        The reverse pass uses inverse-gate replay with a constant number of
+        sector state vectors and therefore has no propagation-style checkpoint
+        interval.
         """
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional, Sequence, Tuple, cast
+from typing import Any, Literal, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
 
@@ -22,6 +22,9 @@ from .hamiltonian import (
     _validate_max_bytes,
 )
 from .pauli import PauliOperator, PauliWord
+
+
+U1Storage = Literal["lazy", "eager"]
 
 
 @dataclass(frozen=True)
@@ -211,7 +214,7 @@ class U1RestrictedOperator:
     term_count: int
     _native_operator: Any
     _native_lazy_plan: Any
-    storage: str
+    storage: U1Storage
     _operator: Optional[PauliOperator]
     _lock: Any
     _lazy_estimate: int
@@ -223,7 +226,7 @@ class U1RestrictedOperator:
         term_count: int = 0,
         *,
         operator: Optional[PauliOperator] = None,
-        storage: str = "eager",
+        storage: U1Storage = "eager",
         native_lazy_plan: Any = None,
     ) -> None:
         if storage not in {"lazy", "eager"}:
@@ -307,7 +310,7 @@ class U1RestrictedOperator:
     def mvp_plan(
         self,
         *,
-        storage: str = "lazy",
+        storage: U1Storage = "lazy",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "U1MvpPlan":
         """Build a fixed reusable restricted matrix-free plan."""
@@ -339,8 +342,7 @@ class U1RestrictedOperator:
     def estimated_bytes(self) -> int:
         if self._native_operator is not None:
             return int(
-                self._lazy_estimate
-                + self._native_operator.mvp_plan(2**63 - 1).transition_count * 32
+                self._lazy_estimate + self._native_operator.transition_count * 32
             )
         return self._lazy_estimate
 
@@ -371,10 +373,9 @@ class U1RestrictedOperator:
         native = self._native_operator
         if native is not None:
             if target is not None:
-                fixed = native.mvp_plan(_effective_max_bytes(max_bytes))
                 _check_allocation(
                     _u1_materialization_bytes(
-                        self.dimension, fixed.transition_count, target
+                        self.dimension, native.transition_count, target
                     ),
                     max_bytes,
                     f"U1 {target} materialization",
@@ -420,13 +421,13 @@ class U1RestrictedOperator:
                     self.sector.particle_number,
                     _effective_max_bytes(construction_budget),
                 )
-                fixed = native.mvp_plan(_effective_max_bytes(construction_budget))
-                retained_bytes = self._lazy_estimate + fixed.transition_count * 32
+                transition_count = native.transition_count
+                retained_bytes = self._lazy_estimate + transition_count * 32
                 target_bytes = (
                     0
                     if target is None
                     else _u1_materialization_bytes(
-                        self.dimension, fixed.transition_count, target
+                        self.dimension, transition_count, target
                     )
                 )
                 _check_allocation(
@@ -476,6 +477,33 @@ class U1RestrictedOperator:
             (dimension, dimension),
         )
 
+    def compile(
+        self,
+        target: str,
+        *,
+        storage: U1Storage = "lazy",
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> Union[
+        np.ndarray[Any, Any],
+        COOMatrix,
+        CSRMatrix,
+        "U1MvpPlan",
+    ]:
+        """Compile one supported U(1)-restricted target.
+
+        U(1) restrictions expose dense/COO/CSR materialization and native MVP
+        plans; backend MVP is not a supported representation for this family.
+        """
+        if target == "dense":
+            return self.dense(max_bytes=max_bytes)
+        if target == "coo":
+            return self.coo(max_bytes=max_bytes)
+        if target == "csr":
+            return self.csr(max_bytes=max_bytes)
+        if target == "native_mvp":
+            return self.mvp_plan(storage=storage, max_bytes=max_bytes)
+        raise ValueError("target must be one of 'dense', 'coo', 'csr', or 'native_mvp'")
+
 
 @dataclass(frozen=True, init=False)
 class U1MvpPlan(_NativeMvpFacade):
@@ -491,7 +519,7 @@ class U1MvpPlan(_NativeMvpFacade):
         native_plan: Any,
         term_count: int = 0,
         *,
-        storage: str = "eager",
+        storage: U1Storage = "eager",
     ) -> None:
         if storage not in {"lazy", "eager"}:
             raise ValueError("storage must be either 'eager' or 'lazy'")
@@ -515,7 +543,7 @@ class U1MvpPlan(_NativeMvpFacade):
             NativePlanMetadata(
                 dimension=dimension,
                 term_count=int(term_count),
-                storage=cast(Literal["lazy", "eager"], storage),
+                storage=storage,
                 basis_ordering="qubit0_msb_matrix",
                 target="native_mvp",
                 execution_family="product",
@@ -602,7 +630,7 @@ def _restrict_u1(
     max_bytes: Optional[int],
     *,
     term_count: Optional[int] = None,
-    storage: str = "lazy",
+    storage: U1Storage = "lazy",
 ) -> U1RestrictedOperator:
     if storage not in {"lazy", "eager"}:
         raise ValueError("storage must be either 'eager' or 'lazy'")

@@ -206,6 +206,26 @@ def test_u1_restricted_operator_matches_full_projection_and_aggregates_hopping()
     np.testing.assert_allclose(restricted.mvp_plan().apply(state), expected @ state)
 
 
+def test_u1_restricted_compile_dispatch_matches_direct_targets() -> None:
+    operator = tcp.PauliOperator.from_terms(2, [("ZI", 1.0), ("IZ", -0.25)])
+    restricted = operator.restrict_charge(tcp.U1Sector(2, 1))
+    np.testing.assert_allclose(restricted.compile("dense"), restricted.dense())
+    compiled_coo = restricted.compile("coo")
+    direct_coo = restricted.coo()
+    np.testing.assert_array_equal(compiled_coo.row, direct_coo.row)
+    np.testing.assert_array_equal(compiled_coo.column, direct_coo.column)
+    np.testing.assert_allclose(compiled_coo.data, direct_coo.data)
+    compiled_csr = restricted.compile("csr")
+    direct_csr = restricted.csr()
+    np.testing.assert_array_equal(compiled_csr.indptr, direct_csr.indptr)
+    np.testing.assert_array_equal(compiled_csr.indices, direct_csr.indices)
+    np.testing.assert_allclose(compiled_csr.data, direct_csr.data)
+    assert restricted.compile("native_mvp").storage == "lazy"
+    assert restricted.compile("native_mvp", storage="eager").storage == "eager"
+    with pytest.raises(ValueError, match="target must be one of"):
+        restricted.compile("backend_mvp")
+
+
 def test_u1_restriction_rejects_leakage_after_aggregation() -> None:
     sector = tcp.U1Sector(3, 1)
     hopping = tcp.PauliOperator.from_terms(3, (("XXI", 1.0), ("YYI", 1.0)))

@@ -308,9 +308,16 @@ class NativeMVPPlan(_NativeMvpFacade):
         return self._execution
 
     def csr(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> CSRMatrix:
-        """Materialize the retained eager graph as deterministic CSR."""
+        """Read back CSR from a retained eager Structured graph.
+
+        Only eager plans backed by a retained CSR graph support this method;
+        Pauli compact plans and lazy plans must be materialized through their
+        owning operator facade instead.
+        """
         if self.storage != "eager" or not hasattr(self._execution, "csr"):
-            raise ValueError("CSR materialization requires an eager native plan")
+            raise ValueError(
+                "CSR read-back requires an eager native plan retaining a CSR graph"
+            )
         _validate_max_bytes(max_bytes)
         indptr, indices, data = _read_csr_arrays(self._execution, max_bytes)
         return CSRMatrix(

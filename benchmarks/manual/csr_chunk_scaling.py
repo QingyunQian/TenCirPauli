@@ -49,7 +49,7 @@ def _rss_bytes() -> int:
 
 
 def _arrays(eager: Any) -> tuple[np.ndarray[Any, Any], ...]:
-    return tuple(np.asarray(value).copy() for value in eager.csr())
+    return tuple(np.asarray(value).copy() for value in eager.csr(2**63 - 1))
 
 
 def _measure_child(target_chunks: int, repeats: int) -> dict[str, Any]:

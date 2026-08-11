@@ -1,3 +1,7 @@
+// Structured row scheduling has a higher crossover than charge CSR on the
+// measured workloads; keep small eager graphs on the serial path.
+const STRUCTURED_CSR_PARALLEL_THRESHOLD: usize = 1 << 20;
+
 impl StructuredEagerMvpPlan {
     pub fn dimension(&self) -> usize {
         self.graph.dimension()
@@ -35,10 +39,8 @@ impl StructuredEagerMvpPlan {
         self.graph.transition_count()
     }
 
-    pub fn csr(&self) -> (Vec<u64>, Vec<u64>, Vec<Complex64>) {
-        self.graph
-            .to_u64_arrays(u128::MAX)
-            .expect("validated CSR graph is always readable")
+    pub fn csr(&self, max_bytes: u128) -> Result<crate::csr::CsrU64Arrays, PauliError> {
+        self.graph.to_u64_arrays(max_bytes)
     }
 
     /// Move the retained CSR arrays to a native materialization boundary.
@@ -107,8 +109,11 @@ impl StructuredEagerMvpPlan {
                 limit: max_bytes,
             });
         }
-        self.graph
-            .apply_into(state, output, CsrApplyPolicy::serial())
+        self.graph.apply_into(
+            state,
+            output,
+            CsrApplyPolicy::parallel(STRUCTURED_CSR_PARALLEL_THRESHOLD),
+        )
     }
 }
 

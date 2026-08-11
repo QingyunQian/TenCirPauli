@@ -58,7 +58,7 @@ pub fn canonicalize_fermion_integrals(
     constant: Complex64,
     max_bytes: u128,
 ) -> Result<FermionCanonicalResult, PauliError> {
-    let (n_modes, raw_count) = match &source {
+    let n_modes = match &source {
         FermionIntegralSource::SpinOrbital {
             n_modes,
             one_body,
@@ -75,14 +75,7 @@ pub fn canonicalize_fermion_integrals(
             validate_integral_length(one_body.len(), n_squared)?;
             validate_integral_length(two_body.len(), n_fourth)?;
             validate_spin_orbital_integrals(one_body, two_body, *n_modes)?;
-            let mut count = usize::from(!is_exact_zero(constant));
-            visit_spin_orbital_terms(*n_modes, one_body, two_body, |_, _| {
-                count = count.checked_add(1).ok_or(PauliError::Overflow {
-                    context: "counting spin-orbital integral terms",
-                })?;
-                Ok(())
-            })?;
-            (*n_modes, count)
+            *n_modes
         }
         FermionIntegralSource::SpinBlocks(blocks) => {
             let n_squared =
@@ -108,25 +101,71 @@ pub fn canonicalize_fermion_integrals(
                 validate_integral_length(length, n_fourth)?;
             }
             validate_spin_block_integrals(blocks)?;
-            let mut count = usize::from(!is_exact_zero(constant));
-            visit_spin_block_terms(blocks, |_, _| {
-                count = count.checked_add(1).ok_or(PauliError::Overflow {
-                    context: "counting spin-block integral terms",
-                })?;
-                Ok(())
-            })?;
-            (
-                blocks
-                    .n_spatial
-                    .checked_mul(2)
-                    .ok_or(PauliError::Overflow {
-                        context: "checking molecular spin-orbital dimensions",
-                    })?,
-                count,
-            )
+            blocks
+                .n_spatial
+                .checked_mul(2)
+                .ok_or(PauliError::Overflow {
+                    context: "checking molecular spin-orbital dimensions",
+                })?
         }
     };
-    let requested = (raw_count as u128)
+
+    let mut factors = Vec::new();
+    let mut coefficients = Vec::new();
+    let mut raw_count = 0usize;
+    if !is_exact_zero(constant) {
+        push_integral_term(
+            &mut factors,
+            &mut coefficients,
+            &mut raw_count,
+            &[],
+            constant,
+            max_bytes,
+        )?;
+    }
+    match source {
+        FermionIntegralSource::SpinOrbital {
+            n_modes,
+            one_body,
+            two_body,
+        } => visit_spin_orbital_terms(n_modes, one_body, two_body, |word, coefficient| {
+            push_integral_term(
+                &mut factors,
+                &mut coefficients,
+                &mut raw_count,
+                word,
+                coefficient,
+                max_bytes,
+            )
+        })?,
+        FermionIntegralSource::SpinBlocks(blocks) => {
+            visit_spin_block_terms(&blocks, |word, coefficient| {
+                push_integral_term(
+                    &mut factors,
+                    &mut coefficients,
+                    &mut raw_count,
+                    word,
+                    coefficient,
+                    max_bytes,
+                )
+            })?
+        }
+    }
+    canonicalize_fermion_terms(n_modes, &factors, &coefficients, max_bytes)
+}
+
+fn push_integral_term(
+    factors: &mut Vec<Vec<(usize, u8)>>,
+    coefficients: &mut Vec<Complex64>,
+    raw_count: &mut usize,
+    word: &[(usize, u8)],
+    coefficient: Complex64,
+    max_bytes: u128,
+) -> Result<(), PauliError> {
+    *raw_count = raw_count.checked_add(1).ok_or(PauliError::Overflow {
+        context: "counting molecular integral terms",
+    })?;
+    let requested = (*raw_count as u128)
         .checked_mul(768)
         .ok_or(PauliError::Overflow {
             context: "estimating molecular integral ingestion",
@@ -137,32 +176,9 @@ pub fn canonicalize_fermion_integrals(
             limit: max_bytes,
         });
     }
-
-    let mut factors = Vec::with_capacity(raw_count);
-    let mut coefficients = Vec::with_capacity(raw_count);
-    if !is_exact_zero(constant) {
-        factors.push(Vec::new());
-        coefficients.push(constant);
-    }
-    match source {
-        FermionIntegralSource::SpinOrbital {
-            n_modes,
-            one_body,
-            two_body,
-        } => visit_spin_orbital_terms(n_modes, one_body, two_body, |word, coefficient| {
-            factors.push(word.to_vec());
-            coefficients.push(coefficient);
-            Ok::<(), PauliError>(())
-        })?,
-        FermionIntegralSource::SpinBlocks(blocks) => {
-            visit_spin_block_terms(&blocks, |word, coefficient| {
-                factors.push(word.to_vec());
-                coefficients.push(coefficient);
-                Ok::<(), PauliError>(())
-            })?
-        }
-    }
-    canonicalize_fermion_terms(n_modes, &factors, &coefficients, max_bytes)
+    factors.push(word.to_vec());
+    coefficients.push(coefficient);
+    Ok(())
 }
 
 fn validate_integral_length(actual: usize, expected: usize) -> Result<(), PauliError> {

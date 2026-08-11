@@ -439,6 +439,10 @@ impl U1RestrictedOperator {
         self.plan.dimension()
     }
 
+    pub fn transition_count(&self) -> usize {
+        self.plan.transition_count()
+    }
+
     pub fn apply(
         &self,
         state: &[Complex64],

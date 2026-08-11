@@ -141,6 +141,11 @@ impl NativeU1RestrictedOperator {
         self.operator.dimension()
     }
 
+    #[getter]
+    fn transition_count(&self) -> usize {
+        self.operator.transition_count()
+    }
+
     fn apply<'py>(
         &self,
         py: Python<'py>,

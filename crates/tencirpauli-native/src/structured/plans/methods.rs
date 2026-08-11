@@ -55,13 +55,19 @@ impl StructuredEagerMvpPlan {
         self.plan.transition_count()
     }
 
-    fn csr<'py>(&self, py: Python<'py>) -> NumpyStructuredCsrOutput<'py> {
-        let (indptr, columns, values) = self.plan.csr();
-        (
+    fn csr<'py>(
+        &self,
+        py: Python<'py>,
+        max_bytes: u128,
+    ) -> PyResult<NumpyStructuredCsrOutput<'py>> {
+        let (indptr, columns, values) = py
+            .allow_threads(|| self.plan.csr(max_bytes))
+            .map_err(map_error)?;
+        Ok((
             PyArray1::from_vec(py, indptr),
             PyArray1::from_vec(py, columns),
             PyArray1::from_vec(py, values),
-        )
+        ))
     }
 
     fn apply<'py>(

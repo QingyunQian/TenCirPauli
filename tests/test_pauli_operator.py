@@ -247,6 +247,28 @@ def test_explicit_code_array_api_preserves_mapping_and_validation() -> None:
         PauliOperator.from_code_arrays([[1], [2]], [1.0])
 
 
+def test_pauli_constructors_forward_keyword_only_memory_budget() -> None:
+    expected = PauliOperator.from_terms(1, [("X", 1.0)])
+    assert PauliOperator(1, [("X", 1.0)], max_bytes=1).terms == expected.terms
+    assert (
+        PauliOperator.from_terms(1, [("X", 1.0)], max_bytes=None).terms
+        == expected.terms
+    )
+    assert (
+        PauliOperator.from_code_arrays([[1]], [1.0], max_bytes=1).terms
+        == expected.terms
+    )
+    assert PauliOperator.from_strings([("X", 1.0)], max_bytes=1).terms == expected.terms
+    for constructor in (
+        lambda: PauliOperator(1, [("X", 1.0)], max_bytes=-1),
+        lambda: PauliOperator.from_terms(1, [("X", 1.0)], max_bytes=-1),
+        lambda: PauliOperator.from_code_arrays([[1]], [1.0], max_bytes=-1),
+        lambda: PauliOperator.from_strings([("X", 1.0)], max_bytes=-1),
+    ):
+        with pytest.raises(ValueError, match="max_bytes"):
+            constructor()
+
+
 def test_tensor_product_ignores_advisory_workspace_budget_and_uses_one_batch() -> None:
     left = PauliOperator.from_terms(1, [("I", 1.0), ("X", 2.0)])
     right = PauliOperator.from_terms(1, [("Z", 0.5), ("Y", -1.0)])

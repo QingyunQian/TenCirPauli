@@ -277,7 +277,7 @@ def _read_csr_arrays(
     this helper at the flat-array ABI prevents an eager charge plan from
     constructing a temporary sparse container merely to unpack it again.
     """
-    indptr, columns, values = execution.csr()
+    indptr, columns, values = execution.csr(_effective_max_bytes(max_bytes))
     indptr_array = np.asarray(indptr, dtype=np.uint64)
     columns_array = np.asarray(columns, dtype=np.uint64)
     values_array = np.asarray(values, dtype=np.complex128)

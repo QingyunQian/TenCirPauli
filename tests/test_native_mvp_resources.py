@@ -243,6 +243,36 @@ def test_structured_eager_plan_uses_precomputed_transitions() -> None:
     np.testing.assert_allclose(lazy.apply(state), eager.apply(state))
 
 
+def test_eager_csr_native_readback_checks_budget_before_allocation() -> None:
+    space = tcp.OperatorSpace(bosons=1)
+    operator = space.boson.create(0)
+    eager = operator.compile("native_mvp", storage="eager", boson_cutoffs={0: 3})
+    with pytest.raises(MemoryError, match="memory limit"):
+        eager._native_plan.csr(0)
+    arrays = eager.csr(max_bytes=None)
+    assert arrays.indptr.dtype == np.uint64
+    assert arrays.indices.dtype == np.uint64
+    assert arrays.data.dtype == np.complex128
+    reconstructed = np.zeros((eager.dimension, eager.dimension), dtype=np.complex128)
+    for row in range(eager.dimension):
+        start, stop = int(arrays.indptr[row]), int(arrays.indptr[row + 1])
+        reconstructed[row, arrays.indices[start:stop]] = arrays.data[start:stop]
+    np.testing.assert_allclose(
+        reconstructed,
+        operator.compile("dense", boson_cutoffs={0: 3}),
+    )
+
+
+def test_charge_eager_csr_native_readback_checks_budget_before_allocation() -> None:
+    space = tcp.OperatorSpace(fermions=2)
+    charge = tcp.AdditiveCharge(space, fermions={0: 1, 1: 1})
+    operator = space.fermion.create(0) * space.fermion.annihilate(1)
+    restricted = operator.restrict_charge(charge.sector(1), storage="eager")
+    assert restricted._eager_plan is not None
+    with pytest.raises(MemoryError, match="memory limit"):
+        restricted._eager_plan._native_plan.csr(0)
+
+
 @pytest.mark.parametrize("factory", ["pauli", "structured", "charge", "u1"])
 def test_cpu_native_apply_into_is_strict_and_matches_apply(factory: str) -> None:
     if factory == "pauli":

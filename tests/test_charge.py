@@ -344,6 +344,28 @@ def test_restricted_qubit_targets_match_independent_projector() -> None:
     assert restricted.estimated_bytes >= eager_plan.estimated_bytes
 
 
+def test_charge_restricted_compile_dispatch_matches_direct_targets() -> None:
+    space = tcp.OperatorSpace(qubits=2)
+    number = tcp.AdditiveCharge(space, qubits={0: (0, 1), 1: (0, 1)})
+    operator = space.qubit.z(0) + 0.25 * space.qubit.z(1)
+    restricted = operator.restrict_charge(number.sector(1))
+    np.testing.assert_allclose(restricted.compile("dense"), restricted.dense())
+    compiled_coo = restricted.compile("coo")
+    direct_coo = restricted.coo()
+    np.testing.assert_array_equal(compiled_coo.row, direct_coo.row)
+    np.testing.assert_array_equal(compiled_coo.column, direct_coo.column)
+    np.testing.assert_allclose(compiled_coo.data, direct_coo.data)
+    compiled_csr = restricted.compile("csr")
+    direct_csr = restricted.csr()
+    np.testing.assert_array_equal(compiled_csr.indptr, direct_csr.indptr)
+    np.testing.assert_array_equal(compiled_csr.indices, direct_csr.indices)
+    np.testing.assert_allclose(compiled_csr.data, direct_csr.data)
+    assert restricted.compile("native_mvp").storage == "lazy"
+    assert restricted.compile("native_mvp", storage="eager").storage == "eager"
+    with pytest.raises(ValueError, match="target must be one of"):
+        restricted.compile("backend_mvp")
+
+
 def test_restricted_compiler_aggregates_leaking_terms_before_sector_check() -> None:
     space = tcp.OperatorSpace(qubits=2)
     number = tcp.AdditiveCharge(space, qubits={0: (0, 1), 1: (0, 1)})

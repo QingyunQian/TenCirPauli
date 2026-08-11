@@ -1,5 +1,31 @@
 from typing import Any, Sequence
 
+import numpy as np
+
+HybridCanonicalInput = tuple[
+    Sequence[Sequence[tuple[int, int]]],
+    Sequence[Sequence[tuple[int, int]]],
+    Sequence[Sequence[int]],
+    Sequence[bool],
+    Sequence[Sequence[tuple[int, int, int]]],
+    Sequence[float],
+    Sequence[float],
+]
+HybridJordanWignerInput = tuple[
+    Sequence[bool],
+    Sequence[Sequence[int]],
+    Sequence[Sequence[int]],
+    Sequence[bool],
+    Sequence[Sequence[tuple[int, int, int]]],
+    Sequence[Sequence[int]],
+    Sequence[bool],
+    Sequence[Sequence[int]],
+    Sequence[bool],
+    Sequence[Sequence[tuple[int, int, int]]],
+    Sequence[float],
+    Sequence[float],
+]
+
 __version__: str
 
 class StructuredMvpPlan:
@@ -48,7 +74,9 @@ class StructuredEagerMvpPlan:
     def retained_format(self) -> str: ...
     @property
     def transition_count(self) -> int: ...
-    def csr(self) -> tuple[object, object, object]: ...
+    def csr(
+        self, max_bytes: int
+    ) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]: ...
     def apply(self, state: object, max_bytes: int) -> object: ...
     def apply_into(self, state: object, output: object, max_bytes: int) -> None: ...
 
@@ -350,7 +378,9 @@ class NativeChargeEagerMvpPlan:
     def construction_profile(
         self,
     ) -> tuple[int, int, int, int, int, int, int, int, int, int]: ...
-    def csr(self) -> tuple[object, object, object]: ...
+    def csr(
+        self, max_bytes: int
+    ) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]: ...
     def coo(self, max_bytes: int) -> tuple[object, object, object]: ...
     def dense(self, max_bytes: int) -> object: ...
     def apply(self, state: object, max_bytes: int) -> object: ...
@@ -363,10 +393,10 @@ def charge_sector_plan_compact(
     local_dimensions: Sequence[int],
     axis_kinds: Sequence[int],
     axis_indices: Sequence[int],
-    fermion_weights: object,
-    boson_weights: object,
-    qubit_levels: object,
-    qudit_weights: object,
+    fermion_weights: Sequence[Sequence[int]],
+    boson_weights: Sequence[Sequence[int]],
+    qubit_levels: Sequence[Sequence[tuple[int, int]]],
+    qudit_weights: Sequence[Sequence[int]],
     target: Sequence[int],
     max_bytes: int,
 ) -> NativeChargeSectorPlan: ...
@@ -445,7 +475,7 @@ def structured_hybrid_canonicalize(
     nqubits: int,
     n_qudit_sites: int,
     qudit_dimension: int,
-    input: object,
+    input: HybridCanonicalInput,
     max_bytes: int,
 ) -> NativeHybridOperatorHandle: ...
 def structured_hybrid_jordan_wigner(
@@ -454,7 +484,7 @@ def structured_hybrid_jordan_wigner(
     nqubits: int,
     n_qudit_sites: int,
     qudit_dimension: int,
-    input: object,
+    input: HybridJordanWignerInput,
     max_bytes: int,
 ) -> NativeHybridOperatorHandle: ...
 def majorana_canonicalize(
@@ -505,6 +535,8 @@ class NativeU1RestrictedOperator:
     def particle_number(self) -> int: ...
     @property
     def dimension(self) -> int: ...
+    @property
+    def transition_count(self) -> int: ...
     def apply(self, state: object, max_bytes: int) -> object: ...
     def apply_into(self, state: object, output: object, max_bytes: int) -> None: ...
     def mvp_plan(self, max_bytes: int) -> NativeU1MvpPlan: ...
@@ -761,7 +793,14 @@ def pauli_mvp_plan_handle(
 ) -> NativeMvpPlan: ...
 def pauli_backend_plan_handle(
     handle: NativePauliOperatorHandle, max_bytes: int
-) -> tuple[int, int, int, Sequence[int], Sequence[int], Sequence[complex]]: ...
+) -> tuple[
+    int,
+    int,
+    int,
+    np.ndarray[Any, Any],
+    np.ndarray[Any, Any],
+    np.ndarray[Any, Any],
+]: ...
 def pauli_commutes(
     nqubits: int,
     x_words_left: Sequence[int],

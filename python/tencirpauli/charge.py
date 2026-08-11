@@ -1347,6 +1347,34 @@ class ChargeRestrictedOperator:
             (self.dimension, self.dimension),
         )
 
+    def compile(
+        self,
+        target: str,
+        *,
+        storage: ChargeStorage = "lazy",
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> Union[
+        np.ndarray[Any, Any],
+        COOMatrix,
+        CSRMatrix,
+        ChargeMvpPlan,
+        ChargeLazyMvpPlan,
+    ]:
+        """Compile one supported restricted-operator target.
+
+        Restricted operators support dense/COO/CSR materialization and native
+        MVP plans. Backend MVP is intentionally unavailable for this family.
+        """
+        if target == "dense":
+            return self.dense(max_bytes=max_bytes)
+        if target == "coo":
+            return self.coo(max_bytes=max_bytes)
+        if target == "csr":
+            return self.csr(max_bytes=max_bytes)
+        if target == "native_mvp":
+            return self.mvp_plan(storage=storage, max_bytes=max_bytes)
+        raise ValueError("target must be one of 'dense', 'coo', 'csr', or 'native_mvp'")
+
 
 def analyze_charge(
     operator: Union[_StructuredOperator, PauliOperator],

@@ -706,16 +706,15 @@ impl NativeChargeEagerMvpPlan {
         )
     }
 
-    fn csr<'py>(&self, py: Python<'py>) -> ChargeCsrArrays<'py> {
-        let (indptr, columns, values) = self
-            .graph
-            .to_u64_arrays(u128::MAX)
-            .expect("validated charge CSR graph is always readable");
-        (
+    fn csr<'py>(&self, py: Python<'py>, max_bytes: u128) -> PyResult<ChargeCsrArrays<'py>> {
+        let (indptr, columns, values) = py
+            .allow_threads(|| self.graph.to_u64_arrays(max_bytes))
+            .map_err(map_error)?;
+        Ok((
             PyArray1::from_vec(py, indptr),
             PyArray1::from_vec(py, columns),
             PyArray1::from_vec(py, values),
-        )
+        ))
     }
 
     fn coo<'py>(&self, py: Python<'py>, max_bytes: u128) -> PyResult<ChargeCooArrays<'py>> {

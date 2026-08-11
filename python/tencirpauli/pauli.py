@@ -322,8 +322,13 @@ class PauliOperator:
     )
 
     def __init__(
-        self, nqubits: int, terms: Iterable[Tuple[PauliInput, complex]]
+        self,
+        nqubits: int,
+        terms: Iterable[Tuple[PauliInput, complex]],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> None:
+        _validate_max_bytes(max_bytes)
         normalized_terms = tuple(terms)
         array_input = _normalize_code_array_inputs(nqubits, normalized_terms)
         if array_input is None:
@@ -335,7 +340,7 @@ class PauliOperator:
                 structures,
                 coefficients_re,
                 coefficients_im,
-                _effective_max_bytes(DEFAULT_MAX_BYTES),
+                _effective_max_bytes(max_bytes),
             )
             _initialize_native_handle(self, handle)
         else:
@@ -343,7 +348,7 @@ class PauliOperator:
                 nqubits,
                 array_input[0],
                 array_input[1],
-                _effective_max_bytes(DEFAULT_MAX_BYTES),
+                _effective_max_bytes(max_bytes),
             )
             _initialize_native_handle(self, handle)
 
@@ -366,7 +371,11 @@ class PauliOperator:
 
     @classmethod
     def from_terms(
-        cls, nqubits: int, terms: Iterable[Tuple[PauliInput, complex]]
+        cls,
+        nqubits: int,
+        terms: Iterable[Tuple[PauliInput, complex]],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "PauliOperator":
         """Construct and canonicalize mixed string, code, or word terms.
 
@@ -382,26 +391,29 @@ class PauliOperator:
             >>> operator.compile("dense").shape
             (4, 4)
         """
-        return cls(nqubits, terms)
+        return cls(nqubits, terms, max_bytes=max_bytes)
 
     @classmethod
     def from_code_arrays(
         cls,
         structures: Sequence[Sequence[int]],
         coefficients: Sequence[complex],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "PauliOperator":
         """Construct from a batch of code rows and complex coefficients.
 
         This is the preferred constructor for large array-backed inputs because
         it makes one coarse-grained native canonicalization call.
         """
+        _validate_max_bytes(max_bytes)
         code_array, coefficient_array = _normalize_code_arrays(structures, coefficients)
         nqubits = int(code_array.shape[1])
         handle = _native.pauli_operator_native_array(
             nqubits,
             code_array,
             coefficient_array,
-            _effective_max_bytes(DEFAULT_MAX_BYTES),
+            _effective_max_bytes(max_bytes),
         )
         instance = object.__new__(cls)
         _initialize_native_handle(instance, handle)
@@ -496,13 +508,19 @@ class PauliOperator:
         )
 
     @classmethod
-    def from_strings(cls, terms: Iterable[Tuple[str, complex]]) -> "PauliOperator":
+    def from_strings(
+        cls,
+        terms: Iterable[Tuple[str, complex]],
+        *,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> "PauliOperator":
         """Construct an operator from strings, inferring the common qubit count."""
+        _validate_max_bytes(max_bytes)
         normalized = tuple(terms)
         if not normalized:
             raise ValueError("cannot infer nqubits from an empty term sequence")
         nqubits = len(normalized[0][0])
-        return cls(nqubits, normalized)
+        return cls(nqubits, normalized, max_bytes=max_bytes)
 
     @classmethod
     def _from_native_handle(
