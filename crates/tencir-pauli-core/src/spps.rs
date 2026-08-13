@@ -189,17 +189,17 @@ impl SPPSEngine {
         if !observable.is_hermitian(0.0) {
             return Err(PauliError::NonHermitianExpectation);
         }
-        if operations
-            .iter()
-            .any(|operation| matches!(operation.kind, GateKind::CustomPtm { .. }))
-        {
+        if operations.iter().any(|operation| {
+            matches!(
+                operation.kind,
+                GateKind::CustomPtm { .. } | GateKind::Channel { .. }
+            )
+        }) {
             return Err(PauliError::UnsupportedSppsGate);
         }
         let mut slots = HashSet::new();
         for operation in &operations {
-            if let Some(slot) = operation.parameter_slot() {
-                slots.insert(slot);
-            }
+            slots.extend(operation.parameter_slots());
         }
         let nparameters = slots.iter().copied().max().map_or(0, |slot| slot + 1);
         if slots.len() != nparameters || (0..nparameters).any(|slot| !slots.contains(&slot)) {
@@ -269,6 +269,7 @@ impl SPPSEngine {
                     source_index,
                 },
                 GateKind::CustomPtm { .. } => unreachable!("custom PTM was rejected above"),
+                GateKind::Channel { .. } => unreachable!("channel was rejected above"),
             })
             .collect();
         Ok(Self {

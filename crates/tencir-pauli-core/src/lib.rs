@@ -101,7 +101,9 @@ pub use charge_sector::{
 pub use circuit_ir::{AngleRef, CircuitGate, CircuitProgram, CIRCUIT_SCHEMA_VERSION};
 pub use csr::{CsrApplyPolicy, CsrGraph, CsrIndex};
 pub use error::PauliError;
-pub use gate::{Clifford1, Clifford2, GateOperation, ParameterRef, RotationAxis};
+pub use gate::{
+    ChannelKind, Clifford1, Clifford2, GateOperation, ParameterRef, RotationAxis, ScalarRef,
+};
 pub use grouping::{
     compatibility_matrix, group_words, group_words_bounded, incompatibility_edges,
     GroupingAlgorithm, GroupingMode, DEFAULT_MAX_GROUPING_ENTRIES,

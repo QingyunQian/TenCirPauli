@@ -21,7 +21,6 @@ from .propagation import (
     ProductBlochState,
     ProfiledExpectation,
     PropagationEngine,
-    PropagationValueAndGradient,
     ZeroState,
 )
 
@@ -33,6 +32,17 @@ _CircuitT = TypeVar("_CircuitT", bound="_CircuitBuilder")
 
 _FIXED_GATES = {"x", "y", "z", "h", "s", "sdg", "cnot", "cz", "swap"}
 _ROTATION_GATES = {"rx", "ry", "rz", "rxx", "ryy", "rzz"}
+_CHANNEL_GATES = {"depolarizing", "phasedamping", "amplitudedamping"}
+_QIR_CHANNEL_NAMES = {
+    "depolarizing": "depolarizing",
+    "phasedamping": "phase_damping",
+    "amplitudedamping": "amplitude_damping",
+}
+_CHANNEL_PARAMETER_NAMES = {
+    "depolarizing": ("px", "py", "pz"),
+    "phasedamping": ("gamma",),
+    "amplitudedamping": ("gamma", "p"),
+}
 _ONE_QUBIT_GATES = {"x", "y", "z", "h", "s", "sdg", "rx", "ry", "rz"}
 _KIND_TO_NAME = {
     0: "x",
@@ -70,11 +80,40 @@ def _validate_wires(nqubits: int, wires: Sequence[int], arity: int) -> tuple[int
     return normalized
 
 
+def _concrete_channel_value(value: object, name: str) -> float:
+    if _is_jax_value(value):
+        raise TypeError(
+            f"JAX-valued channel parameters require expectation_jax(); "
+            f"native terminals accept concrete {name}"
+        )
+    normalized = _concrete_angle(value)
+    return normalized
+
+
+def _validate_channel_parameters(
+    name: str, parameters: Sequence[tuple[str, Angle]]
+) -> None:
+    concrete = [
+        (parameter_name, _concrete_channel_value(value, parameter_name))
+        for parameter_name, value in parameters
+        if not _is_jax_value(value)
+    ]
+    for parameter_name, value in concrete:
+        if name == "depolarizing" and value < 0.0:
+            raise ValueError(f"{parameter_name} must be non-negative")
+        if name != "depolarizing" and not 0.0 <= value <= 1.0:
+            raise ValueError(f"{parameter_name} must be in [0, 1]")
+    if len(concrete) == len(parameters) and name == "depolarizing":
+        if sum(value for _, value in concrete) > 1.0:
+            raise ValueError("depolarizing probabilities must sum to at most 1")
+
+
 @dataclass(frozen=True)
 class _PropagationOperation:
     name: str
     wires: tuple[int, ...]
     theta: Optional[Angle] = None
+    channel_parameters: tuple[tuple[str, Angle], ...] = ()
     payload: Optional[tuple[float, ...]] = None
 
 
@@ -82,7 +121,31 @@ class _PropagationOperation:
 class _PropagationObjective:
     engine: PropagationEngine
     angles: tuple[Angle, ...]
+    channel_values: tuple[Angle, ...]
     gradient: bool
+
+
+@dataclass(frozen=True)
+class PropagationChannelParameter:
+    """Public metadata for one channel scalar occurrence."""
+
+    operation_index: int
+    operation: str
+    wires: tuple[int, ...]
+    parameter_name: str
+
+
+@dataclass(frozen=True)
+class PropagationCircuitValueAndGradient:
+    """Circuit value with separate rotation and channel gradients."""
+
+    value: float
+    gradient: np.ndarray[Any, Any]
+    channel_gradient: np.ndarray[Any, Any]
+
+    @property
+    def angle_gradient(self) -> np.ndarray[Any, Any]:
+        return self.gradient
 
 
 def _operation_from_tape(
@@ -95,20 +158,40 @@ def _operation_from_tape(
         if len(payload) != dimension * dimension:
             raise ValueError("invalid PTM payload in gate tape")
         return _PropagationOperation("ptm", ptm_wires, payload=tuple(payload))
-    name = _KIND_TO_NAME.get(kind)
-    if name is None:
+    if kind in (16, 17, 18):
+        name = {16: "depolarizing", 17: "phasedamping", 18: "amplitudedamping"}[kind]
+        names = _CHANNEL_PARAMETER_NAMES[name]
+        refs: list[Angle] = []
+        if parameter >= 0:
+            raise ValueError("TensorCircuit conversion must contain concrete channels")
+        refs.append(_angle(angle))
+        for encoded in payload:
+            if encoded < 0.0:
+                raise ValueError(
+                    "TensorCircuit conversion must contain concrete channels"
+                )
+            refs.append(_angle(encoded))
+        if len(refs) != len(names):
+            raise ValueError("invalid channel payload in gate tape")
+        return _PropagationOperation(
+            name,
+            (wire0,),
+            channel_parameters=tuple(zip(names, refs)),
+        )
+    gate_name = _KIND_TO_NAME.get(kind)
+    if gate_name is None:
         raise ValueError(f"unsupported gate kind {kind}")
-    arity = 1 if name in _ONE_QUBIT_GATES else 2
+    arity = 1 if gate_name in _ONE_QUBIT_GATES else 2
     wires: tuple[int, ...] = _validate_wires(
         max(wire0 + 1, wire1 + 1 if arity == 2 else wire0 + 1),
         (wire0,) if arity == 1 else (wire0, wire1),
         arity,
     )
-    if name in _ROTATION_GATES:
+    if gate_name in _ROTATION_GATES:
         if parameter >= 0:
             raise ValueError("TensorCircuit conversion must contain concrete angles")
-        return _PropagationOperation(name, wires, theta=_angle(angle))
-    return _PropagationOperation(name, wires)
+        return _PropagationOperation(gate_name, wires, theta=_angle(angle))
+    return _PropagationOperation(gate_name, wires)
 
 
 class _CircuitBuilder:
@@ -145,16 +228,72 @@ class _CircuitBuilder:
         """Number of gradient-supported gate-angle occurrences."""
         return sum(operation.theta is not None for operation in self._operations)
 
+    @property
+    def channel_parameter_count(self) -> int:
+        """Number of supported channel scalar occurrences."""
+        return sum(len(operation.channel_parameters) for operation in self._operations)
+
+    @property
+    def parameter_count(self) -> int:
+        """Total number of rotation and channel scalar occurrences."""
+        return self.angle_count + self.channel_parameter_count
+
+    @property
+    def channel_parameter_layout(self) -> tuple[PropagationChannelParameter, ...]:
+        """Return the authoritative channel-gradient occurrence layout."""
+        result: list[PropagationChannelParameter] = []
+        for operation_index, operation in enumerate(self._operations):
+            for parameter_name, _ in operation.channel_parameters:
+                result.append(
+                    PropagationChannelParameter(
+                        operation_index,
+                        operation.name,
+                        operation.wires,
+                        parameter_name,
+                    )
+                )
+        return tuple(result)
+
     def _append(
         self,
         name: str,
         wires: Sequence[int],
         theta: Optional[object] = None,
         payload: Optional[Sequence[float] | np.ndarray[Any, Any]] = None,
+        channel_parameters: Optional[Sequence[tuple[str, object]]] = None,
     ) -> None:
         normalized_name = name.lower()
-        if normalized_name not in _FIXED_GATES | _ROTATION_GATES | {"ptm"}:
+        if normalized_name not in _FIXED_GATES | _ROTATION_GATES | _CHANNEL_GATES | {
+            "ptm"
+        }:
             raise ValueError(f"unsupported propagation gate {name!r}")
+        if normalized_name in _CHANNEL_GATES:
+            if not getattr(self, "_supports_channels", False):
+                raise ValueError("SPPSCircuit does not support built-in channels")
+            normalized_wires = _validate_wires(self.nqubits, wires, 1)
+            expected_names = _CHANNEL_PARAMETER_NAMES[normalized_name]
+            if (
+                channel_parameters is None
+                or tuple(parameter_name for parameter_name, _ in channel_parameters)
+                != expected_names
+            ):
+                raise ValueError(f"{normalized_name} requires {expected_names}")
+            normalized_parameters = tuple(
+                (parameter_name, _angle(value))
+                for parameter_name, value in channel_parameters
+            )
+            _validate_channel_parameters(normalized_name, normalized_parameters)
+            operation = _PropagationOperation(
+                normalized_name,
+                normalized_wires,
+                channel_parameters=normalized_parameters,
+            )
+            self._operations.append(operation)
+            self._generation += 1
+            self._forward_tape_cache = None
+            self._gradient_tape_cache = None
+            self._objective_cache = None
+            return
         if normalized_name == "ptm":
             if not self._supports_ptm:
                 raise ValueError("SPPSCircuit does not support PTM gates")
@@ -238,9 +377,30 @@ class _CircuitBuilder:
     def rzz(self, wire0: int, wire1: int, theta: object = 0.0) -> None:
         self._append("rzz", (wire0, wire1), theta)
 
+    def depolarizing(self, wire: int, *, px: object, py: object, pz: object) -> None:
+        """Append TensorCircuit-compatible depolarizing noise."""
+        self._append(
+            "depolarizing",
+            (wire,),
+            channel_parameters=(("px", px), ("py", py), ("pz", pz)),
+        )
+
+    def phasedamping(self, wire: int, *, gamma: object) -> None:
+        """Append TensorCircuit-compatible phase damping noise."""
+        self._append("phasedamping", (wire,), channel_parameters=(("gamma", gamma),))
+
+    def amplitudedamping(self, wire: int, *, gamma: object, p: object) -> None:
+        """Append TensorCircuit-compatible generalized amplitude damping."""
+        self._append(
+            "amplitudedamping",
+            (wire,),
+            channel_parameters=(("gamma", gamma), ("p", p)),
+        )
+
     def _build_tape(self, gradient: bool) -> GateTape:
         tape = GateTape(self.nqubits)
         angle_slot = 0
+        channel_slot = self.angle_count
         for operation in self._operations:
             if operation.name == "ptm":
                 assert operation.payload is not None
@@ -253,6 +413,17 @@ class _CircuitBuilder:
                 )
             elif operation.name in _FIXED_GATES:
                 getattr(tape, operation.name)(*operation.wires)
+            elif operation.name in _CHANNEL_GATES:
+                values: dict[str, object] = {}
+                for parameter_name, value in operation.channel_parameters:
+                    if gradient:
+                        values[f"{parameter_name}_parameter"] = channel_slot
+                        channel_slot += 1
+                    else:
+                        values[parameter_name] = _concrete_channel_value(
+                            value, parameter_name
+                        )
+                getattr(tape, operation.name)(*operation.wires, **values)
             else:
                 assert operation.theta is not None
                 if gradient:
@@ -282,6 +453,24 @@ class _CircuitBuilder:
             operation.theta
             for operation in self._operations
             if operation.theta is not None
+        )
+
+    def _channel_values(self) -> tuple[Angle, ...]:
+        return tuple(
+            value
+            for operation in self._operations
+            for _, value in operation.channel_parameters
+        )
+
+    def _parameter_values(self) -> np.ndarray[Any, Any]:
+        values = list(self._angle_values()) + [
+            _concrete_channel_value(value, name)
+            for operation in self._operations
+            for name, value in operation.channel_parameters
+        ]
+        return cast(
+            np.ndarray[Any, Any],
+            np.ascontiguousarray(np.asarray(values, dtype=np.float64)),
         )
 
     def _objective(
@@ -316,16 +505,28 @@ class _CircuitBuilder:
             for operation in self._operations
             if operation.theta is not None
         )
-        objective = _PropagationObjective(engine, angles, gradient)
+        objective = _PropagationObjective(
+            engine, angles, self._channel_values(), gradient
+        )
         self._objective_cache = (key, objective)
         return objective
 
     def to_qir(self) -> list[dict[str, object]]:
         result: list[dict[str, object]] = []
         for operation in self._operations:
-            item: dict[str, object] = {"name": operation.name, "index": operation.wires}
+            item: dict[str, object] = {
+                "name": _QIR_CHANNEL_NAMES.get(operation.name, operation.name),
+                "index": operation.wires,
+            }
             if operation.theta is not None:
                 item["parameters"] = {"theta": _concrete_angle(operation.theta)}
+            if operation.channel_parameters:
+                item["is_channel"] = True
+                item["channel_parameters"] = {
+                    name: _concrete_channel_value(value, name)
+                    for name, value in operation.channel_parameters
+                }
+                item["channel_unitary"] = operation.name == "depolarizing"
             if operation.payload is not None:
                 dimension = 4 if len(operation.wires) == 1 else 16
                 item["matrix"] = tuple(
@@ -350,6 +551,12 @@ class _CircuitBuilder:
             operation[0] == 15 for operation in converted.tape._operations
         ):
             raise ValueError("SPPSCircuit conversion does not support PTM gates")
+        if not getattr(cls, "_supports_channels", False) and any(
+            operation[0] in (16, 17, 18) for operation in converted.tape._operations
+        ):
+            raise ValueError(
+                "SPPSCircuit conversion does not support built-in channels"
+            )
         result = cls(
             converted.tape.nqubits,
             initial_state=initial_state,
@@ -405,6 +612,35 @@ class _CircuitBuilder:
                     )
                 result._append("ptm", wires, payload=matrix)
                 continue
+            if name in _QIR_CHANNEL_NAMES.values():
+                if item.get("is_channel") is not True:
+                    raise ValueError(f"QIR channel {name!r} requires is_channel=True")
+                if not isinstance(item.get("channel_unitary"), bool):
+                    raise ValueError("QIR channel_unitary must be a boolean")
+                inverse_name = {
+                    value: key for key, value in _QIR_CHANNEL_NAMES.items()
+                }[name]
+                wires = _validate_wires(nqubits, tuple(wires_value), 1)
+                channel_values = item.get("channel_parameters")
+                expected_names = _CHANNEL_PARAMETER_NAMES[inverse_name]
+                if not isinstance(channel_values, Mapping) or set(
+                    channel_values
+                ) != set(expected_names):
+                    raise ValueError(
+                        f"{name} requires channel parameters {expected_names}"
+                    )
+                values = []
+                for parameter_name in expected_names:
+                    value = channel_values[parameter_name]
+                    if _is_jax_value(value):
+                        raise TypeError(
+                            "QIR channel values must be concrete real scalars"
+                        )
+                    values.append(_concrete_channel_value(value, parameter_name))
+                getattr(result, inverse_name)(
+                    wires[0], **dict(zip(expected_names, values))
+                )
+                continue
             if name not in _FIXED_GATES | _ROTATION_GATES:
                 raise ValueError(f"unsupported propagation QIR gate {name!r}")
             arity = 1 if name in _ONE_QUBIT_GATES else 2
@@ -428,6 +664,7 @@ class PropagationCircuit(_CircuitBuilder):
     """Deterministic Pauli-propagation circuit facade."""
 
     _supports_ptm = True
+    _supports_channels = True
 
     def ptm(
         self,
@@ -473,7 +710,7 @@ class PropagationCircuit(_CircuitBuilder):
         max_weight: Optional[int] = None,
         max_bytes: object = _USE_DEFAULT_MAX_BYTES,
         checkpoint_interval: Optional[int] = None,
-    ) -> PropagationValueAndGradient:
+    ) -> PropagationCircuitValueAndGradient:
         if not isinstance(observable, PauliOperator):
             raise TypeError("observable must be a PauliOperator")
         objective = self._objective(
@@ -485,8 +722,19 @@ class PropagationCircuit(_CircuitBuilder):
             max_bytes=self._options(max_bytes),
             gradient=True,
         )
-        return objective.engine.value_and_grad(
-            self._angle_values(), checkpoint_interval=checkpoint_interval
+        result = objective.engine.value_and_grad(
+            self._parameter_values(), checkpoint_interval=checkpoint_interval
+        )
+        angle_gradient = np.ascontiguousarray(
+            np.asarray(result.gradient[: self.angle_count], dtype=np.float64)
+        )
+        channel_gradient = np.ascontiguousarray(
+            np.asarray(result.gradient[self.angle_count :], dtype=np.float64)
+        )
+        angle_gradient.flags.writeable = False
+        channel_gradient.flags.writeable = False
+        return PropagationCircuitValueAndGradient(
+            float(result.value), angle_gradient, channel_gradient
         )
 
     def expectation_jax(
@@ -522,6 +770,7 @@ class PropagationCircuit(_CircuitBuilder):
         return native_expectation_jax(
             tuple(objective.angles),
             objective.engine,
+            channel_values=tuple(objective.channel_values),
             checkpoint_interval=checkpoint_interval,
         )
 
@@ -568,4 +817,8 @@ class PropagationCircuit(_CircuitBuilder):
         return objective.engine.profile(np.empty(0, dtype=np.float64))
 
 
-__all__ = ["PropagationCircuit"]
+__all__ = [
+    "PropagationChannelParameter",
+    "PropagationCircuit",
+    "PropagationCircuitValueAndGradient",
+]

@@ -5,8 +5,9 @@ use numpy::{PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use tencir_pauli_core::{
-    Clifford1, Clifford2, GateOperation, ParameterRef, PauliOperator, ProductState,
+    ChannelKind, Clifford1, Clifford2, GateOperation, ParameterRef, PauliOperator, ProductState,
     PropagationBatch, PropagationEngine, PropagationStats, PropagationTape, RotationAxis,
+    ScalarRef,
 };
 
 use crate::convert::map_error;
@@ -375,6 +376,32 @@ pub(crate) fn compile_operation(
             };
             GateOperation::custom_ptm(nqubits, &wires, matrix)
         }
+        16..=18 => {
+            let kind = match kind {
+                16 => ChannelKind::Depolarizing,
+                17 => ChannelKind::PhaseDamping,
+                _ => ChannelKind::AmplitudeDamping,
+            };
+            let expected: usize = match kind {
+                ChannelKind::Depolarizing => 3,
+                ChannelKind::PhaseDamping => 1,
+                ChannelKind::AmplitudeDamping => 2,
+            };
+            if matrix.len() != expected.saturating_sub(1) {
+                return Err(PyValueError::new_err(
+                    "invalid built-in channel parameter payload",
+                ));
+            }
+            let mut parameters = Vec::with_capacity(expected);
+            parameters.push(decode_scalar_ref(parameter, angle)?);
+            parameters.extend(
+                matrix
+                    .iter()
+                    .map(|value| decode_scalar_value(*value))
+                    .collect::<PyResult<Vec<_>>>()?,
+            );
+            GateOperation::channel(nqubits, kind, wire0, parameters)
+        }
         _ => Err(tencir_pauli_core::PauliError::InvalidClifford {
             context: "unknown propagation gate kind",
         }),
@@ -397,6 +424,38 @@ fn parameter_ref(parameter: i64, angle: f64) -> PyResult<ParameterRef> {
         Err(PyValueError::new_err(
             "rotation parameter must be -1 or a non-negative slot",
         ))
+    }
+}
+
+fn decode_scalar_ref(parameter: i64, value: f64) -> PyResult<ScalarRef> {
+    if parameter == -1 {
+        if !value.is_finite() {
+            return Err(PyValueError::new_err("channel parameter must be finite"));
+        }
+        Ok(ScalarRef::Static(value))
+    } else if parameter >= 0 {
+        Ok(ScalarRef::Slot(parameter as usize))
+    } else {
+        Err(PyValueError::new_err(
+            "channel parameter must be -1 or a non-negative slot",
+        ))
+    }
+}
+
+fn decode_scalar_value(value: f64) -> PyResult<ScalarRef> {
+    if !value.is_finite() {
+        return Err(PyValueError::new_err("channel parameter must be finite"));
+    }
+    if value < 0.0 {
+        let encoded = -value;
+        if encoded.fract() != 0.0 || encoded < 1.0 || encoded > (i64::MAX as f64) {
+            return Err(PyValueError::new_err(
+                "invalid encoded channel parameter slot",
+            ));
+        }
+        Ok(ScalarRef::Slot((encoded as i64 - 1) as usize))
+    } else {
+        Ok(ScalarRef::Static(value))
     }
 }
 

@@ -51,6 +51,8 @@ pub enum PauliError {
     InvalidPtmShape { expected: usize, actual: usize },
     /// A custom PTM entry is not finite.
     NonFinitePtm { index: usize },
+    /// A built-in channel has malformed or non-physical scalar values.
+    InvalidChannelParameters { context: &'static str },
     /// A reverse checkpoint interval is invalid.
     InvalidCheckpointInterval,
     /// An SPPS smoothing parameter is invalid.
@@ -149,6 +151,9 @@ impl fmt::Display for PauliError {
             }
             Self::NonFinitePtm { index } => {
                 write!(formatter, "PTM entry at index {index} is not finite")
+            }
+            Self::InvalidChannelParameters { context } => {
+                write!(formatter, "invalid channel parameters: {context}")
             }
             Self::InvalidCheckpointInterval => {
                 write!(

@@ -78,7 +78,16 @@ class GateTape:
     @property
     def nparameters(self) -> int:
         """Return one plus the largest runtime parameter slot, or zero."""
-        slots = [operation[3] for operation in self._operations if operation[3] >= 0]
+        slots: list[int] = []
+        for operation in self._operations:
+            if operation[3] >= 0:
+                slots.append(operation[3])
+            if operation[0] in (16, 17, 18):
+                slots.extend(
+                    int(-value - 1)
+                    for value in operation[5]
+                    if value < 0.0 and value == math.floor(value)
+                )
         return max(slots, default=-1) + 1
 
     def _wire(self, wire: int) -> int:
@@ -302,6 +311,101 @@ class GateTape:
         )
         self._version += 1
         self._native_cache = None
+
+    def _channel_ref(
+        self,
+        value: Optional[float],
+        parameter: Optional[int],
+        name: str,
+    ) -> tuple[float, int]:
+        if (value is None) == (parameter is None):
+            raise ValueError(f"provide exactly one of {name} or {name}_parameter")
+        if parameter is not None:
+            return 0.0, self._slot(parameter)
+        assert value is not None
+        if isinstance(value, (bool, np.bool_)):
+            raise TypeError(f"{name} must be a finite real scalar")
+        try:
+            normalized = float(value)
+        except (TypeError, ValueError) as error:
+            raise TypeError(f"{name} must be a finite real scalar") from error
+        if not math.isfinite(normalized):
+            raise ValueError(f"{name} must be finite")
+        return normalized, -1
+
+    def _channel(
+        self,
+        kind: int,
+        wire: int,
+        refs: Sequence[tuple[float, int]],
+        names: Sequence[str],
+    ) -> None:
+        first = self._wire(wire)
+        values = [value for value, slot in refs]
+        if kind == 16:
+            if any(value < 0.0 for value, slot in refs if slot == -1):
+                raise ValueError("depolarizing probabilities must be non-negative")
+            if all(slot == -1 for _, slot in refs) and sum(values) > 1.0:
+                raise ValueError("depolarizing probabilities must sum to at most 1")
+        elif kind in (17, 18):
+            for index, (value, slot) in enumerate(refs):
+                if slot == -1 and not 0.0 <= value <= 1.0:
+                    raise ValueError(f"{names[index]} must be in [0, 1]")
+        encoded = tuple(
+            float(value) if slot == -1 else -float(slot + 1) for value, slot in refs[1:]
+        )
+        first_value, first_slot = refs[0]
+        self._operations.append(
+            (kind, first, _WIRE_SENTINEL, first_slot, first_value, encoded)
+        )
+        self._version += 1
+        self._native_cache = None
+
+    def depolarizing(
+        self,
+        wire: int,
+        *,
+        px: Optional[float] = None,
+        py: Optional[float] = None,
+        pz: Optional[float] = None,
+        px_parameter: Optional[int] = None,
+        py_parameter: Optional[int] = None,
+        pz_parameter: Optional[int] = None,
+    ) -> None:
+        """Append TensorCircuit's Pauli-mixture depolarizing channel."""
+        refs = (
+            self._channel_ref(px, px_parameter, "px"),
+            self._channel_ref(py, py_parameter, "py"),
+            self._channel_ref(pz, pz_parameter, "pz"),
+        )
+        self._channel(16, wire, refs, ("px", "py", "pz"))
+
+    def phasedamping(
+        self,
+        wire: int,
+        *,
+        gamma: Optional[float] = None,
+        gamma_parameter: Optional[int] = None,
+    ) -> None:
+        """Append TensorCircuit-compatible phase damping."""
+        refs = (self._channel_ref(gamma, gamma_parameter, "gamma"),)
+        self._channel(17, wire, refs, ("gamma",))
+
+    def amplitudedamping(
+        self,
+        wire: int,
+        *,
+        gamma: Optional[float] = None,
+        p: Optional[float] = None,
+        gamma_parameter: Optional[int] = None,
+        p_parameter: Optional[int] = None,
+    ) -> None:
+        """Append TensorCircuit's generalized amplitude damping channel."""
+        refs = (
+            self._channel_ref(gamma, gamma_parameter, "gamma"),
+            self._channel_ref(p, p_parameter, "p"),
+        )
+        self._channel(18, wire, refs, ("gamma", "p"))
 
     def _native_operations(
         self,

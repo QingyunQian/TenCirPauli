@@ -13,7 +13,10 @@ use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::error::PauliError;
-use crate::gate::{Clifford1, Clifford2, GateKind, GateOperation, ParameterRef, RotationAxis};
+use crate::gate::{
+    validate_channel_values, ChannelKind, Clifford1, Clifford2, GateKind, GateOperation,
+    ParameterRef, RotationAxis, ScalarRef,
+};
 use crate::operator::{PauliOperator, PauliTerm};
 use crate::scalar::{is_exact_zero, Complex64};
 use crate::word::{packed_word_count, PauliPhase, PauliWord};
@@ -92,9 +95,7 @@ impl PropagationTape {
     ) -> Result<Arc<Self>, PauliError> {
         let mut slots = HashSet::new();
         for operation in &operations {
-            if let Some(slot) = operation.parameter_slot() {
-                slots.insert(slot);
-            }
+            slots.extend(operation.parameter_slots());
         }
         let nparameters = slots.iter().copied().max().map_or(0, |slot| slot + 1);
         if slots.len() != nparameters || (0..nparameters).any(|slot| !slots.contains(&slot)) {
@@ -107,6 +108,7 @@ impl PropagationTape {
                 .iter()
                 .map(operation_storage_bytes)
                 .try_fold(0usize, |sum, value| {
+                    let value = value?;
                     sum.checked_add(value).ok_or(PauliError::Overflow {
                         context: "estimating propagation transition storage",
                     })
@@ -1309,13 +1311,29 @@ fn validate_parameters(parameters: &[f64], expected: usize) -> Result<(), PauliE
     Ok(())
 }
 
-fn operation_storage_bytes(operation: &GateOperation) -> usize {
+fn operation_storage_bytes(operation: &GateOperation) -> Result<usize, PauliError> {
     match &operation.kind {
-        GateKind::CustomPtm { transitions, .. } => transitions
-            .iter()
-            .map(|row| row.len().saturating_mul(size_of::<(u8, f64)>()))
-            .sum(),
-        _ => size_of::<GateOperation>(),
+        GateKind::CustomPtm { transitions, .. } => {
+            transitions.iter().try_fold(0usize, |sum, row| {
+                let row_bytes =
+                    row.len()
+                        .checked_mul(size_of::<(u8, f64)>())
+                        .ok_or(PauliError::Overflow {
+                            context: "estimating propagation PTM transition storage",
+                        })?;
+                sum.checked_add(row_bytes).ok_or(PauliError::Overflow {
+                    context: "estimating propagation PTM transition storage",
+                })
+            })
+        }
+        GateKind::Channel { parameters, .. } => parameters
+            .len()
+            .checked_mul(size_of::<ScalarRef>())
+            .and_then(|bytes| bytes.checked_add(size_of::<GateOperation>()))
+            .ok_or(PauliError::Overflow {
+                context: "estimating propagation channel storage",
+            }),
+        _ => Ok(size_of::<GateOperation>()),
     }
 }
 
@@ -1341,6 +1359,10 @@ fn operation_branch_factor(operation: &GateOperation) -> usize {
     match &operation.kind {
         GateKind::Clifford1 { .. } | GateKind::Clifford2 { .. } => 1,
         GateKind::Rotation { .. } => 2,
+        GateKind::Channel { kind, .. } => match kind {
+            ChannelKind::AmplitudeDamping => 2,
+            ChannelKind::Depolarizing | ChannelKind::PhaseDamping => 1,
+        },
         GateKind::CustomPtm { transitions, .. } => {
             transitions.iter().map(Vec::len).max().unwrap_or(0)
         }
@@ -1428,6 +1450,33 @@ fn apply_operation(
             }
             aggregate(contributions, nqubits, cutoff)
         }
+        GateKind::Channel {
+            kind,
+            wire,
+            parameters: refs,
+        } => {
+            let values = resolve_channel(*kind, refs, parameters)?;
+            let mut contributions = Vec::with_capacity(
+                terms
+                    .len()
+                    .checked_mul(operation_branch_factor(operation))
+                    .ok_or(PauliError::Overflow {
+                        context: "estimating channel contribution storage",
+                    })?,
+            );
+            for term in terms {
+                let code = term.key.code_at(*wire);
+                for &(output, multiplier) in &channel_edges(*kind, code, &values) {
+                    if multiplier == 0.0 {
+                        continue;
+                    }
+                    let mut key = term.key.clone();
+                    key.set_code(*wire, output);
+                    contributions.push((key, term.coefficient * multiplier));
+                }
+            }
+            aggregate(contributions, nqubits, cutoff)
+        }
     }
 }
 
@@ -1457,10 +1506,10 @@ fn reverse_frame(
             parameters,
             cutoff,
             output_indices,
-            |output_index, multiplier, derivative, slot| {
+            |output_index, multiplier, derivatives| {
                 let output_adjoint = output_lambda[output_index];
                 input_lambda[input_index] += multiplier * output_adjoint;
-                if let Some(parameter_slot) = slot {
+                for &(parameter_slot, derivative) in derivatives {
                     gradient[parameter_slot] += term.coefficient.re * derivative * output_adjoint;
                 }
             },
@@ -1482,15 +1531,15 @@ fn visit_retained_edges<F>(
     mut visit: F,
 ) -> Result<(), PauliError>
 where
-    F: FnMut(usize, f64, f64, Option<usize>),
+    F: FnMut(usize, f64, &[(usize, f64)]),
 {
-    let mut emit = |key: PackedKey, multiplier: f64, derivative: f64, slot: Option<usize>| {
+    let mut emit = |key: PackedKey, multiplier: f64, derivatives: &[(usize, f64)]| {
         let scaled = term.coefficient * multiplier;
         if is_exact_zero(scaled) || cutoff.is_some_and(|limit| key.weight(nqubits) > limit) {
             return Ok::<(), PauliError>(());
         }
         if let Some(&output_index) = output_indices.get(&key) {
-            visit(output_index, multiplier, derivative, slot);
+            visit(output_index, multiplier, derivatives);
         }
         Ok(())
     };
@@ -1498,11 +1547,11 @@ where
     match &operation.kind {
         GateKind::Clifford1 { gate, wire } => {
             let (key, multiplier) = map_clifford1(&term.key, *gate, *wire);
-            emit(key, multiplier, 0.0, None)?;
+            emit(key, multiplier, &[])?;
         }
         GateKind::Clifford2 { gate, wire0, wire1 } => {
             let (key, multiplier) = map_clifford2(&term.key, *gate, *wire0, *wire1);
-            emit(key, multiplier, 0.0, None)?;
+            emit(key, multiplier, &[])?;
         }
         GateKind::Rotation {
             axis,
@@ -1520,20 +1569,25 @@ where
             match phase {
                 PauliPhase::PlusI | PauliPhase::MinusI => {
                     if cosine != 0.0 {
-                        emit(term.key.clone(), cosine, slot.map_or(0.0, |_| -sine), slot)?;
+                        if let Some(index) = slot {
+                            let derivatives = [(index, -sine)];
+                            emit(term.key.clone(), cosine, &derivatives)?;
+                        } else {
+                            emit(term.key.clone(), cosine, &[])?;
+                        }
                     }
                     if sine != 0.0 {
                         let sign = phase_sign_i(phase);
-                        emit(
-                            product,
-                            sine * sign,
-                            slot.map_or(0.0, |_| cosine * sign),
-                            slot,
-                        )?;
+                        if let Some(index) = slot {
+                            let derivatives = [(index, cosine * sign)];
+                            emit(product, sine * sign, &derivatives)?;
+                        } else {
+                            emit(product, sine * sign, &[])?;
+                        }
                     }
                 }
                 PauliPhase::PlusOne | PauliPhase::MinusOne => {
-                    emit(term.key.clone(), 1.0, 0.0, None)?;
+                    emit(term.key.clone(), 1.0, &[])?;
                 }
             }
         }
@@ -1550,7 +1604,75 @@ where
                 if let Some(second_wire) = wire1 {
                     key.set_code(*second_wire, second);
                 }
-                emit(key, coefficient, 0.0, None)?;
+                emit(key, coefficient, &[])?;
+            }
+        }
+        GateKind::Channel {
+            kind,
+            wire,
+            parameters: refs,
+        } => {
+            let values = resolve_channel(*kind, refs, parameters)?;
+            let code = term.key.code_at(*wire);
+            match *kind {
+                ChannelKind::Depolarizing => {
+                    let mut derivatives = [(0usize, 0.0); 3];
+                    let derivative_specs: &[(usize, f64)] = match code {
+                        1 => &[(1, -2.0), (2, -2.0)],
+                        2 => &[(0, -2.0), (2, -2.0)],
+                        3 => &[(0, -2.0), (1, -2.0)],
+                        _ => &[],
+                    };
+                    let count =
+                        collect_channel_derivatives(refs, derivative_specs, &mut derivatives);
+                    let multiplier = channel_edges(*kind, code, &values)[0].1;
+                    emit(term.key.clone(), multiplier, &derivatives[..count])?;
+                }
+                ChannelKind::PhaseDamping => {
+                    let multiplier = channel_edges(*kind, code, &values)[0].1;
+                    let derivative_specs: &[(usize, f64)] =
+                        if (code == 1 || code == 2) && multiplier != 0.0 {
+                            &[(0, -0.5 / multiplier)]
+                        } else {
+                            &[]
+                        };
+                    let mut derivatives = [(0usize, 0.0); 3];
+                    let count =
+                        collect_channel_derivatives(refs, derivative_specs, &mut derivatives);
+                    emit(term.key.clone(), multiplier, &derivatives[..count])?;
+                }
+                ChannelKind::AmplitudeDamping => {
+                    let edges = channel_edges(*kind, code, &values);
+                    if code == 3 {
+                        let mut derivatives = [(0usize, 0.0); 3];
+                        let count = collect_channel_derivatives(
+                            refs,
+                            &[(0, 2.0 * values[1] - 1.0), (1, 2.0 * values[0])],
+                            &mut derivatives,
+                        );
+                        let mut key = term.key.clone();
+                        key.set_code(*wire, edges[0].0);
+                        emit(key, edges[0].1, &derivatives[..count])?;
+
+                        let count =
+                            collect_channel_derivatives(refs, &[(0, -1.0)], &mut derivatives);
+                        let mut key = term.key.clone();
+                        key.set_code(*wire, edges[1].0);
+                        emit(key, edges[1].1, &derivatives[..count])?;
+                    } else {
+                        let multiplier = edges[0].1;
+                        let derivative_specs: &[(usize, f64)] =
+                            if (code == 1 || code == 2) && multiplier != 0.0 {
+                                &[(0, -0.5 / multiplier)]
+                            } else {
+                                &[]
+                            };
+                        let mut derivatives = [(0usize, 0.0); 3];
+                        let count =
+                            collect_channel_derivatives(refs, derivative_specs, &mut derivatives);
+                        emit(term.key.clone(), multiplier, &derivatives[..count])?;
+                    }
+                }
             }
         }
     }
@@ -1798,6 +1920,76 @@ pub(crate) fn resolve_parameter(
             Ok((angle.cos(), angle.sin()))
         }
     }
+}
+
+fn resolve_channel(
+    kind: ChannelKind,
+    references: &[ScalarRef],
+    parameters: &[f64],
+) -> Result<Vec<f64>, PauliError> {
+    let values = references
+        .iter()
+        .map(|reference| match reference {
+            ScalarRef::Static(value) => Ok(*value),
+            ScalarRef::Slot(slot) => {
+                parameters
+                    .get(*slot)
+                    .copied()
+                    .ok_or(PauliError::InvalidParameterLength {
+                        expected: slot.saturating_add(1),
+                        actual: parameters.len(),
+                    })
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_channel_values(kind, &values)?;
+    Ok(values)
+}
+
+fn channel_edges(kind: ChannelKind, code: u8, values: &[f64]) -> [(u8, f64); 2] {
+    match kind {
+        ChannelKind::Depolarizing => {
+            let multiplier = match code {
+                0 => 1.0,
+                1 => 1.0 - 2.0 * (values[1] + values[2]),
+                2 => 1.0 - 2.0 * (values[0] + values[2]),
+                3 => 1.0 - 2.0 * (values[0] + values[1]),
+                _ => unreachable!("packed local Pauli codes are always in 0..4"),
+            };
+            [(code, multiplier), (0, 0.0)]
+        }
+        ChannelKind::PhaseDamping => {
+            let multiplier = match code {
+                1 | 2 => (1.0 - values[0]).sqrt(),
+                _ => 1.0,
+            };
+            [(code, multiplier), (0, 0.0)]
+        }
+        ChannelKind::AmplitudeDamping => match code {
+            0 => [(0, 1.0), (0, 0.0)],
+            1 | 2 => [(code, (1.0 - values[0]).sqrt()), (0, 0.0)],
+            3 => [
+                (0, values[0] * (2.0 * values[1] - 1.0)),
+                (3, 1.0 - values[0]),
+            ],
+            _ => unreachable!("packed local Pauli codes are always in 0..4"),
+        },
+    }
+}
+
+fn collect_channel_derivatives(
+    references: &[ScalarRef],
+    specifications: &[(usize, f64)],
+    output: &mut [(usize, f64); 3],
+) -> usize {
+    let mut count = 0;
+    for &(reference_index, derivative) in specifications {
+        if let ScalarRef::Slot(slot) = references[reference_index] {
+            output[count] = (slot, derivative);
+            count += 1;
+        }
+    }
+    count
 }
 
 pub(crate) fn phase_sign_i(phase: PauliPhase) -> f64 {

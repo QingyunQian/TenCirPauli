@@ -29,6 +29,21 @@ pub enum RotationAxis {
     Z,
 }
 
+/// A built-in one-qubit channel with TensorCircuit-compatible parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelKind {
+    Depolarizing,
+    PhaseDamping,
+    AmplitudeDamping,
+}
+
+/// A static channel scalar or a reference to a runtime scalar slot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ScalarRef {
+    Static(f64),
+    Slot(usize),
+}
+
 /// A static angle or a reference to a runtime parameter slot.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ParameterRef {
@@ -63,6 +78,11 @@ pub(crate) enum GateKind {
         wire0: usize,
         wire1: Option<usize>,
         transitions: Vec<Vec<(u8, f64)>>,
+    },
+    Channel {
+        kind: ChannelKind,
+        wire: usize,
+        parameters: Vec<ScalarRef>,
     },
 }
 
@@ -165,15 +185,92 @@ impl GateOperation {
         })
     }
 
-    pub(crate) fn parameter_slot(&self) -> Option<usize> {
-        match self.kind {
+    /// Construct a validated built-in one-qubit channel operation.
+    pub fn channel(
+        nqubits: usize,
+        kind: ChannelKind,
+        wire: usize,
+        parameters: Vec<ScalarRef>,
+    ) -> Result<Self, PauliError> {
+        validate_wire(nqubits, wire)?;
+        let expected = match kind {
+            ChannelKind::Depolarizing => 3,
+            ChannelKind::PhaseDamping => 1,
+            ChannelKind::AmplitudeDamping => 2,
+        };
+        if parameters.len() != expected {
+            return Err(PauliError::InvalidChannelParameters {
+                context: "wrong built-in channel parameter count",
+            });
+        }
+        if parameters
+            .iter()
+            .any(|parameter| matches!(parameter, ScalarRef::Static(value) if !value.is_finite()))
+        {
+            return Err(PauliError::InvalidChannelParameters {
+                context: "channel parameters must be finite",
+            });
+        }
+        if parameters
+            .iter()
+            .all(|parameter| matches!(parameter, ScalarRef::Static(_)))
+        {
+            let values = parameters
+                .iter()
+                .map(|parameter| match parameter {
+                    ScalarRef::Static(value) => *value,
+                    ScalarRef::Slot(_) => unreachable!(),
+                })
+                .collect::<Vec<_>>();
+            validate_channel_values(kind, &values)?;
+        }
+        Ok(Self {
+            kind: GateKind::Channel {
+                kind,
+                wire,
+                parameters,
+            },
+        })
+    }
+
+    pub(crate) fn parameter_slots(&self) -> Vec<usize> {
+        match &self.kind {
             GateKind::Rotation {
                 parameter: ParameterRef::Slot(slot),
                 ..
-            } => Some(slot),
-            _ => None,
+            } => vec![*slot],
+            GateKind::Channel { parameters, .. } => parameters
+                .iter()
+                .filter_map(|parameter| match parameter {
+                    ScalarRef::Slot(slot) => Some(*slot),
+                    ScalarRef::Static(_) => None,
+                })
+                .collect(),
+            _ => Vec::new(),
         }
     }
+}
+
+pub(crate) fn validate_channel_values(kind: ChannelKind, values: &[f64]) -> Result<(), PauliError> {
+    let valid = match kind {
+        ChannelKind::Depolarizing => {
+            values.len() == 3
+                && values.iter().all(|value| *value >= 0.0)
+                && values.iter().sum::<f64>() <= 1.0
+        }
+        ChannelKind::PhaseDamping => values.len() == 1 && (0.0..=1.0).contains(&values[0]),
+        ChannelKind::AmplitudeDamping => {
+            values.len() == 2
+                && (0.0..=1.0).contains(&values[0])
+                && (0.0..=1.0).contains(&values[1])
+        }
+    };
+    if !valid || values.iter().any(|value| !value.is_finite()) {
+        return Err(PauliError::InvalidChannelParameters {
+            context: "channel parameters are outside the physical domain",
+        });
+    }
+    Ok(())
 }
 
 fn validate_wire(nqubits: usize, wire: usize) -> Result<(), PauliError> {

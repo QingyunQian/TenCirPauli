@@ -37,7 +37,11 @@ from .propagation import (
     PropagationValueAndGradient,
     ZeroState,
 )
-from .propagation_circuit import PropagationCircuit
+from .propagation_circuit import (
+    PropagationChannelParameter,
+    PropagationCircuit,
+    PropagationCircuitValueAndGradient,
+)
 from .spps import SPPSEstimate, SPPSValueEstimate
 from .spps_circuit import SPPSCircuit
 from .structured import (
@@ -96,7 +100,9 @@ __all__ = [
     "ProfiledExpectation",
     "PropagationBatch",
     "PropagationBatchValueAndGradient",
+    "PropagationChannelParameter",
     "PropagationCircuit",
+    "PropagationCircuitValueAndGradient",
     "PropagationProfile",
     "PropagationValueAndGradient",
     "QWCGroupingResult",

@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 import math
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, cast
 
 import numpy as np
 
@@ -60,9 +60,14 @@ def gate_tape_from_circuit(
     if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
         raise ValueError("could not determine circuit qubit count")
 
-    operations: list[tuple[str, tuple[int, ...], float | None]] = []
+    operations: list[tuple[str, tuple[int, ...], object]] = []
     fixed = {"x", "y", "z", "h", "s", "sdg", "cnot", "cz", "swap"}
     rotations = {"rx", "ry", "rz", "rxx", "ryy", "rzz"}
+    channels = {
+        "depolarizing": ("px", "py", "pz"),
+        "phase_damping": ("gamma",),
+        "amplitude_damping": ("gamma", "p"),
+    }
     for instruction in qir:
         if not isinstance(instruction, dict):
             raise ValueError("TensorCircuit QIR entries must be dictionaries")
@@ -72,6 +77,33 @@ def gate_tape_from_circuit(
             if instruction.get("parameters"):
                 raise ValueError(f"unsupported parameters on TensorCircuit gate {name}")
             operations.append((name, wires, None))
+            continue
+        if name in channels:
+            if instruction.get("is_channel") is not True:
+                raise ValueError(
+                    f"TensorCircuit channel {name} requires is_channel=True"
+                )
+            if not isinstance(instruction.get("channel_unitary"), bool):
+                raise ValueError("TensorCircuit channel_unitary must be a boolean")
+            parameters = instruction.get("channel_parameters", {})
+            expected = channels[name]
+            if not isinstance(parameters, dict) or set(parameters) != set(expected):
+                raise ValueError(f"{name} requires channel parameters {expected}")
+            values: list[float] = []
+            for parameter_name in expected:
+                value = parameters[parameter_name]
+                if isinstance(value, (bool, np.bool_)):
+                    raise TypeError("TensorCircuit channel parameters must be real")
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(
+                        "TensorCircuit channel parameters must be concrete"
+                    ) from error
+                if not math.isfinite(numeric):
+                    raise ValueError("TensorCircuit channel parameters must be finite")
+                values.append(numeric)
+            operations.append((name, wires, tuple(values)))
             continue
         if name not in rotations:
             raise ValueError(f"unsupported TensorCircuit gate {name!r}")
@@ -92,12 +124,22 @@ def gate_tape_from_circuit(
         operations.append((name, wires, numeric_angle))
 
     tape = GateTape(nqubits)
-    for name, wires, angle in operations:
+    for name, wires, payload in operations:
         if name in fixed:
             if name in {"x", "y", "z", "h", "s", "sdg"}:
                 getattr(tape, name)(wires[0])
             else:
                 getattr(tape, name)(wires[0], wires[1])
+            continue
+        if name in channels:
+            assert isinstance(payload, tuple)
+            method = {
+                "depolarizing": "depolarizing",
+                "phase_damping": "phasedamping",
+                "amplitude_damping": "amplitudedamping",
+            }[name]
+            parameter_names = channels[name]
+            getattr(tape, method)(wires[0], **dict(zip(parameter_names, payload)))
             continue
         if name in {"rx", "ry", "rz"}:
             append = getattr(tape, name)
@@ -105,8 +147,8 @@ def gate_tape_from_circuit(
         else:
             append = getattr(tape, name)
             wire_args = (wires[0], wires[1])
-        assert angle is not None
-        append(*wire_args, angle=angle)
+        assert payload is not None
+        append(*wire_args, angle=cast(float, payload))
     return TensorCircuitTapeConversion(tape=tape)
 
 
