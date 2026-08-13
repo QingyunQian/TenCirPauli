@@ -19,6 +19,7 @@ TenCirPauli 的实验性设计、实现状态、规范和审查记录集中在�
 ## 支持性参考
 
 - [Rust quantum operator competitor research](competitor-research.md)：相关 Rust 算符生态和 TenCirPauli 定位调研。
+- [Pauli propagation comparative research](pauli-propagation-comparative-research.md)：PauliPropagation.jl 的噪声、PTM、虚时演化和梯度方案，以及 TenCirPauli 的补全路线。
 - [Feature incubator](feature-incubator.md)：延期或尚未成熟的功能想法、设计片段和进入正式规范的条件。
 - [P0 reference vectors](reference-vectors.md)：独立 NumPy dense oracle、固定 regression vectors、seed、dtype 和容差。
 

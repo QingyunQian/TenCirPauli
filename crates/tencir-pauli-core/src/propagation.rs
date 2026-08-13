@@ -1454,30 +1454,181 @@ fn apply_operation(
             kind,
             wire,
             parameters: refs,
-        } => {
-            let values = resolve_channel(*kind, refs, parameters)?;
-            let mut contributions = Vec::with_capacity(
-                terms
-                    .len()
-                    .checked_mul(operation_branch_factor(operation))
-                    .ok_or(PauliError::Overflow {
-                        context: "estimating channel contribution storage",
-                    })?,
-            );
-            for term in terms {
-                let code = term.key.code_at(*wire);
-                for &(output, multiplier) in &channel_edges(*kind, code, &values) {
-                    if multiplier == 0.0 {
-                        continue;
-                    }
-                    let mut key = term.key.clone();
-                    key.set_code(*wire, output);
-                    contributions.push((key, term.coefficient * multiplier));
+        } => match kind {
+            ChannelKind::Depolarizing => {
+                apply_depolarizing(terms, *wire, refs, parameters, nqubits, cutoff)
+            }
+            ChannelKind::PhaseDamping => {
+                apply_phase_damping(terms, *wire, refs, parameters, nqubits, cutoff)
+            }
+            ChannelKind::AmplitudeDamping => {
+                apply_amplitude_damping(terms, *wire, refs, parameters, nqubits, cutoff)
+            }
+        },
+    }
+}
+
+fn apply_depolarizing(
+    terms: Vec<DynamicTerm>,
+    wire: usize,
+    references: &[ScalarRef],
+    parameters: &[f64],
+    nqubits: usize,
+    cutoff: Option<usize>,
+) -> Result<Vec<DynamicTerm>, PauliError> {
+    let values = resolve_channel(ChannelKind::Depolarizing, references, parameters)?;
+    let multipliers = [
+        1.0,
+        1.0 - 2.0 * (values[1] + values[2]),
+        1.0 - 2.0 * (values[0] + values[2]),
+        1.0 - 2.0 * (values[0] + values[1]),
+    ];
+    Ok(apply_preserving_channel(
+        terms,
+        wire,
+        multipliers,
+        nqubits,
+        cutoff,
+    ))
+}
+
+fn apply_phase_damping(
+    terms: Vec<DynamicTerm>,
+    wire: usize,
+    references: &[ScalarRef],
+    parameters: &[f64],
+    nqubits: usize,
+    cutoff: Option<usize>,
+) -> Result<Vec<DynamicTerm>, PauliError> {
+    let values = resolve_channel(ChannelKind::PhaseDamping, references, parameters)?;
+    let transverse = (1.0 - values[0]).sqrt();
+    Ok(apply_preserving_channel(
+        terms,
+        wire,
+        [1.0, transverse, transverse, 1.0],
+        nqubits,
+        cutoff,
+    ))
+}
+
+fn apply_preserving_channel(
+    mut terms: Vec<DynamicTerm>,
+    wire: usize,
+    multipliers: [f64; 4],
+    nqubits: usize,
+    cutoff: Option<usize>,
+) -> Vec<DynamicTerm> {
+    for term in &mut terms {
+        term.coefficient *= multipliers[term.key.code_at(wire) as usize];
+    }
+    terms.retain(|term| {
+        !is_exact_zero(term.coefficient)
+            && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
+    });
+    terms
+}
+
+fn apply_amplitude_damping(
+    terms: Vec<DynamicTerm>,
+    wire: usize,
+    references: &[ScalarRef],
+    parameters: &[f64],
+    nqubits: usize,
+    cutoff: Option<usize>,
+) -> Result<Vec<DynamicTerm>, PauliError> {
+    let values = resolve_channel(ChannelKind::AmplitudeDamping, references, parameters)?;
+    let transverse = (1.0 - values[0]).sqrt();
+    let z_multiplier = 1.0 - values[0];
+    let split_multiplier = values[0] * (2.0 * values[1] - 1.0);
+    let mut base = Vec::with_capacity(terms.len());
+    let mut split = Vec::new();
+
+    for mut term in terms {
+        let code = term.key.code_at(wire);
+        match code {
+            0 => {
+                if !is_exact_zero(term.coefficient)
+                    && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
+                {
+                    base.push(term);
                 }
             }
-            aggregate(contributions, nqubits, cutoff)
+            1 | 2 => {
+                term.coefficient *= transverse;
+                if !is_exact_zero(term.coefficient)
+                    && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
+                {
+                    base.push(term);
+                }
+            }
+            3 => {
+                let original = term.coefficient;
+                let split_key = if !is_exact_zero(original * split_multiplier) {
+                    let mut key = term.key.clone();
+                    key.set_code(wire, 0);
+                    Some(key)
+                } else {
+                    None
+                };
+                term.coefficient *= z_multiplier;
+                if !is_exact_zero(term.coefficient)
+                    && cutoff.is_none_or(|limit| term.key.weight(nqubits) <= limit)
+                {
+                    base.push(term);
+                }
+                if let Some(key) = split_key {
+                    if cutoff.is_none_or(|limit| key.weight(nqubits) <= limit) {
+                        split.push((key, original * split_multiplier));
+                    }
+                }
+            }
+            _ => unreachable!("packed local Pauli codes are always in 0..4"),
         }
     }
+
+    Ok(merge_amplitude_split(base, split))
+}
+
+fn merge_amplitude_split(
+    base: Vec<DynamicTerm>,
+    mut split: Vec<(PackedKey, Complex64)>,
+) -> Vec<DynamicTerm> {
+    split.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    let mut extras: Vec<DynamicTerm> = Vec::with_capacity(split.len());
+    for (key, coefficient) in split {
+        if let Some(last) = extras.last_mut() {
+            if last.key == key {
+                last.coefficient += coefficient;
+                continue;
+            }
+        }
+        extras.push(DynamicTerm { key, coefficient });
+    }
+    extras.retain(|term| !is_exact_zero(term.coefficient));
+
+    let mut base = base.into_iter().peekable();
+    let mut extras = extras.into_iter().peekable();
+    let mut result = Vec::with_capacity(base.len() + extras.len());
+    loop {
+        match (base.peek(), extras.peek()) {
+            (Some(left), Some(right)) => match left.key.cmp(&right.key) {
+                Ordering::Less => result.push(base.next().unwrap()),
+                Ordering::Equal => {
+                    let mut left = base.next().unwrap();
+                    let right = extras.next().unwrap();
+                    left.coefficient += right.coefficient;
+                    if !is_exact_zero(left.coefficient) {
+                        result.push(left);
+                    }
+                }
+                Ordering::Greater => result.push(extras.next().unwrap()),
+            },
+            (Some(_), None) => result.extend(&mut base),
+            (None, Some(_)) => result.extend(&mut extras),
+            (None, None) => break,
+        }
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1926,10 +2077,15 @@ fn resolve_channel(
     kind: ChannelKind,
     references: &[ScalarRef],
     parameters: &[f64],
-) -> Result<Vec<f64>, PauliError> {
-    let values = references
-        .iter()
-        .map(|reference| match reference {
+) -> Result<[f64; 3], PauliError> {
+    let expected = match kind {
+        ChannelKind::Depolarizing => 3,
+        ChannelKind::PhaseDamping => 1,
+        ChannelKind::AmplitudeDamping => 2,
+    };
+    let mut values = [0.0; 3];
+    for (index, reference) in references.iter().enumerate() {
+        values[index] = match reference {
             ScalarRef::Static(value) => Ok(*value),
             ScalarRef::Slot(slot) => {
                 parameters
@@ -1940,9 +2096,9 @@ fn resolve_channel(
                         actual: parameters.len(),
                     })
             }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    validate_channel_values(kind, &values)?;
+        }?;
+    }
+    validate_channel_values(kind, &values[..expected])?;
     Ok(values)
 }
 
@@ -2230,6 +2386,110 @@ mod tests {
                 assert_eq!(mapped_second, 0);
             }
         }
+    }
+
+    fn dynamic_terms(codes: &[[u8; 2]], coefficients: &[f64]) -> Vec<DynamicTerm> {
+        let mut terms = codes
+            .iter()
+            .zip(coefficients)
+            .map(|(codes, coefficient)| DynamicTerm {
+                key: PackedKey::from_word(&PauliWord::from_codes(2, codes).unwrap()),
+                coefficient: Complex64::new(*coefficient, 0.0),
+            })
+            .collect::<Vec<_>>();
+        terms.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+        terms
+    }
+
+    fn assert_dynamic_terms_close(left: &[DynamicTerm], right: &[DynamicTerm]) {
+        assert_eq!(left.len(), right.len());
+        for (left, right) in left.iter().zip(right) {
+            assert_eq!(left.key, right.key);
+            assert!((left.coefficient.re - right.coefficient.re).abs() < 1.0e-14);
+            assert!((left.coefficient.im - right.coefficient.im).abs() < 1.0e-14);
+        }
+    }
+
+    #[test]
+    fn direct_channel_kernels_match_static_ptms() {
+        let input = dynamic_terms(
+            &[[0, 0], [1, 1], [2, 2], [3, 3], [0, 3], [3, 0]],
+            &[0.2, -0.4, 0.7, 0.5, -0.3, 0.9],
+        );
+        let cases = [
+            (
+                ChannelKind::Depolarizing,
+                vec![0.11, 0.07, 0.13],
+                vec![
+                    1.0,
+                    1.0 - 2.0 * (0.07 + 0.13),
+                    1.0 - 2.0 * (0.11 + 0.13),
+                    1.0 - 2.0 * (0.11 + 0.07),
+                ],
+            ),
+            (
+                ChannelKind::PhaseDamping,
+                vec![0.23],
+                vec![1.0, (1.0 - 0.23_f64).sqrt(), (1.0 - 0.23_f64).sqrt(), 1.0],
+            ),
+            (
+                ChannelKind::AmplitudeDamping,
+                vec![0.29, 0.63],
+                vec![
+                    1.0,
+                    (1.0 - 0.29_f64).sqrt(),
+                    (1.0 - 0.29_f64).sqrt(),
+                    1.0 - 0.29,
+                ],
+            ),
+        ];
+        for (kind, values, diagonal) in cases {
+            let channel = GateOperation::channel(
+                2,
+                kind,
+                0,
+                values.iter().copied().map(ScalarRef::Static).collect(),
+            )
+            .unwrap();
+            let mut matrix = vec![0.0; 16];
+            for (index, value) in diagonal.into_iter().enumerate() {
+                matrix[index * 4 + index] = value;
+            }
+            if kind == ChannelKind::AmplitudeDamping {
+                matrix[3] = values[0] * (2.0 * values[1] - 1.0);
+            }
+            let ptm = GateOperation::custom_ptm(2, &[0], &matrix).unwrap();
+            let direct = apply_operation(2, &channel, input.clone(), &[], None).unwrap();
+            let reference = apply_operation(2, &ptm, input.clone(), &[], None).unwrap();
+            assert_dynamic_terms_close(&direct, &reference);
+            assert_dynamic_terms_close(
+                &direct,
+                &apply_operation(2, &channel, input.clone(), &[], None).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn amplitude_split_cancellation_and_projection_are_local() {
+        let operation = GateOperation::channel(
+            2,
+            ChannelKind::AmplitudeDamping,
+            0,
+            vec![ScalarRef::Static(0.4), ScalarRef::Static(0.0)],
+        )
+        .unwrap();
+        let cancellation = dynamic_terms(&[[0, 0], [3, 0]], &[0.4, 1.0]);
+        let result = apply_operation(2, &operation, cancellation, &[], None).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].key.code_at(0), 3);
+        assert!((result[0].coefficient.re - 0.6).abs() < 1.0e-14);
+
+        let projected = dynamic_terms(&[[3, 1]], &[1.0]);
+        let result = apply_operation(2, &operation, projected, &[], Some(1)).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].key.code_at(0), 0);
+        assert_eq!(result[0].key.code_at(1), 1);
+        assert!((result[0].coefficient.re + 0.4).abs() < 1.0e-14);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Implementation Status
 
-状态日期：2026-08-11。该文件是长时间 Agent 工作的持久状态，不替代 Git history 或规范。
+状态日期：2026-08-13。该文件是长时间 Agent 工作的持久状态，不替代 Git history 或规范。
 
 ## Current objective
 
@@ -10,6 +10,8 @@ Phase 1–5.5、Phase Alpha、Phase 6、Phase 7、Phase 7.5、Phase 8、Phase 8.
 
 | Area | Status | Evidence and next gate |
 | --- | --- | --- |
+| Phase 11 factorized additive-charge MVP | implemented; acceptance closed 2026-08-13 | Exact native factor analysis, compact component indexers, public-order rank/unrank, shared lazy/eager execution, General fallback, and mixed-domain differential tests are complete. See the Phase 11 checkpoint below and `phase-11-factorized-additive-charge-mvp-spec.md`. |
+| Phase 12 common noise channel gradients | implemented; focused remediation complete | Direct channel kernels, matched static-PTM performance evidence, frozen-support and public-gradient numerical coverage, shared-slot/checkpoint tests, batch/concurrency checks, and JAX numerical oracles are complete. The project environment passed the full quality gate and release benchmark record `20260813T052717Z_c42a754cca87-dirty`; closure evidence is recorded in `reports/phase-12-review-2026-08-13.md`. |
 | Phase Alpha Python facade | implemented | `phase-alpha-spec.md`、`phase-alpha-review-2026-08-03.md` 和本次 remediation tests；本 checkpoint 的 FIX_NOW 项已完成。 |
 | Phase 6 U1 circuit | implemented; historical acceptance closed | Rust/PyO3/Python implementation and local correctness/A-B evidence are archived；machine-specific benchmark handoff is informational, not a release gate. |
 | Phase 6.5 time evolution | deferred | Inactive proposal；requires a new owner decision, representative workload and accuracy/dependency spike. |
@@ -25,6 +27,14 @@ Phase 1–5.5、Phase Alpha、Phase 6、Phase 7、Phase 7.5、Phase 8、Phase 8.
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 
 历史 benchmark 条目中保留的 4 GiB 仅表示当时的记录条件；当前实现和 public API 的 `DEFAULT_MAX_BYTES` 已统一为 16 GiB。
+
+## Phase 11 factorized additive-charge checkpoint
+
+Phase 11 is implemented and its acceptance is closed for the current factorized additive-charge scope. The native charge compiler performs exact additive-row factor analysis, builds compact `FactorizedLayout` components (`Cartesian`, `FixedPopulation`, and `FiniteAdditive`), preserves public mixed-radix ordering, lowers shared lazy/eager schedules, aggregates before leakage/projection decisions, and retains exact General execution for irreducibly coupled sectors. Current tests cover equivalent charge systems, empty/full sectors, mixed Fermion/Boson/Qubit/Qudit components, interleaved spinful sectors, dense/lazy/eager equality, factorized metadata, exact cancellation, and wide combinatorial rank fallback. The implementation history includes `011cc60` and its subsequent audit remediation. TensorCircuit-compatible common noise channels and their native scalar gradients are specified for Phase 12. Parameterized PTM entry gradients and imaginary-time propagation are explicitly deferred; existing static one- and two-qubit PTM forward propagation remains supported.
+
+## Phase 12 implementation checkpoint
+
+Phase 12's supported built-in channels are implemented in the shared Rust propagation core and exposed through the advanced `GateTape` and high-level `PropagationCircuit` facades. The native scalar buffer retains one flat slot order—rotation occurrences first, channel occurrences second—while the high-level result exposes read-only `gradient` and `channel_gradient` arrays plus `channel_parameter_layout`. Forward rules agree with independent dense Kraus references and equivalent static PTMs, reverse rules implement the intended executed-trace/frozen-support structure, supported channel QIR records round-trip with TensorCircuit-compatible names and metadata, arbitrary `channel_f` callables are ignored, JAX uses one callback with a split VJP, and SPPS rejects channels. The focused remediation adds direct low-allocation kernels, material release-mode A/B evidence, numerical frozen-support/shared-slot/occurrence-order tests, complete batch/concurrency checks, and JAX finite-difference oracles. The full project quality gate passed with 466 Python tests, 69 Rust tests, 7 doctests, 448 benchmark-smoke cases, and 13 JAX tests; release benchmark record `20260813T052717Z_c42a754cca87-dirty` completed with 532 cases and one pre-existing optional skip.
 
 ## Phase 10.5 initial execution/storage checkpoint
 

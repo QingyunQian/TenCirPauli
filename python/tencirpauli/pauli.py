@@ -676,7 +676,13 @@ class PauliOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "AdditiveSymmetryAnalysis":
-        """Analyze an exact additive charge using the complete commutator."""
+        """Analyze exact additive-charge conservation using ``[H, Q]``.
+
+        ``charge`` must be a matching pure-qubit ``AdditiveCharge``. This
+        method checks a diagonal integer-valued charge and is separate from
+        :meth:`find_z2_symmetries`, which discovers Pauli generators that may
+        be non-diagonal in the computational basis.
+        """
         from .charge import analyze_charge
 
         return analyze_charge(self, charge, max_bytes=max_bytes)
@@ -697,10 +703,12 @@ class PauliOperator:
         storage: "ChargeStorage" = "lazy",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> Union["ChargeRestrictedOperator", "U1RestrictedOperator"]:
-        """Restrict an exactly conserved Pauli operator to a charge-sector MVP.
+        """Restrict an exactly conserved Pauli operator to an occupation sector.
 
         ``U1Sector`` and equivalent canonical qubit-number charge sectors use
-        the packed U(1) backend. The default CPU-native storage is lazy.
+        the packed U(1) backend. The default CPU-native storage is lazy. This
+        keeps computational-basis states satisfying additive charge targets;
+        it is not Pauli ``Z2`` Clifford tapering and does not remove qubits.
         """
         from .symmetry import U1Sector, _canonical_u1_sector, _restrict_u1
 
@@ -748,7 +756,14 @@ class PauliOperator:
     def find_z2_symmetries(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES
     ) -> "Z2SymmetryAnalysis":
-        """Discover deterministic, term-wise commuting Pauli Z2 symmetries."""
+        """Discover deterministic Pauli ``Z2`` generators of this operator.
+
+        Every returned generator squares to identity and commutes with the
+        complete Pauli operator. The generators can contain ``X`` and ``Y``
+        factors, so this is a Pauli-space symmetry search rather than a search
+        for diagonal occupation charges. Fermionic operators should be mapped
+        to a chosen Pauli encoding before using this method.
+        """
         from .symmetry import Z2SymmetryAnalysis
 
         _validate_max_bytes(max_bytes)
@@ -769,7 +784,13 @@ class PauliOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "PauliOperator":
-        """Find Z2 symmetries, select ``sector``, and taper this operator."""
+        """Find Pauli ``Z2`` symmetries and taper a selected eigenvalue sector.
+
+        This is a convenience composition of
+        ``find_z2_symmetries().tapering_plan(sector).transform_operator(self)``.
+        It changes Pauli basis and removes qubits; it does not select an
+        additive occupation sector or automatically combine with one.
+        """
         analysis = self.find_z2_symmetries(max_bytes=max_bytes)
         return analysis.tapering_plan(sector).transform_operator(self)
 

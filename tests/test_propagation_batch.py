@@ -109,9 +109,17 @@ def test_batch_supports_product_bloch_and_empty_observables() -> None:
     np.testing.assert_array_equal(result.gradients[0], expected.gradient)
 
     empty = tcp.PropagationBatch(tape, [])
-    assert empty.expectations([0.19]).shape == (0,)
-    assert empty.values_and_gradients([0.19]).values.shape == (0,)
-    assert empty.values_and_gradients([0.19]).gradients.shape == (0, 1)
+    empty_values = empty.expectations([0.19])
+    empty_result = empty.values_and_gradients([0.19])
+    assert empty_values.shape == (0,)
+    assert empty_values.flags.c_contiguous
+    assert not empty_values.flags.writeable
+    assert empty_result.values.shape == (0,)
+    assert empty_result.gradients.shape == (0, 1)
+    assert empty_result.values.flags.c_contiguous
+    assert empty_result.gradients.flags.c_contiguous
+    assert not empty_result.values.flags.writeable
+    assert not empty_result.gradients.flags.writeable
 
 
 def test_batch_rejects_invalid_rows_and_parameters_but_ignores_advisory_budget() -> (
@@ -224,11 +232,23 @@ def test_wide_weight_projected_batch_uses_projected_storage_bound() -> None:
 
 def test_batch_concurrent_calls_are_isolated() -> None:
     tape = _tape()
-    batch = tcp.PropagationBatch(tape, _observables(16))
+    observables = _observables(16)
+    batch = tcp.PropagationBatch(tape, observables)
     parameters = ([0.13, -0.47], [0.21, 0.08])
-    expected = [batch.values_and_gradients(values) for values in parameters]
+    expected = []
+    for values in parameters:
+        scalar_results = [
+            advanced.PropagationEngine(tape, observable).value_and_grad(values)
+            for observable in observables
+        ]
+        expected.append(
+            (
+                np.asarray([result.value for result in scalar_results]),
+                np.asarray([result.gradient for result in scalar_results]),
+            )
+        )
     with ThreadPoolExecutor(max_workers=2) as executor:
         actual = list(executor.map(batch.values_and_gradients, parameters))
-    for result, reference in zip(actual, expected):
-        np.testing.assert_array_equal(result.values, reference.values)
-        np.testing.assert_array_equal(result.gradients, reference.gradients)
+    for result, (expected_values, expected_gradients) in zip(actual, expected):
+        np.testing.assert_array_equal(result.values, expected_values)
+        np.testing.assert_array_equal(result.gradients, expected_gradients)

@@ -256,3 +256,136 @@ def test_jax_static_controls_fail_before_callback_staging() -> None:
         spps.expectation_jax(observable, samples_per_term=1, seed=0)
     with pytest.raises(ValueError, match="seed"):
         spps.expectation_jax(observable, samples_per_term=2, seed=-1)
+
+
+@pytest.mark.parametrize("name", ("depolarizing", "phasedamping", "amplitudedamping"))
+def test_jitted_channel_gradients_match_complete_scalar_finite_difference(
+    name: str,
+) -> None:
+    jax = _jax()
+    jnp = jax.numpy
+    state = tcp.ProductBlochState(np.asarray([[0.31, -0.27, 0.44]], dtype=np.float64))
+    if name == "depolarizing":
+        point = np.asarray([0.11, 0.07, 0.13], dtype=np.float64)
+        observable = tcp.PauliOperator.from_terms(
+            1, [("X", 0.7), ("Y", -0.4), ("Z", 0.6)]
+        )
+    elif name == "phasedamping":
+        point = np.asarray([0.23], dtype=np.float64)
+        observable = tcp.PauliOperator.from_terms(1, [("X", 0.7), ("Y", -0.4)])
+    else:
+        point = np.asarray([0.29, 0.63], dtype=np.float64)
+        observable = tcp.PauliOperator.from_terms(1, [("X", 0.7), ("Z", -0.4)])
+
+    def objective(values: object) -> object:
+        circuit = tcp.PropagationCircuit(1, initial_state=state)
+        if name == "depolarizing":
+            circuit.depolarizing(
+                0, px=values[0], py=values[1], pz=values[2]  # type: ignore[index]
+            )
+        elif name == "phasedamping":
+            circuit.phasedamping(0, gamma=values[0])  # type: ignore[index]
+        else:
+            circuit.amplitudedamping(
+                0, gamma=values[0], p=values[1]  # type: ignore[index]
+            )
+        return circuit.expectation_jax(observable)
+
+    value, gradient = jax.jit(jax.value_and_grad(objective))(
+        jnp.asarray(point, dtype=jnp.float64)
+    )
+
+    def concrete(values: np.ndarray) -> float:
+        return float(
+            _concrete_channel_circuit(name, values, state).expectation(observable)
+        )
+
+    finite = np.empty_like(point)
+    step = 1.0e-6
+    for index in range(point.size):
+        plus = point.copy()
+        minus = point.copy()
+        plus[index] += step
+        minus[index] -= step
+        finite[index] = (concrete(plus) - concrete(minus)) / (2.0 * step)
+    np.testing.assert_allclose(np.asarray(value), concrete(point), atol=2.0e-12)
+    np.testing.assert_allclose(np.asarray(gradient), finite, atol=4.0e-6, rtol=3.0e-6)
+
+
+def _concrete_channel_circuit(
+    name: str, values: np.ndarray, state: tcp.ProductBlochState
+) -> tcp.PropagationCircuit:
+    circuit = tcp.PropagationCircuit(1, initial_state=state)
+    if name == "depolarizing":
+        circuit.depolarizing(0, px=values[0], py=values[1], pz=values[2])
+    elif name == "phasedamping":
+        circuit.phasedamping(0, gamma=values[0])
+    else:
+        circuit.amplitudedamping(0, gamma=values[0], p=values[1])
+    return circuit
+
+
+def test_jax_shared_rotation_and_channel_upstream_gradients_sum_by_chain_rule() -> None:
+    jax = _jax()
+    jnp = jax.numpy
+    state = tcp.ProductBlochState(np.asarray([[0.31, -0.27, 0.44]], dtype=np.float64))
+    observable = tcp.PauliOperator.from_terms(1, [("X", 0.7), ("Z", -0.4)])
+
+    def objective(theta: object) -> object:
+        scale = jax.nn.sigmoid(theta)
+        circuit = tcp.PropagationCircuit(1, initial_state=state)
+        circuit.ry(0, theta=theta)
+        circuit.phasedamping(0, gamma=0.2 * scale)
+        circuit.amplitudedamping(0, gamma=0.3 * scale, p=0.63)
+        return circuit.expectation_jax(observable)
+
+    point = 0.19
+    value, gradient = jax.jit(jax.value_and_grad(objective))(jnp.asarray(point))
+    scale = 1.0 / (1.0 + np.exp(-point))
+    concrete = tcp.PropagationCircuit(1, initial_state=state)
+    concrete.ry(0, theta=point)
+    concrete.phasedamping(0, gamma=0.2 * scale)
+    concrete.amplitudedamping(0, gamma=0.3 * scale, p=0.63)
+    native = concrete.value_and_grad(observable)
+    sigmoid_derivative = scale * (1.0 - scale)
+    expected = native.gradient[0]
+    expected += native.channel_gradient[0] * 0.2 * sigmoid_derivative
+    expected += native.channel_gradient[1] * 0.3 * sigmoid_derivative
+    np.testing.assert_allclose(value, native.value, atol=2.0e-12)
+    np.testing.assert_allclose(gradient, expected, atol=4.0e-6, rtol=3.0e-6)
+
+
+def test_jax_static_ptm_transports_channel_cotangent_without_entry_gradients() -> None:
+    jax = _jax()
+    jnp = jax.numpy
+    state = tcp.ProductBlochState(np.asarray([[0.31, -0.27, 0.44]], dtype=np.float64))
+    observable = tcp.PauliOperator.from_terms(1, [("X", 0.7), ("Z", -0.4)])
+    matrix = np.diag([1.0, 0.8, 0.6, 0.9]).astype(np.float64)
+
+    def objective(values: object) -> object:
+        circuit = tcp.PropagationCircuit(1, initial_state=state)
+        circuit.phasedamping(0, gamma=values[0])  # type: ignore[index]
+        circuit.ptm((0,), matrix)
+        circuit.ry(0, theta=values[1])  # type: ignore[index]
+        return circuit.expectation_jax(observable)
+
+    point = np.asarray([0.23, 0.17], dtype=np.float64)
+    value, gradient = jax.jit(jax.value_and_grad(objective))(jnp.asarray(point))
+
+    def concrete(values: np.ndarray) -> float:
+        circuit = tcp.PropagationCircuit(1, initial_state=state)
+        circuit.phasedamping(0, gamma=values[0])
+        circuit.ptm((0,), matrix)
+        circuit.ry(0, theta=values[1])
+        return circuit.expectation(observable)
+
+    finite = np.empty(2, dtype=np.float64)
+    step = 1.0e-6
+    for index in range(2):
+        plus = point.copy()
+        minus = point.copy()
+        plus[index] += step
+        minus[index] -= step
+        finite[index] = (concrete(plus) - concrete(minus)) / (2.0 * step)
+    np.testing.assert_allclose(value, concrete(point), atol=2.0e-12)
+    np.testing.assert_allclose(gradient, finite, atol=4.0e-6, rtol=3.0e-6)

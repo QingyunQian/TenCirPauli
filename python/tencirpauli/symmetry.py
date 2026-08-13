@@ -29,11 +29,21 @@ U1Storage = Literal["lazy", "eager"]
 
 @dataclass(frozen=True)
 class Z2SymmetryAnalysis:
-    """Deterministic, exactly validated Pauli Z2 symmetry analysis.
+    """Deterministic, exactly validated Pauli ``Z2`` symmetry analysis.
 
-    ``constraint_rank`` is the GF(2) null-space dimension of the constraint
-    matrix and can exceed the number of mutually commuting generators selected
-    for tapering.
+    The input is a Pauli Hamiltonian. A discovered generator ``S`` satisfies
+    ``S**2 = I`` and commutes with every Hamiltonian term, so its eigenvalue
+    labels sectors by ``+1`` or ``-1``. Generators may contain ``X`` and ``Y``
+    factors and therefore need not be diagonal in the computational or
+    occupation basis. For a fermionic source, choose a fermion-to-qubit
+    encoding first (Jordan--Wigner, parity, or Bravyi--Kitaev), then call
+    ``find_z2_symmetries`` on the resulting :class:`PauliOperator`.
+
+    This is a Pauli stabilizer symmetry, not an additive occupation charge
+    and not an occupation-parity sector. ``constraint_rank`` is the GF(2)
+    null-space dimension of the symmetry constraint matrix and can exceed the
+    number of mutually commuting generators selected for tapering. ``rank``
+    is the number of selected commuting generators.
     """
 
     nqubits: int
@@ -42,11 +52,23 @@ class Z2SymmetryAnalysis:
 
     @property
     def rank(self) -> int:
-        """Return selected isotropic-generator count, distinct from ``constraint_rank`` and sector ranks."""
+        """Return selected commuting-generator count.
+
+        This is ``len(generators)`` and is distinct from ``constraint_rank``
+        (the GF(2) null-space dimension) and from ``ChargeSector.rank`` or
+        ``U1Sector.rank`` (basis-state indices).
+        """
         return len(self.generators)
 
     def tapering_plan(self, sector: Sequence[int]) -> "Z2TaperingPlan":
-        """Build a reusable Clifford plan for a selected eigenvalue sector."""
+        """Build a reusable Clifford plan for selected Pauli eigenvalues.
+
+        ``sector[i]`` selects the ``+1`` or ``-1`` eigenvalue of
+        ``generators[i]``. The returned plan applies a Clifford change of
+        Pauli basis, substitutes those selected eigenvalues, and removes the
+        corresponding qubits. It does not construct an occupation-space
+        ``ChargeSector``.
+        """
         selected = tuple(_validate_sector_value(value) for value in sector)
         native_plan = _native.pauli_z2_tapering_plan(
             self.nqubits,
@@ -58,7 +80,16 @@ class Z2SymmetryAnalysis:
 
 @dataclass(frozen=True, init=False)
 class Z2TaperingPlan:
-    """Reusable Clifford transform and selected Z2 sector."""
+    """Reusable Clifford transform and selected Pauli ``Z2`` sector.
+
+    ``transform_operator`` applies this same transform to compatible Pauli
+    Hamiltonians or observables. The plan is intentionally Pauli-specific:
+    it does not automatically transform an :class:`AdditiveCharge`, combine
+    with a ``ChargeSector``, or implement occupation-parity restriction.
+    Such a composition requires checking that both constraints act within the
+    same selected subspace and is not implied by having the same word
+    ``Z2`` in their names.
+    """
 
     nqubits_before: int
     nqubits_after: int

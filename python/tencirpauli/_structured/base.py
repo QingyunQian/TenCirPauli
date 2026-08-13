@@ -598,7 +598,12 @@ class _StructuredOperator:
         *,
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "AdditiveSymmetryAnalysis":
-        """Analyze an exact additive charge using the complete commutator."""
+        """Analyze exact additive-charge conservation using ``[operator, Q]``.
+
+        The charge must use this operator's structured layout. This is a
+        diagonal occupation-space charge check, distinct from Pauli ``Z2``
+        symmetry discovery after fermion-to-qubit mapping.
+        """
         from ..charge import analyze_charge
 
         return analyze_charge(self, charge, max_bytes=max_bytes)
@@ -619,10 +624,13 @@ class _StructuredOperator:
         storage: "ChargeStorage" = "lazy",
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "ChargeRestrictedOperator":
-        """Restrict an exactly conserved operator to a charge-sector MVP.
+        """Restrict an exactly conserved operator to an occupation-sector MVP.
 
         CPU-native restricted plans default to ``storage="lazy"``. An explicit
         eager request or later materialization may populate a retained cache.
+        The sector contains occupation-basis states satisfying its additive
+        charge constraints. This operation is separate from Pauli Clifford
+        ``Z2`` tapering and does not remove qubits.
         """
         from ..symmetry import _canonical_u1_sector, _restrict_u1
 

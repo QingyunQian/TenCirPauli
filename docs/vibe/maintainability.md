@@ -82,6 +82,100 @@ Review counters and profile metadata are useful for selecting kernels and provin
 
 Every shared-mechanism refactor needs a small representative A/B matrix covering the affected capability classes. Measure end-to-end Python calls as well as Rust kernels, and separate construction, first execution, steady execution, memory, and accuracy. Keep benchmark source and workload definitions in the repository, keep machine-specific results untracked, and do not turn one machine's wall time into a universal CI gate.
 
+## Operational rules for new changes
+
+The rules below turn the maintainability direction into a review contract. They apply to new features, bug fixes, performance work, ABI changes, and refactors. A change may make a deliberate exception, but the exception must be explicit in the change description and in the affected source or trunk document; an unrecorded exception is treated as accidental complexity.
+
+### 9. Establish ownership before implementation
+
+Every scalable behavior must have one authoritative owner. Before adding code, identify the owner for input normalization, capability selection, representation, execution, metadata, memory checks, and materialization. The public Python layer may validate friendly inputs and choose a public target; it must not independently reproduce native applicability or kernel-selection rules. PyO3 should translate the established contract, not become a second policy layer.
+
+For each new plan or execution family, record a compact ownership row with the public entry point, native owner, retained representation, selector, supported targets, and read-back path. If a new row duplicates an existing owner, reuse or extend the existing owner instead of adding a parallel path.
+
+### 10. Prefer explicit dependencies over namespace wiring
+
+Implementation modules must import the shared symbols they use through explicit module imports or narrow private protocols. Do not add module-wide `globals()` copying, `module.__dict__` mutation, wildcard imports, or bottom-of-file imports whose main purpose is to repair a circular dependency. These techniques hide the dependency graph and make static analysis, deletion, and local reasoning unreliable.
+
+The current structured package has a known remnant at `python/tencirpauli/_structured/base.py`: after importing the concrete implementation modules, it copies most of its globals into those modules with `setdefault()`. This is an initialization-time namespace bridge, not a per-call data copy, and it was introduced to avoid import cycles. It remains structural debt. New code must not depend on it, and future cleanup should replace it with explicit imports while preserving the public facade's module, repr, identity, and pickle contracts.
+
+The public facade may retain a narrowly documented dynamic compatibility forwarder when it is required for an existing import contract. Such a forwarder must not be used to hide implementation dependencies or to provide a second implementation.
+
+### 11. Keep one representation and one fallback policy
+
+Do not retain Python symbolic storage, an array mirror, and a native handle for the same scalable state unless each representation has a separately documented public purpose. If a native handle is mandatory for a completed path, construct it once and fail clearly when the invariant is violated; do not preserve a no-handle execution branch merely because it existed historically.
+
+Every fallback must answer four questions: what capability makes it applicable, why the authoritative path cannot handle that case, what correctness contract it shares with the authoritative path, and what evidence or owner decision justifies its retained cost. A fallback without a removal condition is a second implementation. Compatibility aliases may forward to the owner, but they must not gain new behavior.
+
+### 12. Treat the ABI as a finite grammar
+
+New native endpoints must use one of the established ABI forms unless a new form is justified in the ABI contract:
+
+- handle to handle for scalable symbolic operations;
+- flat contiguous arrays with explicit offsets, lengths, order, and dtype for bulk construction or materialization;
+- state array to result array, or caller-owned `apply_into`, for execution;
+- small immutable metadata records or scalar properties for control information.
+
+Do not introduce a nested numeric read-back form, split real/imaginary arrays when a complex array is the canonical representation, or a Python materialize-and-rebuild round trip when the destination is native. Update the Rust binding, `_native.pyi`, wrapper, and ABI tests in the same change. Known dynamic tensor inputs may remain typed as `object` when the backend protocol genuinely requires it; known native outputs, handles, tuple arity, and array contracts should be precise.
+
+### 13. Make plan contracts capability-based
+
+Different algorithms and storage formats should remain different implementations, but their common execution contract must be testable. Every reusable MVP plan should be classified against the applicable capabilities: dimension, target, storage, estimated retained bytes, construction peak estimate, `apply`, `apply_into`, transition count, dense/COO/CSR read-back, parallel execution, and backend execution.
+
+Optional capabilities must be represented as intentional differences, not discovered through scattered `hasattr()` checks or duplicated string selectors. A capability matrix and parameterized contract tests should verify output dtype, shape, contiguity, ownership, writeability, overwrite behavior, concurrent reuse, budget behavior, and numerical equality across all applicable plan families.
+
+### 14. Centralize errors and boundary validation
+
+Validate friendly Python input once at the public boundary, validate native invariants once at plan construction, and trust immutable handles during execution. Do not repeatedly rescan canonical terms, revalidate fixed layouts, or add layered defenses for implausible numerical extremes without representative evidence.
+
+Each public invalid-input category must have a deliberate exception contract: type errors for wrong kinds, value errors for invalid values or incompatible domains, overflow errors for checked dimension arithmetic, memory errors for enforced allocation limits, and explicit runtime or dependency errors for unavailable capabilities. Tests should assert the exception class as well as the message fragment and failure timing.
+
+### 15. Make deletion part of completion
+
+When a representation, FFI entry point, compatibility branch, helper, diagnostic counter, or benchmark name is superseded, delete it in the same change unless it is an intentional public or historical contract. Search for sibling occurrences of the same pattern before declaring the change complete. Do not preserve dead code with `Any`, `cast`, `type: ignore`, Clippy allowances, or compatibility wrappers solely to keep an abandoned path compiling.
+
+Historical design and audit records may preserve why a path existed, but they must not be mistaken for active implementation requirements. Durable trunk documents and current source win when historical records disagree with them.
+
+## Change review checklist
+
+Before merging a material change, the author and reviewer should be able to answer yes to the applicable questions below:
+
+- Is the authoritative owner and selector identified, with no duplicate policy in Python, PyO3, or Rust?
+- Was an existing primitive, handle method, ABI form, validator, plan contract, or read-back path reused before new code was written?
+- Does the change avoid parallel scalable storage, nested read-back, per-term FFI, hidden imports, and silent fallbacks?
+- Are public input validation, native invariant validation, error class, error timing, and `max_bytes` behavior explicit?
+- Does every numeric or gradient entry point have a known-correct numerical assertion, not only shape or metadata checks?
+- Are thresholded, parallel, eager/lazy, and capability-specific branches tested for both numerical parity and intended metadata?
+- If the change affects a shared mechanism, is there release-mode end-to-end A/B evidence covering the dominant cost and the Python/Rust boundary?
+- Were abandoned helpers, stubs, branches, compatibility paths, tests, benchmark aliases, and stale documentation removed or explicitly retained?
+- Were the relevant ABI stub, public API manifest, changelog, architecture document, and release metadata updated together?
+
+The checklist should remain short enough to use on every meaningful change. Detailed audits may expand it for a specific workload, but they should not turn every hypothetical extreme into a permanent production rule.
+
+## Enforceable guardrails
+
+The prose rules should be backed by cheap repository checks where possible. The preferred direction is one architecture check invoked by `scripts/check.py`, with a small reviewed allowlist for intentional exceptions. It should initially cover:
+
+- forbidden imports across the core, PyO3, public Python, integration, and test-oracle boundaries;
+- new namespace mutation, wildcard imports, or unregistered dynamic compatibility forwarding;
+- new nested numeric native returns and unregistered `_native.pyi` `object`/`Any` annotations;
+- duplicate target or execution-family selectors outside the owning module;
+- native-handle optional branches and fallback markers outside their allowlist;
+- version, public-export, ABI-stub, and changelog consistency at release boundaries.
+
+The check should report a file, line, rule, and registered exception identifier. It should not attempt to prove exact peak RSS, infer algorithmic quality from line count, or replace numerical tests and release benchmarks. Mechanical checks protect ownership and contracts; scientific correctness and performance still require focused tests and measurements.
+
+## Exception ledger
+
+Intentional deviations should be recorded in a small table in the relevant trunk document or change record:
+
+| Exception | Owner | Reason | Scope | Evidence | Removal or review condition |
+| --- | --- | --- | --- | --- | --- |
+| Dynamic compatibility forwarder | Public facade owner | Preserve an existing import or pickle contract | Named symbols only | Contract tests | Remove after the documented compatibility window |
+| Family-specific read-back | Native family owner | Retained representation is materially different | Named plan type and target | Numerical and memory evidence | Revisit when the representation changes |
+| Backend capability probe | Integration owner | External framework has version-dependent optional capability | Integration boundary only | Compatibility tests | Replace with a versioned contract when dependency support is fixed |
+
+The ledger is not permission to accumulate exceptions. Each row must describe a bounded scope and a condition under which it is deleted, narrowed, or re-evaluated.
+
 ## Ordered work program
 
 ### P0: freeze ownership and ABI rules

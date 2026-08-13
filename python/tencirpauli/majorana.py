@@ -178,7 +178,19 @@ class MajoranaOperator:
 
     Input products are canonicalized, duplicate words are aggregated, exact
     zero coefficients are removed, and surviving terms are sorted
-    lexicographically by generator indices.
+    lexicographically by generator indices. A ``MajoranaOperator`` with
+    ``n_modes`` represents ``n_modes`` complex-fermion modes and ``2*n_modes``
+    Majorana generators; indices ``2*m`` and ``2*m + 1`` belong to complex
+    mode ``m``.
+
+    Additive particle-number or spin charges are defined on that underlying
+    fermion-mode layout, so use :meth:`to_fermion` before calling
+    ``analyze_charge`` or ``restrict_charge``. For Pauli ``Z2`` symmetry
+    discovery and tapering, map directly with :meth:`map_fermions` and then
+    use :meth:`~tencirpauli.PauliOperator.find_z2_symmetries` or
+    :meth:`~tencirpauli.PauliOperator.taper_z2`. These are distinct from an
+    occupation-parity sector; the current Majorana facade has no separate
+    direct parity-sector restriction.
     """
 
     __slots__ = ("_locked", "_native_handle", "_terms", "n_modes")

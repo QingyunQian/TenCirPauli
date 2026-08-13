@@ -1,6 +1,6 @@
 # Phase 11 Factorized Additive-Charge MVP Specification
 
-Status: owner-directed implementation specification. This phase is not implemented by this document.
+Status: implemented; acceptance evidence is recorded in `docs/vibe/implementation-status.md`. This document remains the binding historical implementation contract.
 
 ## 1. Review disposition and binding decisions
 

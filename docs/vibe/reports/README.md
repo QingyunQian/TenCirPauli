@@ -39,6 +39,7 @@
 - [Phase 9.5 review](phase-9.5-review-2026-08-06.md)
 - [Phase 9.5 closure evidence](phase-9.5-closure-evidence-2026-08-06.md)
 - [Phase 10 review](phase-10-review-2026-08-06.md)
+- [Phase 12 common noise channel gradients review](phase-12-review-2026-08-13.md)
 
 ## Phase 10.5 records
 

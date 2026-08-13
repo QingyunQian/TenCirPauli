@@ -1,6 +1,6 @@
 # Phase 12 Common Noise Channels and Native Scalar Gradients Specification
 
-Status: implemented; acceptance evidence is recorded in the current source, `tests/test_phase12_noise.py`, and the release benchmark source `benchmarks/python/test_propagation_channels_benchmark.py`. This phase is the propagation/noise successor to the completed Phase 11 factorized additive-charge work; it does not replace the existing Phase 11 specification.
+Status: implemented; focused remediation complete. The remediation evidence is recorded in `../reports/phase-12-review-2026-08-13.md`, the source, `tests/test_common_noise_channels.py`, `tests/test_propagation_gradient.py`, `tests/test_circuit_jax.py`, and `benchmarks/python/test_propagation_channels_benchmark.py`; the project environment passed the JAX oracle tests and release benchmark record `20260813T052717Z_c42a754cca87-dirty`. This phase is the propagation/noise successor to the completed Phase 11 factorized additive-charge work; it does not replace the existing Phase 11 specification.
 
 ## 1. Purpose and scope
 

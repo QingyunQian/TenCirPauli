@@ -129,6 +129,155 @@ def test_channel_gradients_match_finite_difference_and_boundary_contract() -> No
     ).all()
 
 
+@pytest.mark.parametrize("code, component", (("X", 0), ("Y", 1)))
+def test_phase_damping_gamma_one_drops_transverse_edges(
+    code: str, component: int
+) -> None:
+    bloch = np.zeros((1, 3), dtype=np.float64)
+    bloch[0, component] = 0.37
+    tape = advanced.GateTape(1)
+    tape.phasedamping(0, gamma_parameter=0)
+    result = _engine(
+        tape,
+        code,
+        state=tcp.ProductBlochState(bloch),
+    ).value_and_grad([1.0])
+    assert result.value == 0.0
+    assert result.gradient[0] == 0.0
+    assert np.isfinite(result.gradient).all()
+
+
+@pytest.mark.parametrize("code, component", (("X", 0), ("Y", 1)))
+def test_amplitude_damping_gamma_one_drops_transverse_edges(
+    code: str, component: int
+) -> None:
+    bloch = np.zeros((1, 3), dtype=np.float64)
+    bloch[0, component] = -0.29
+    tape = advanced.GateTape(1)
+    tape.amplitudedamping(0, gamma_parameter=0, p_parameter=1)
+    result = _engine(
+        tape,
+        code,
+        state=tcp.ProductBlochState(bloch),
+    ).value_and_grad([1.0, 0.63])
+    np.testing.assert_allclose(result.value, 0.0, atol=0.0)
+    np.testing.assert_array_equal(result.gradient, [0.0, 0.0])
+    assert np.isfinite(result.gradient).all()
+
+
+@pytest.mark.parametrize("p", (0.0, 0.5, 0.63, 1.0))
+def test_amplitude_damping_z_split_has_frozen_support_derivatives(p: float) -> None:
+    z = 0.44
+    gamma = 0.37
+    tape = advanced.GateTape(1)
+    tape.amplitudedamping(0, gamma_parameter=0, p_parameter=1)
+    result = _engine(
+        tape,
+        "Z",
+        state=tcp.ProductBlochState(np.asarray([[0.0, 0.0, z]])),
+    ).value_and_grad([gamma, p])
+    expected_value = gamma * (2.0 * p - 1.0) + (1.0 - gamma) * z
+    expected_gamma = (2.0 * p - 1.0) - z
+    expected_p = 0.0 if p == 0.5 else 2.0 * gamma
+    np.testing.assert_allclose(result.value, expected_value, atol=1.0e-12)
+    np.testing.assert_allclose(
+        result.gradient, [expected_gamma, expected_p], atol=1.0e-12
+    )
+    assert np.isfinite(result.gradient).all()
+
+
+def test_amplitude_damping_split_cancellation_is_absent_from_reverse() -> None:
+    tape = advanced.GateTape(1)
+    tape.amplitudedamping(0, gamma_parameter=0, p_parameter=1)
+    observable = tcp.PauliOperator.from_terms(1, [("I", 0.4), ("Z", 1.0)])
+    engine = advanced.PropagationEngine(tape, observable)
+    propagated = engine.propagate_operator([0.4, 0.0])
+    assert [(term.word.to_codes(), term.coefficient) for term in propagated.terms] == [
+        ((3,), 0.6 + 0.0j)
+    ]
+    result = engine.value_and_grad([0.4, 0.0])
+    np.testing.assert_allclose(result.value, 0.6, atol=1.0e-12)
+    np.testing.assert_allclose(result.gradient, [-1.0, 0.0], atol=1.0e-12)
+
+
+def test_weight_projection_drops_channel_dependent_overweight_continuation() -> None:
+    tape = advanced.GateTape(2)
+    tape.rxx(0, 1, parameter=0)
+    tape.amplitudedamping(0, gamma_parameter=1, p_parameter=2)
+    observable = tcp.PauliOperator.from_terms(2, [("ZI", 1.0)])
+    state = tcp.ProductBlochState(np.asarray([[0.0, 0.0, 0.44], [0.0, 0.0, 0.0]]))
+    engine = advanced.PropagationEngine(
+        tape, observable, initial_state=state, max_weight=1
+    )
+    theta, gamma, p = 0.41, 0.37, 0.73
+    result = engine.value_and_grad([theta, gamma, p])
+    expected_value = gamma * (2.0 * p - 1.0) + (1.0 - gamma) * np.cos(theta) * 0.44
+    expected_gradient = [
+        -(1.0 - gamma) * np.sin(theta) * 0.44,
+        (2.0 * p - 1.0) - np.cos(theta) * 0.44,
+        2.0 * gamma,
+    ]
+    np.testing.assert_allclose(result.value, expected_value, atol=1.0e-12)
+    np.testing.assert_allclose(result.gradient, expected_gradient, atol=1.0e-12)
+
+
+def test_high_level_channel_gradient_arrays_follow_occurrence_order() -> None:
+    values = np.asarray([0.13, 0.23, -0.21, 0.29, 0.63], dtype=np.float64)
+    observable = tcp.PauliOperator.from_terms(1, [("X", 0.8), ("Z", -0.4)])
+
+    def build(point: np.ndarray) -> tcp.PropagationCircuit:
+        circuit = tcp.PropagationCircuit(
+            1, initial_state=tcp.ProductBlochState(np.asarray([[0.31, -0.27, 0.44]]))
+        )
+        circuit.ry(0, theta=point[0])
+        circuit.phasedamping(0, gamma=point[1])
+        circuit.rx(0, theta=point[2])
+        circuit.amplitudedamping(0, gamma=point[3], p=point[4])
+        return circuit
+
+    circuit = build(values)
+    assert tuple(
+        (item.operation_index, item.parameter_name)
+        for item in circuit.channel_parameter_layout
+    ) == ((1, "gamma"), (3, "gamma"), (3, "p"))
+    result = circuit.value_and_grad(observable)
+    finite = np.empty_like(values)
+    step = 1.0e-6
+    for index in range(values.size):
+        plus = values.copy()
+        minus = values.copy()
+        plus[index] += step
+        minus[index] -= step
+        finite[index] = (
+            build(plus).expectation(observable) - build(minus).expectation(observable)
+        ) / (2.0 * step)
+    np.testing.assert_allclose(
+        result.gradient, finite[[0, 2]], atol=3.0e-6, rtol=2.0e-6
+    )
+    np.testing.assert_allclose(
+        result.channel_gradient, finite[[1, 3, 4]], atol=3.0e-6, rtol=2.0e-6
+    )
+
+
+def test_channel_only_and_rotation_only_public_gradient_arrays_are_empty_and_read_only() -> (
+    None
+):
+    observable = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
+    channels = tcp.PropagationCircuit(1)
+    channels.phasedamping(0, gamma=0.23)
+    channel_result = channels.value_and_grad(observable)
+    assert channel_result.gradient.shape == (0,)
+    assert channel_result.gradient.flags.c_contiguous
+    assert not channel_result.gradient.flags.writeable
+
+    rotations = tcp.PropagationCircuit(1)
+    rotations.ry(0, theta=0.19)
+    rotation_result = rotations.value_and_grad(observable)
+    assert rotation_result.channel_gradient.shape == (0,)
+    assert rotation_result.channel_gradient.flags.c_contiguous
+    assert not rotation_result.channel_gradient.flags.writeable
+
+
 def test_high_level_channel_layout_qir_batch_and_concurrency() -> None:
     circuit = tcp.PropagationCircuit(2)
     circuit.ry(0, theta=0.17)

@@ -161,11 +161,33 @@ def _qudit_vector(
 class AdditiveCharge:
     """Immutable exact integer-valued diagonal charge on an ``OperatorSpace``.
 
-    Fermion and boson weights contribute ``weight * occupation``. Qubit axes
-    use the explicit ``(level_0, level_1)`` pair. Qudit weights multiply the
-    canonical integer-normalized spin-z spectrum. ``offset`` is added to
-    every eigenvalue. Charges are the input to :meth:`sector` and
-    :func:`analyze_charge`.
+    The mapping arguments use local-axis indices as dictionary keys. Their
+    values define the contribution of that axis to the charge on an
+    occupation-basis state::
+
+        Q = offset + sum(fermion_weight[m] * n_m)
+                    + sum(boson_weight[m] * n_m)
+                    + sum(qubit_level_charge[j, level_j])
+                    + sum(qudit_weight[j] * spin_z_level[j])
+
+    ``fermions={mode: weight}`` assigns ``weight * n_mode`` with
+    ``n_mode`` in ``{0, 1}``. ``bosons={mode: weight}`` assigns
+    ``weight * n_mode`` with an arbitrary non-negative boson occupation.
+    ``qubits={index: (level_0, level_1)}`` explicitly assigns the two charge
+    values for the computational basis levels ``|0>`` and ``|1>``. Unlisted
+    axes have zero weight. ``offset`` is added once to every basis-state
+    eigenvalue, so ``bosons={0: -1}, offset=1`` represents ``1 - n_0``.
+
+    ``qudits={site: weight}`` multiplies the canonical integer-normalized
+    spin-z spectrum: for odd dimension ``d`` it is
+    ``(d - 1) / 2, ..., -(d - 1) / 2``; for even ``d`` it is
+    ``d - 1, d - 3, ..., -(d - 1)``. Arbitrary per-level boson or qudit
+    lookup tables are not part of this API.
+
+    This class represents an exact additive charge and the condition
+    ``[operator, Q] = 0``. It is not a modular occupation-parity constraint
+    and it is not a Pauli ``Z2SymmetryAnalysis``. Charges are the input to
+    :meth:`sector` and :func:`analyze_charge`.
     """
 
     __slots__ = (
@@ -461,7 +483,16 @@ class AdditiveCharge:
 
 
 class AdditiveSymmetryAnalysis:
-    """Lightweight exact commutator result for one additive charge."""
+    """Lightweight exact commutator result for one additive charge.
+
+    ``is_conserved`` is true exactly when the analyzed operator commutes with
+    the diagonal charge, ``[operator, charge] = 0``, after native
+    canonicalization and aggregation. ``commutator_term_count`` is the number
+    of surviving canonical terms in that commutator; zero therefore means
+    exact cancellation, not merely a small numerical residual. This result
+    describes additive-charge conservation only and does not discover Pauli
+    ``Z2`` generators or occupation-parity sectors.
+    """
 
     __slots__ = ("charge", "commutator_term_count", "is_conserved", "method")
     charge: AdditiveCharge
@@ -576,10 +607,19 @@ def _local_dimensions(
 class ChargeSector:
     """Immutable rank/unrank plan for simultaneous additive charge constraints.
 
-    A sector enumerates only finite operator-space basis states satisfying all
-    constraints. Its ordering is ``operator_space_axis0_msb_mixed_radix`` and
-    is shared by ``rank``, ``unrank``, ``basis_states`` and restricted matrix
-    targets.
+    Each constraint is a ``(AdditiveCharge, target_value)`` pair. The sector
+    enumerates only finite occupation-basis states of the common
+    :class:`~tencirpauli.OperatorSpace` whose additive charge eigenvalues
+    equal all requested targets. The basis rows contain one local occupation
+    per operator-space axis, ordered as fermions, bosons, qubits, then
+    qudits; boson axes require inclusive finite cutoffs.
+
+    The ordering is ``operator_space_axis0_msb_mixed_radix`` and is shared by
+    ``rank``, ``unrank``, ``basis_states`` and restricted matrix targets.
+    ``ChargeSector`` is an occupation-space restriction, not Pauli
+    ``Z2`` tapering: it does not accept Pauli generators, remove qubits, or
+    transform a non-diagonal stabilizer. An operator passed to
+    ``restrict_charge`` must preserve every selected charge sector.
     """
 
     __slots__ = (
@@ -1047,6 +1087,11 @@ class ChargeRestrictedOperator:
     Construction validates exact charge conservation and retains a compact
     lazy plan. Explicit sparse/dense materialization or an eager MVP request
     installs one immutable transition-graph cache on this mathematical facade.
+    The result is a numerical operator on the selected occupation basis, not a
+    new ``FermionOperator`` or ``PauliOperator``. Apply fermion-to-qubit
+    mapping, Pauli algebra, or Pauli ``Z2`` tapering to the source operator
+    before restriction; a ``ChargeRestrictedOperator`` does not define a
+    Jordan--Wigner map for its generally non-power-of-two sector dimension.
     """
 
     __slots__ = (
@@ -1382,7 +1427,15 @@ def analyze_charge(
     *,
     max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
 ) -> AdditiveSymmetryAnalysis:
-    """Analyze an additive charge through a deterministic native selection rule."""
+    """Analyze exact additive-charge conservation through a native commutator.
+
+    The charge must use the same operator-space layout as ``operator``. For a
+    structured fermion, boson, or hybrid operator, the charge is evaluated in
+    its occupation basis. For a ``PauliOperator``, the charge must be a pure
+    qubit-space charge with matching width. This method checks ``[operator,
+    Q] = 0``; it does not search for Pauli ``Z2`` symmetries or interpret a
+    modular occupation parity as an additive charge.
+    """
     if not isinstance(charge, AdditiveCharge):
         raise TypeError("charge must be an AdditiveCharge")
     _validate_max_bytes(max_bytes)
@@ -1441,11 +1494,15 @@ def restrict_charge(
     storage: ChargeStorage = "lazy",
     max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
 ) -> ChargeRestrictedOperator:
-    """Validate exact conservation and build a restricted MVP plan.
+    """Validate exact conservation and build an occupation-space MVP plan.
 
     ``storage="lazy"`` is the compact default. ``storage="eager"`` is an
     explicit prewarm request; dense and sparse materialization also populate
-    the eager transition cache on demand.
+    the eager transition cache on demand. The source operator must commute
+    with every ``AdditiveCharge`` in ``sector.constraints``. This restriction
+    keeps only basis states satisfying those charge values; it is distinct
+    from Pauli Clifford ``Z2`` tapering, which changes the Pauli basis and
+    removes qubits.
     """
     if not isinstance(sector, ChargeSector):
         raise TypeError("sector must be a ChargeSector")

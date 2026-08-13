@@ -168,6 +168,34 @@ def test_shared_slot_and_checkpoint_replay_are_identical() -> None:
     assert not results[0].gradient.flags.writeable
 
 
+def test_shared_rotation_and_channel_slots_match_finite_difference() -> None:
+    tape = advanced.GateTape(1)
+    tape.ry(0, parameter=0)
+    tape.phasedamping(0, gamma_parameter=0)
+    tape.ptm((0,), np.diag([1.0, 0.8, 0.6, 0.9]).astype(np.float64))
+    tape.amplitudedamping(0, gamma_parameter=1, p_parameter=1)
+    observable = tcp.PauliOperator.from_terms(1, [("X", 0.7), ("Z", -0.4)])
+    state = tcp.ProductBlochState(np.asarray([[0.31, -0.27, 0.44]]))
+    engine = advanced.PropagationEngine(tape, observable, initial_state=state)
+    values = np.asarray([0.17, 0.41], dtype=np.float64)
+    result = engine.value_and_grad(values, checkpoint_interval=2)
+    finite = np.empty(2, dtype=np.float64)
+    step = 1.0e-6
+    for index in range(values.size):
+        plus = values.copy()
+        minus = values.copy()
+        plus[index] += step
+        minus[index] -= step
+        finite[index] = (engine.expectation(plus) - engine.expectation(minus)) / (
+            2.0 * step
+        )
+    np.testing.assert_allclose(result.gradient, finite, atol=3.0e-6, rtol=2.0e-6)
+    for interval in (1, 3, None):
+        replay = engine.value_and_grad(values, checkpoint_interval=interval)
+        assert replay.value == result.value
+        np.testing.assert_array_equal(replay.gradient, result.gradient)
+
+
 def test_frozen_support_drops_zero_local_branches() -> None:
     tape = advanced.GateTape(1)
     tape.ry(0, parameter=0)

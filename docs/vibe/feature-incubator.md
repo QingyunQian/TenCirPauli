@@ -156,7 +156,7 @@ Promotion criteria: one concrete workload that cannot be expressed adequately wi
 
 ### Fast Block-factorized charge sectors
 
-Status: `deferred` from Phase 10.5 by owner decision D11.
+Status: `deferred` from Phase 10.5 by owner decision D11. Phase 11 implemented compact factorized execution for provably independent charge components; the coupled cross-factor Block fast path described here remains deferred.
 
 Motivation: accelerate finite sectors whose conserved additive charge couples otherwise separable factors and whose Hamiltonian transfers charge between them. Representative applications include Jaynes–Cummings and Tavis–Cummings excitation exchange, exciton–photon polaritons and cavity QED, atom–molecule Feshbach conversion with charges such as `N_f + 2 N_b`, and exchange terms preserving only a combined subsystem spin projection.
 
@@ -182,19 +182,19 @@ Promotion criteria: a representative interaction graph, a target metric, explici
 
 ### JAX-compatible gradients for parameterized PTMs
 
-Status: `seed`.
+Status: `deferred after Phase 12 scope decision`; implementation not started.
 
-Priority: near-term; estimated implementation effort: low.
+Priority: workload-gated follow-up; implementation effort is intentionally not estimated before a concrete use case.
 
 Motivation: allow a PTM whose entries are produced by an upstream JAX parameterization to participate in the same native value-and-gradient contract as parameterized Pauli rotations. This covers differentiable unitary-derived PTMs, parameterized noise channels, and user-defined local linear maps without making the Rust core depend on JAX.
 
-Current design: retain the existing static `PropagationCircuit.ptm()` API and add a parameterized PTM path with a fixed local sparsity/layout and runtime matrix values. The native reverse pass returns the VJP with respect to the runtime PTM entries, using the local rule `dL/dR[out,in] = adjoint[out] * input[in]`. The existing JAX custom-VJP bridge then composes that PTM-entry cotangent with the upstream `R(theta)` function and returns the gradient to JAX. PTM structure must remain fixed during one compiled execution; dynamic zero/nonzero pattern changes are not part of the first contract.
+Current decision: Phase 12 retains the existing static one- and two-qubit `PropagationCircuit.ptm()` forward path but does not add runtime PTM values or PTM-entry gradients. Phase 12 instead implements TensorCircuit-compatible common channels and gradients with respect to their small scalar parameter sets. Rust retains one flat scalar-gradient contract, while the high-level circuit facade presents separate angle and channel-gradient vectors. This avoids 16- or 256-entry gradients for every PTM occurrence.
 
-Dependencies: a runtime PTM payload in the propagation tape/engine, native PTM-entry VJP read-back, one coarse JAX callback carrying the PTM values, and differential tests against dense one- and two-qubit references. The implementation should reuse the current PTM transition and aggregation machinery rather than add a second local-map representation.
+Dependencies for any later reconsideration remain a runtime PTM payload, native PTM-entry VJP read-back, a coarse JAX callback carrying PTM values, explicit frozen-support behavior for exact-zero entries, memory accounting, and independent one-/two-qubit dense references.
 
-Open questions: whether the first public API accepts one flattened PTM buffer for all parameterized gates or exposes a small parameterized-PTM descriptor; whether dense fixed-layout and sparse fixed-pattern PTMs share one ABI; and whether physical-channel validation is performed only at construction or also for each runtime matrix value.
+Open questions: whether a real channel-learning or system-identification workload needs entry-wise PTM gradients; whether its runtime layout is dense or fixed-sparse; and whether its zero-entry derivative target should follow the current frozen-support contract or a distinct fixed-basis contract.
 
-Promotion criteria: exact finite-difference and dense-VJP tests for one- and two-qubit unitary-derived PTMs, depolarizing and amplitude-damping parameterizations; JAX `jit`/`grad` coverage with shared upstream parameters; frozen-layout behavior for zero entries; deterministic concurrent calls; and a release-mode end-to-end benchmark showing that PTM values and their VJP cross the boundary in one batched call.
+Promotion criteria: a concrete workload not covered by the Phase 12 scalar-channel API, an owner decision on zero-entry semantics, exact support-stable finite-difference and dense-VJP tests for one- and two-qubit maps, deterministic JAX/concurrency evidence, and a release-mode end-to-end benchmark showing that the additional boundary and gradient size are justified.
 
 ### Specialized quadratic-algebra analysis
 
