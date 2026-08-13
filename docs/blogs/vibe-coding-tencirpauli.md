@@ -28,7 +28,7 @@
 
 性能基线则给科学计算提供了尺度。一个程序从 10 秒优化到 1 秒，看起来提升了十倍；如果成熟库在同一问题上只需要 100 毫秒，这个程序仍然慢了一个数量级。没有这把尺子，开发者不知道问题通常应该耗时多久，也不知道当前优化究竟解决了主要瓶颈，还是只改动了一小块不重要的代码。
 
-TenCirPauli 就是在这样的坐标系中磨出来的。QuSpin、OpenFermion、TensorCircuit 和 PauliPropagation.jl 分别提供了不同方向的接口、正确性和性能参照。TenCirPauli 借助这些坐标重新选择数据表示和执行路径，把问题设计成适合 Rust 和 Agent 协作的形式。项目的[性能页面](../performance.md)和[研究案例](../../examples/research/README.md)记录了这些对照结果。
+TenCirPauli 就是在这样的坐标系中磨出来的。QuSpin、OpenFermion、TensorCircuit 和 PauliPropagation.jl 分别提供了不同方向的接口、正确性和性能参照。TenCirPauli 借助这些坐标重新选择数据表示和执行路径，把问题设计成适合 Rust 和 Agent 协作的形式。项目的[性能页面](../performance.md)和[研究案例](https://github.com/tensorcircuit/TenCirPauli/blob/main/examples/research/README.md)记录了这些对照结果。
 
 ## 实验的工作方式
 
