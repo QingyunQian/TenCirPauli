@@ -99,11 +99,20 @@ impl StatevectorPauliAction {
         self.phase
     }
 
-    pub(crate) fn apply_into(
+    pub(crate) fn value_at(&self, input: &[Complex64], row: usize) -> Complex64 {
+        let column = row ^ self.x_mask;
+        let mut value = self.phase * input[column];
+        if (self.z_mask & column).count_ones() & 1 != 0 {
+            value = -value;
+        }
+        value
+    }
+
+    pub(crate) fn apply_into_and_expectation(
         &self,
         input: &[Complex64],
         output: &mut [Complex64],
-    ) -> Result<(), PauliError> {
+    ) -> Result<f64, PauliError> {
         if input.len() != self.dimension {
             return Err(PauliError::InvalidStructureLength {
                 expected: self.dimension,
@@ -116,42 +125,12 @@ impl StatevectorPauliAction {
                 actual: output.len(),
             });
         }
-        for (row, value) in output.iter_mut().enumerate() {
-            *value = self.value_at(input, row);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn value_at(&self, input: &[Complex64], row: usize) -> Complex64 {
-        let column = row ^ self.x_mask;
-        let mut value = self.phase * input[column];
-        if (self.z_mask & column).count_ones() & 1 != 0 {
-            value = -value;
-        }
-        value
-    }
-
-    pub(crate) fn expectation_from_action(
-        &self,
-        input: &[Complex64],
-        applied: &[Complex64],
-    ) -> Result<f64, PauliError> {
-        if input.len() != self.dimension {
-            return Err(PauliError::InvalidStructureLength {
-                expected: self.dimension,
-                actual: input.len(),
-            });
-        }
-        if applied.len() != self.dimension {
-            return Err(PauliError::InvalidStructureLength {
-                expected: self.dimension,
-                actual: applied.len(),
-            });
-        }
         let mut real = 0.0;
         let mut imaginary = 0.0;
-        for (left, right) in input.iter().zip(applied) {
-            let product = left.conj() * *right;
+        for (row, value) in output.iter_mut().enumerate() {
+            let applied = self.value_at(input, row);
+            *value = applied;
+            let product = input[row].conj() * applied;
             real += product.re;
             imaginary += product.im;
         }
@@ -203,5 +182,25 @@ impl StatevectorPauliAction {
             *value = (*value + eigenvalue * *applied_value) * scale;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fused_pauli_application_and_expectation_matches_known_state() {
+        let scale = 2.0f64.sqrt().recip();
+        let input = [Complex64::new(scale, 0.0), Complex64::new(scale, 0.0)];
+        let word = PauliWord::from_codes(1, &[1]).expect("X word");
+        let action = StatevectorPauliAction::from_word(&word).expect("X action");
+        let mut applied = [Complex64::default(); 2];
+        let expectation = action
+            .apply_into_and_expectation(&input, &mut applied)
+            .expect("fused Pauli action");
+        assert!((expectation - 1.0).abs() < 1e-15);
+        assert!((applied[0] - input[0]).norm() < 1e-15);
+        assert!((applied[1] - input[1]).norm() < 1e-15);
     }
 }

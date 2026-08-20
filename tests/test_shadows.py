@@ -43,6 +43,12 @@ def test_clifford_frame_import_and_numeric_estimators() -> None:
         snapshots.rdm(),
         np.array([[0.5, 1.5], [1.5, 0.5]], dtype=np.complex128),
     )
+    np.testing.assert_allclose(
+        snapshots.estimate_many(
+            [tcp.PauliWord.from_string("X"), tcp.PauliWord.from_string("Z")]
+        ),
+        [3.0, 0.0],
+    )
 
 
 def test_seeded_sampling_roundtrips_and_stabilizer_fidelity() -> None:

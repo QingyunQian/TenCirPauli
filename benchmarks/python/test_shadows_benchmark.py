@@ -26,7 +26,7 @@ def _dense_target(nqubits: int) -> np.ndarray[object, object]:
 
 
 @pytest.mark.parametrize("protocol", ("pauli", "clifford"))
-@pytest.mark.parametrize("nqubits", (4, 8, 10))
+@pytest.mark.parametrize("nqubits", (4, 8, 10, 16))
 def test_dense_sampling(
     benchmark: BenchmarkFixture, protocol: str, nqubits: int
 ) -> None:
@@ -74,6 +74,100 @@ def test_stabilizer_sampling_and_estimation(
             "nsettings": snapshots.nsettings,
             "repeats": snapshots.repeats,
             "thread_count": int(os.environ.get("RAYON_NUM_THREADS", "1")),
+        }
+    )
+
+
+@pytest.mark.parametrize("nqubits, nsettings", ((64, 16), (256, 8)))
+def test_stabilizer_sampling(
+    benchmark: BenchmarkFixture, nqubits: int, nsettings: int
+) -> None:
+    state = tcp.StabilizerState.zero_state(nqubits)
+    expected = tcp.Snapshots.sample(
+        state, nsettings=nsettings, repeats=1, protocol="clifford", seed=23
+    )
+    result = benchmark(
+        tcp.Snapshots.sample,
+        state,
+        nsettings=nsettings,
+        repeats=1,
+        protocol="clifford",
+        seed=23,
+    )
+    expected_arrays = expected.to_arrays()
+    result_arrays = result.to_arrays()
+    np.testing.assert_array_equal(result_arrays.outcomes, expected_arrays.outcomes)
+    np.testing.assert_array_equal(
+        result_arrays.frame_x_words, expected_arrays.frame_x_words
+    )
+    benchmark.extra_info.update(
+        {
+            "protocol": "clifford",
+            "estimator": "sampling",
+            "nqubits": nqubits,
+            "nsettings": nsettings,
+            "repeats": 1,
+            "thread_count": int(os.environ.get("RAYON_NUM_THREADS", "1")),
+        }
+    )
+
+
+def _random_observables(nqubits: int, count: int) -> list[tcp.PauliWord]:
+    rng = np.random.default_rng(20260820)
+    return [
+        tcp.PauliWord.from_codes(
+            rng.integers(0, 4, size=nqubits, dtype=np.uint8).tolist()
+        )
+        for _ in range(count)
+    ]
+
+
+@pytest.mark.parametrize("term_count", (1, 16, 128, 512))
+def test_clifford_estimate_many(benchmark: BenchmarkFixture, term_count: int) -> None:
+    snapshots = tcp.Snapshots.sample(
+        tcp.StabilizerState.zero_state(12),
+        nsettings=64,
+        repeats=1,
+        protocol="clifford",
+        seed=102,
+    )
+    observables = _random_observables(12, term_count)
+    expected = snapshots.estimate_many(observables)
+    result = benchmark(snapshots.estimate_many, observables)
+    np.testing.assert_allclose(result, expected)
+    benchmark.extra_info.update(
+        {
+            "protocol": "clifford",
+            "estimator": "estimate_many",
+            "nqubits": 12,
+            "nsettings": snapshots.nsettings,
+            "repeats": snapshots.repeats,
+            "term_count": term_count,
+        }
+    )
+
+
+@pytest.mark.parametrize("subsystem_size", (4, 8, 10))
+def test_clifford_rdm(benchmark: BenchmarkFixture, subsystem_size: int) -> None:
+    snapshots = tcp.Snapshots.sample(
+        tcp.StabilizerState.zero_state(12),
+        nsettings=16,
+        repeats=1,
+        protocol="clifford",
+        seed=113,
+    )
+    keep = list(range(subsystem_size))
+    expected = snapshots.rdm(subsystem_to_keep=keep)
+    result = benchmark(snapshots.rdm, subsystem_to_keep=keep)
+    np.testing.assert_allclose(result, expected)
+    benchmark.extra_info.update(
+        {
+            "protocol": "clifford",
+            "estimator": "rdm",
+            "nqubits": 12,
+            "subsystem_size": subsystem_size,
+            "nsettings": snapshots.nsettings,
+            "repeats": snapshots.repeats,
         }
     )
 

@@ -380,12 +380,21 @@ impl StabilizerState {
                 right: self.nqubits,
             });
         }
+        let span = StabilizerSpan::new(&self.generators, self.nqubits);
+        self.expectation_word_with_span(word, &span)
+    }
+
+    fn expectation_word_with_span(
+        &self,
+        word: &PauliWord,
+        span: &StabilizerSpan,
+    ) -> Result<f64, PauliError> {
         if word.x_words().iter().all(|value| *value == 0)
             && word.z_words().iter().all(|value| *value == 0)
         {
             return Ok(1.0);
         }
-        let coefficients = self.solve_span(word.x_words(), word.z_words())?;
+        let coefficients = span.solve(word.x_words(), word.z_words(), self.nqubits);
         let Some(coefficients) = coefficients else {
             return Ok(0.0);
         };
@@ -403,18 +412,25 @@ impl StabilizerState {
         }
         Ok(f64::from(product.sign))
     }
+}
 
-    fn solve_span(&self, x: &[u64], z: &[u64]) -> Result<Option<Vec<bool>>, PauliError> {
+struct StabilizerSpan {
+    basis: Vec<SpanRow>,
+    coefficient_count: usize,
+}
+
+impl StabilizerSpan {
+    fn new(generators: &[SignedPauli], nqubits: usize) -> Self {
         let mut basis = Vec::<SpanRow>::new();
-        for (index, generator) in self.generators.iter().enumerate() {
+        for (index, generator) in generators.iter().enumerate() {
             let mut row = SpanRow::new(
                 generator.x_words.clone(),
                 generator.z_words.clone(),
-                self.nqubits,
-                self.generators.len(),
+                nqubits,
+                generators.len(),
             );
             row.coefficients[index] = true;
-            reduce_span_row(&mut row, &basis, self.nqubits);
+            reduce_span_row(&mut row, &basis, nqubits);
             if let Some(pivot) = first_set_bit(&row.x_words, &row.z_words) {
                 let position = basis
                     .binary_search_by_key(&pivot, |value| value.pivot)
@@ -422,12 +438,19 @@ impl StabilizerState {
                 basis.insert(position, SpanRow { pivot, ..row });
             }
         }
-        let mut target = SpanRow::new(x.to_vec(), z.to_vec(), self.nqubits, self.nqubits);
-        reduce_span_row(&mut target, &basis, self.nqubits);
-        if first_set_bit(&target.x_words, &target.z_words).is_some() {
-            return Ok(None);
+        Self {
+            basis,
+            coefficient_count: generators.len(),
         }
-        Ok(Some(target.coefficients))
+    }
+
+    fn solve(&self, x: &[u64], z: &[u64], nqubits: usize) -> Option<Vec<bool>> {
+        let mut target = SpanRow::new(x.to_vec(), z.to_vec(), nqubits, self.coefficient_count);
+        reduce_span_row(&mut target, &self.basis, nqubits);
+        if first_set_bit(&target.x_words, &target.z_words).is_some() {
+            return None;
+        }
+        Some(target.coefficients)
     }
 }
 
@@ -1143,6 +1166,7 @@ impl Snapshots {
                             nqubits: *nqubits,
                             generators,
                         };
+                        let span = StabilizerSpan::new(&snapshot.generators, snapshot.nqubits);
                         for (operator_index, operator) in operators.iter().enumerate() {
                             let value = operator
                                 .terms()
@@ -1153,7 +1177,8 @@ impl Snapshots {
                                             1.0
                                         } else {
                                             (2.0f64.powi(*nqubits as i32) + 1.0)
-                                                * snapshot.expectation_word(&term.word)?
+                                                * snapshot
+                                                    .expectation_word_with_span(&term.word, &span)?
                                         })
                                 })
                                 .collect::<Result<Vec<_>, PauliError>>()?
@@ -1768,8 +1793,7 @@ fn sample_clifford_statevector(
                     &frame_z_words[start..start + word_count],
                     f64::from(frame_signs[row]),
                 )?;
-                action.apply_into(&current, &mut scratch)?;
-                let expectation = action.expectation_from_action(&current, &scratch)?;
+                let expectation = action.apply_into_and_expectation(&current, &mut scratch)?;
                 let probability_zero = ((1.0 + expectation) * 0.5).clamp(0.0, 1.0);
                 let bit = if outcome_random.next_f64() < probability_zero {
                     0
@@ -2078,24 +2102,35 @@ fn local_pauli_rdm(
     Ok(matrix)
 }
 
-fn pauli_matrix(nqubits: usize, word: &PauliWord, sign: i8) -> Result<Vec<Complex64>, PauliError> {
+fn add_pauli_matrix(
+    matrix: &mut [Complex64],
+    nqubits: usize,
+    word: &PauliWord,
+    sign: i8,
+    scale: f64,
+) -> Result<(), PauliError> {
     let dimension = checked_dimension(nqubits, "computing Pauli matrix dimension")?;
+    if matrix.len() != dimension * dimension {
+        return Err(PauliError::InvalidStructureLength {
+            expected: dimension * dimension,
+            actual: matrix.len(),
+        });
+    }
     let action = StatevectorPauliAction::from_packed(
         nqubits,
         word.x_words(),
         word.z_words(),
         f64::from(sign),
     )?;
-    let mut matrix = vec![Complex64::default(); dimension * dimension];
     for column in 0..dimension {
         let row = column ^ action.x_mask();
         let mut value = action.phase();
         if (action.z_mask() & column).count_ones() & 1 != 0 {
             value = -value;
         }
-        matrix[row * dimension + column] = value;
+        matrix[row * dimension + column] += value * scale;
     }
-    Ok(matrix)
+    Ok(())
 }
 
 fn stabilizer_rdm(state: &StabilizerState, keep: &[usize]) -> Result<Vec<Complex64>, PauliError> {
@@ -2155,12 +2190,13 @@ fn stabilizer_rdm(state: &StabilizerState, keep: &[usize]) -> Result<Vec<Complex
             .map(|qubit| word.code_at(*qubit))
             .collect::<Vec<_>>();
         let restricted = PauliWord::from_codes(keep.len(), &codes)?;
-        for (target, value) in
-            rho.iter_mut()
-                .zip(pauli_matrix(keep.len(), &restricted, product.sign)?)
-        {
-            *target += value / dimension as f64;
-        }
+        add_pauli_matrix(
+            &mut rho,
+            keep.len(),
+            &restricted,
+            product.sign,
+            1.0 / dimension as f64,
+        )?;
     }
     let dimension_full = checked_dimension(state.nqubits, "computing Clifford shadow dimension")?;
     let traced_dimension = dimension_full / dimension;
