@@ -1,6 +1,6 @@
 # Phase 13 Classical Shadow Snapshots Specification
 
-Status: owner-approved implementation-ready specification; not implemented. The required P0 is an exact small-system proof and release-mode profile of global-Clifford sampling through commuting-Pauli measurements. This phase does not reopen Phase 6.5 time evolution and does not add a general statevector, MPS, circuit, or hardware simulator.
+Status: functionally implemented; acceptance remediation remains open. The required P0 is an exact small-system proof and release-mode profile of global-Clifford sampling through commuting-Pauli measurements. This phase does not reopen Phase 6.5 time evolution and does not add a general statevector, MPS, circuit, or hardware simulator.
 
 ## 1. Purpose and binding decisions
 

@@ -143,11 +143,12 @@ impl NativeSnapshotsHandle {
     ) -> PyResult<Vec<f64>> {
         let operators = observables
             .iter()
-            .map(|observable| observable.borrow(py).core().clone())
+            .map(|observable| observable.borrow(py).core_arc())
             .collect::<Vec<_>>();
         py.allow_threads(|| {
+            let operator_refs = operators.iter().map(AsRef::as_ref).collect::<Vec<_>>();
             self.snapshots
-                .estimate_many(&operators, blocks, return_blocks)
+                .estimate_many_refs(&operator_refs, blocks, return_blocks)
                 .map_err(map_error)
         })
     }
@@ -184,10 +185,11 @@ impl NativeSnapshotsHandle {
         keep: Vec<usize>,
         blocks: usize,
         method: u8,
+        max_bytes: usize,
     ) -> PyResult<f64> {
         py.allow_threads(|| {
             self.snapshots
-                .renyi_entropy(&keep, blocks, method)
+                .renyi_entropy(&keep, blocks, method, checked_max_bytes(max_bytes))
                 .map_err(map_error)
         })
     }

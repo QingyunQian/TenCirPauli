@@ -78,19 +78,21 @@ def test_stabilizer_sampling_and_estimation(
     )
 
 
-@pytest.mark.parametrize("nqubits, nsettings", ((64, 16), (256, 8)))
+@pytest.mark.parametrize(
+    "nqubits, nsettings, repeats", ((64, 16, 1), (256, 8, 1), (64, 8, 8))
+)
 def test_stabilizer_sampling(
-    benchmark: BenchmarkFixture, nqubits: int, nsettings: int
+    benchmark: BenchmarkFixture, nqubits: int, nsettings: int, repeats: int
 ) -> None:
     state = tcp.StabilizerState.zero_state(nqubits)
     expected = tcp.Snapshots.sample(
-        state, nsettings=nsettings, repeats=1, protocol="clifford", seed=23
+        state, nsettings=nsettings, repeats=repeats, protocol="clifford", seed=23
     )
     result = benchmark(
         tcp.Snapshots.sample,
         state,
         nsettings=nsettings,
-        repeats=1,
+        repeats=repeats,
         protocol="clifford",
         seed=23,
     )
@@ -106,7 +108,37 @@ def test_stabilizer_sampling(
             "estimator": "sampling",
             "nqubits": nqubits,
             "nsettings": nsettings,
-            "repeats": 1,
+            "repeats": repeats,
+            "thread_count": int(os.environ.get("RAYON_NUM_THREADS", "1")),
+        }
+    )
+
+
+@pytest.mark.parametrize("nqubits", (64, 256))
+def test_pauli_stabilizer_sampling(benchmark: BenchmarkFixture, nqubits: int) -> None:
+    state = tcp.StabilizerState.zero_state(nqubits)
+    expected = tcp.Snapshots.sample(
+        state, nsettings=4, repeats=1, protocol="pauli", seed=29
+    )
+    result = benchmark(
+        tcp.Snapshots.sample,
+        state,
+        nsettings=4,
+        repeats=1,
+        protocol="pauli",
+        seed=29,
+    )
+    expected_arrays = expected.to_arrays()
+    result_arrays = result.to_arrays()
+    np.testing.assert_array_equal(result_arrays.bases, expected_arrays.bases)
+    np.testing.assert_array_equal(result_arrays.outcomes, expected_arrays.outcomes)
+    benchmark.extra_info.update(
+        {
+            "protocol": "pauli",
+            "estimator": "sampling",
+            "nqubits": nqubits,
+            "nsettings": result.nsettings,
+            "repeats": result.repeats,
             "thread_count": int(os.environ.get("RAYON_NUM_THREADS", "1")),
         }
     )
@@ -166,6 +198,54 @@ def test_clifford_rdm(benchmark: BenchmarkFixture, subsystem_size: int) -> None:
             "estimator": "rdm",
             "nqubits": 12,
             "subsystem_size": subsystem_size,
+            "nsettings": snapshots.nsettings,
+            "repeats": snapshots.repeats,
+        }
+    )
+
+
+@pytest.mark.parametrize("method", ("shadow", "randomized_measurement"))
+def test_renyi_entropy(benchmark: BenchmarkFixture, method: str) -> None:
+    repeats = 2 if method == "randomized_measurement" else 1
+    protocol = "pauli" if method == "randomized_measurement" else "clifford"
+    snapshots = tcp.Snapshots.sample(
+        _state(8),
+        nsettings=16,
+        repeats=repeats,
+        protocol=protocol,
+        seed=127,
+    )
+    expected = snapshots.renyi_entropy(subsystem_to_keep=list(range(4)), method=method)
+    result = benchmark(
+        snapshots.renyi_entropy,
+        subsystem_to_keep=list(range(4)),
+        method=method,
+    )
+    np.testing.assert_allclose(result, expected)
+    benchmark.extra_info.update(
+        {
+            "estimator": "renyi_entropy",
+            "method": method,
+            "nqubits": 8,
+            "subsystem_size": 4,
+            "nsettings": snapshots.nsettings,
+            "repeats": snapshots.repeats,
+        }
+    )
+
+
+def test_stabilizer_fidelity(benchmark: BenchmarkFixture) -> None:
+    target = tcp.StabilizerState.zero_state(64)
+    snapshots = tcp.Snapshots.sample(
+        target, nsettings=16, repeats=1, protocol="clifford", seed=131
+    )
+    expected = snapshots.fidelity(target)
+    result = benchmark(snapshots.fidelity, target)
+    np.testing.assert_allclose(result, expected)
+    benchmark.extra_info.update(
+        {
+            "estimator": "stabilizer_fidelity",
+            "nqubits": 64,
             "nsettings": snapshots.nsettings,
             "repeats": snapshots.repeats,
         }

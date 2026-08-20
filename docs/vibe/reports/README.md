@@ -41,6 +41,7 @@
 - [Phase 10 review](phase-10-review-2026-08-06.md)
 - [Phase 12 common noise channel gradients review](phase-12-review-2026-08-13.md)
 - [Phase 13 classical shadow performance review](phase-13-performance-review-2026-08-20.md): separates definite repeated-work and benchmark-coverage findings from performance hypotheses that require release-mode A/B evidence; a small isolated speedup is not sufficient to justify added structural complexity.
+- [Phase 13 classical shadow acceptance review](phase-13-acceptance-review-2026-08-20.md): concludes that the public/core feature slice is functionally implemented but acceptance remediation remains open for shadow Rényi-2 memory scaling, dominant large-width frame generation, allocation/worker contracts, retained correctness evidence, and scalable GIL-held preparation.
 
 ## Phase 10.5 records
 

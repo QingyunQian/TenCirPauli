@@ -5,6 +5,7 @@ use numpy::{
 use pyo3::exceptions::{PyMemoryError, PyOverflowError, PyValueError};
 use pyo3::prelude::*;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use tencir_pauli_core::{Complex64, PauliOperator};
 
 use crate::convert::{
@@ -15,16 +16,22 @@ use crate::convert::{
 
 #[pyclass(module = "tencirpauli._native")]
 pub(crate) struct NativePauliOperatorHandle {
-    operator: PauliOperator,
+    operator: Arc<PauliOperator>,
 }
 
 impl NativePauliOperatorHandle {
     pub(crate) fn from_operator(operator: PauliOperator) -> Self {
-        Self { operator }
+        Self {
+            operator: Arc::new(operator),
+        }
     }
 
     pub(crate) fn core(&self) -> &PauliOperator {
-        &self.operator
+        self.operator.as_ref()
+    }
+
+    pub(crate) fn core_arc(&self) -> Arc<PauliOperator> {
+        Arc::clone(&self.operator)
     }
 }
 
@@ -58,14 +65,14 @@ impl NativePauliOperatorHandle {
                     .add_with_limit(&other.operator, max_bytes as u128)
             })
             .map_err(map_error)?;
-        Ok(Self { operator })
+        Ok(Self::from_operator(operator))
     }
 
     fn scale(&self, py: Python<'_>, scalar_re: f64, scalar_im: f64) -> PyResult<Self> {
         let operator = py
             .allow_threads(|| self.operator.scale(Complex64::new(scalar_re, scalar_im)))
             .map_err(map_error)?;
-        Ok(Self { operator })
+        Ok(Self::from_operator(operator))
     }
 
     fn multiply(&self, py: Python<'_>, other: &Self, max_bytes: usize) -> PyResult<Self> {
@@ -75,7 +82,7 @@ impl NativePauliOperatorHandle {
                     .multiply_with_limit(&other.operator, max_bytes as u128)
             })
             .map_err(map_error)?;
-        Ok(Self { operator })
+        Ok(Self::from_operator(operator))
     }
 
     fn commutator(&self, py: Python<'_>, other: &Self, max_bytes: usize) -> PyResult<Self> {
@@ -85,7 +92,7 @@ impl NativePauliOperatorHandle {
                     .commutator_with_limit(&other.operator, max_bytes as u128)
             })
             .map_err(map_error)?;
-        Ok(Self { operator })
+        Ok(Self::from_operator(operator))
     }
 
     fn anticommutator(&self, py: Python<'_>, other: &Self, max_bytes: usize) -> PyResult<Self> {
@@ -95,7 +102,7 @@ impl NativePauliOperatorHandle {
                     .anticommutator_with_limit(&other.operator, max_bytes as u128)
             })
             .map_err(map_error)?;
-        Ok(Self { operator })
+        Ok(Self::from_operator(operator))
     }
 
     fn materialize<'py>(&self, py: Python<'py>) -> NumpyPauliPackedOutput<'py> {
@@ -129,7 +136,7 @@ impl NativePauliOperatorHandle {
 
     fn adjoint(&self, py: Python<'_>) -> Self {
         let operator = py.allow_threads(|| self.operator.adjoint());
-        Self { operator }
+        Self::from_operator(operator)
     }
 
     fn is_hermitian(&self, py: Python<'_>, tolerance: f64) -> PyResult<bool> {
@@ -190,7 +197,9 @@ pub(crate) fn pauli_operator_native(
             }
             Ok::<PauliOperator, PyErr>(operator)
         })?;
-    Ok(NativePauliOperatorHandle { operator })
+    Ok(NativePauliOperatorHandle {
+        operator: Arc::new(operator),
+    })
 }
 
 #[pyfunction]
@@ -228,7 +237,9 @@ pub(crate) fn pauli_operator_native_array(
         check_native_operator_limit(&operator, nqubits, max_bytes)?;
         Ok::<PauliOperator, PyErr>(operator)
     })?;
-    Ok(NativePauliOperatorHandle { operator })
+    Ok(NativePauliOperatorHandle {
+        operator: Arc::new(operator),
+    })
 }
 
 fn check_native_operator_limit(

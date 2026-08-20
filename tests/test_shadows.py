@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import pytest
 
@@ -126,6 +128,56 @@ def test_blocks_and_shadow_bound_contracts() -> None:
         np.array([[3], [1]], dtype=np.uint8), epsilon=0.5
     )
     assert block_count > 0 and nsettings % block_count == 0
+
+
+def test_renyi_methods_and_energy_variance_have_fixed_values() -> None:
+    bases = np.full((2, 1), 3, dtype=np.uint8)
+    outcomes = np.zeros((2, 1, 1), dtype=np.uint8)
+    snapshots = tcp.Snapshots.from_pauli_measurements(bases, outcomes)
+    np.testing.assert_allclose(
+        snapshots.renyi_entropy(subsystem_to_keep=[0], method="shadow"), -np.log(5.0)
+    )
+    hamiltonian = tcp.PauliOperator.from_terms(1, [("Z", 1.0)])
+    np.testing.assert_allclose(snapshots.energy_variance(hamiltonian), -8.0)
+
+    repeated = tcp.Snapshots.from_pauli_measurements(
+        np.array([[3]], dtype=np.uint8), np.zeros((1, 2, 1), dtype=np.uint8)
+    )
+    np.testing.assert_allclose(
+        repeated.renyi_entropy(subsystem_to_keep=[0], method="randomized_measurement"),
+        -np.log(2.0),
+    )
+
+
+def test_shadow_renyi_workspace_guard_precedes_large_materialization() -> None:
+    snapshots = tcp.Snapshots.from_pauli_measurements(
+        np.full((2, 16), 3, dtype=np.uint8),
+        np.zeros((2, 1, 16), dtype=np.uint8),
+    )
+    with pytest.raises(MemoryError):
+        snapshots.renyi_entropy(subsystem_to_keep=list(range(16)), max_bytes=1 << 30)
+
+
+def test_shadow_seeded_calls_are_concurrent_and_replayable() -> None:
+    state = np.zeros(64, dtype=np.complex128)
+    state[0] = 1.0
+
+    def sample() -> tcp.Snapshots:
+        return tcp.Snapshots.sample(
+            state, nsettings=8, repeats=1, protocol="clifford", seed=91
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = executor.map(lambda _: sample(), range(2))
+    first_arrays = first.to_arrays()
+    second_arrays = second.to_arrays()
+    np.testing.assert_array_equal(
+        first_arrays.frame_x_words, second_arrays.frame_x_words
+    )
+    np.testing.assert_array_equal(
+        first_arrays.frame_z_words, second_arrays.frame_z_words
+    )
+    np.testing.assert_array_equal(first_arrays.outcomes, second_arrays.outcomes)
 
 
 def test_invalid_shadow_inputs_fail_at_the_boundary() -> None:

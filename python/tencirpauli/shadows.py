@@ -442,7 +442,9 @@ class Snapshots:
         complete settings into balanced contiguous blocks and returns the
         median of their block means. Repeats are averaged inside each setting
         first. The default returns a scalar; ``return_blocks=True`` returns a
-        float64 array of shape ``(blocks,)``.
+        float64 array of shape ``(blocks,)``. Local-Pauli variance grows with
+        observable weight, while global-Clifford variance can be preferable for
+        dense observables; global Clifford is not uniformly lower-variance.
         """
         block_count = _positive_count(blocks, "blocks")
         operator_value = _operator_for_target(observable, self.nqubits)
@@ -471,7 +473,9 @@ class Snapshots:
         returns an array of shape ``(nobservables,)``; ``blocks>1`` returns
         their elementwise median-of-means. With ``return_blocks=True`` the
         shape is ``(blocks, nobservables)`` and each operator sum is combined
-        before block reduction.
+        before block reduction. Local-Pauli variance grows with observable
+        weight, while global-Clifford variance can be preferable for dense
+        observables; global Clifford is not uniformly lower-variance.
         """
         block_count = _positive_count(blocks, "blocks")
         operators = _operators_for_targets(observables, self.nqubits)
@@ -545,26 +549,37 @@ class Snapshots:
         alpha: int = 2,
         method: Literal["shadow", "randomized_measurement"] = "shadow",
         blocks: int = 1,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> float:
         """Estimate Rényi-2 using a shadow U-statistic or distinct repeats.
 
         ``alpha=2`` is the only supported order. ``method='shadow'`` uses
         cross-setting pairs and requires at least two settings per block;
-        ``method='randomized_measurement'`` is local-Pauli-only, requires
+        its setting matrices are streamed one block at a time. The
+        ``'randomized_measurement'`` method is local-Pauli-only, requires
         ``repeats>=2``, excludes self-pairs, and follows the collision scale
         ``R=Theta(sqrt(2**k))`` as a pilot heuristic. Purity is median-reduced
-        before applying ``-log``.
+        before applying ``-log``. ``max_bytes`` is a best-effort workspace
+        guard.
         """
         if alpha != 2:
             raise ValueError("only alpha=2 is supported")
         if method not in ("shadow", "randomized_measurement"):
             raise ValueError("method must be 'shadow' or 'randomized_measurement'")
+        _validate_max_bytes(max_bytes)
         keep = _normalize_subsystem(
             self.nqubits, subsystem_to_keep, subsystems_to_trace_out
         )
         block_count = _positive_count(blocks, "blocks")
         method_code = 0 if method == "shadow" else 1
-        return float(self._native.renyi_entropy(list(keep), block_count, method_code))
+        return float(
+            self._native.renyi_entropy(
+                list(keep),
+                block_count,
+                method_code,
+                _effective_max_bytes(max_bytes),
+            )
+        )
 
     def energy_variance(
         self,

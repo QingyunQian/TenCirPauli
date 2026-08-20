@@ -14,6 +14,7 @@ use crate::propagation::{
 use crate::random::RandomStream;
 use crate::scalar::Complex64;
 use crate::word::{packed_word_count, PauliPhase, PauliWord};
+use rayon::prelude::*;
 
 const PAULI_FRAME_DOMAIN: u64 = 0x7061_756c_695f_6672;
 const PAULI_OUTCOME_DOMAIN: u64 = 0x7061_756c_695f_6f75;
@@ -350,7 +351,7 @@ impl StabilizerState {
             let old = self.generators[pivot].clone();
             for index in 0..self.generators.len() {
                 if index != pivot && self.generators[index].symplectic_inner(measured) != 0 {
-                    self.generators[index] = self.generators[index].multiply(&old, self.nqubits)?;
+                    self.generators[index].multiply_in_place(&old)?;
                 }
             }
             let bit = (random.next_u64() & 1) as u8;
@@ -645,8 +646,8 @@ fn nullspace_basis(rows: &[Vec<u8>], dimension: usize) -> Vec<Vec<bool>> {
         is_pivot[*pivot] = true;
     }
     let mut result = Vec::new();
-    for free in 0..dimension {
-        if is_pivot[free] {
+    for (free, pivot) in is_pivot.iter().copied().enumerate() {
+        if pivot {
             continue;
         }
         let mut coefficients = vec![false; dimension];
@@ -707,24 +708,106 @@ fn sample_anticommuting_vector(
     Ok(combine_binary(basis, &coefficients))
 }
 
-fn symplectic_complement(
+#[derive(Clone, Debug)]
+struct PackedBits {
+    words: Vec<u64>,
+}
+
+impl PackedBits {
+    fn zero(bit_count: usize) -> Self {
+        Self {
+            words: vec![0; bit_count.div_ceil(64)],
+        }
+    }
+
+    fn get(&self, bit: usize) -> bool {
+        self.words[bit / 64] & (1u64 << (bit % 64)) != 0
+    }
+
+    fn set(&mut self, bit: usize) {
+        self.words[bit / 64] |= 1u64 << (bit % 64);
+    }
+
+    fn xor_assign(&mut self, other: &Self) {
+        for (left, right) in self.words.iter_mut().zip(&other.words) {
+            *left ^= *right;
+        }
+    }
+}
+
+fn nullspace_basis_packed(mut rows: Vec<PackedBits>, dimension: usize) -> Vec<PackedBits> {
+    let mut pivots = Vec::new();
+    let mut rank = 0usize;
+    for column in 0..dimension {
+        let Some(source) = (rank..rows.len()).find(|row| rows[*row].get(column)) else {
+            continue;
+        };
+        rows.swap(rank, source);
+        let pivot = rows[rank].clone();
+        for (row, current) in rows.iter_mut().enumerate() {
+            if row != rank && current.get(column) {
+                current.xor_assign(&pivot);
+            }
+        }
+        pivots.push(column);
+        rank += 1;
+        if rank == rows.len() {
+            break;
+        }
+    }
+    let mut is_pivot = vec![false; dimension];
+    for pivot in &pivots {
+        is_pivot[*pivot] = true;
+    }
+    let mut result = Vec::new();
+    for (free, pivot) in is_pivot.iter().copied().enumerate() {
+        if pivot {
+            continue;
+        }
+        let mut coefficients = PackedBits::zero(dimension);
+        coefficients.set(free);
+        for (row, pivot) in pivots.iter().enumerate() {
+            if rows[row].get(free) {
+                coefficients.set(*pivot);
+            }
+        }
+        result.push(coefficients);
+    }
+    result
+}
+
+fn combine_binary_packed(basis: &[BinaryVector], coefficients: &PackedBits) -> BinaryVector {
+    let word_count = basis.first().map_or(0, |value| value.x_words.len());
+    let mut result = BinaryVector::zero(word_count);
+    for (coefficient_word, selected) in coefficients.words.iter().copied().enumerate() {
+        let mut remaining = selected;
+        while remaining != 0 {
+            let offset = remaining.trailing_zeros() as usize;
+            xor_binary(&mut result, &basis[coefficient_word * 64 + offset]);
+            remaining &= remaining - 1;
+        }
+    }
+    result
+}
+
+fn symplectic_complement_packed(
     basis: &[BinaryVector],
     x: &BinaryVector,
     z: &BinaryVector,
 ) -> Vec<BinaryVector> {
-    let rows = [
-        basis
-            .iter()
-            .map(|vector| vector.symplectic_inner(x))
-            .collect::<Vec<_>>(),
-        basis
-            .iter()
-            .map(|vector| vector.symplectic_inner(z))
-            .collect::<Vec<_>>(),
-    ];
-    nullspace_basis(&rows, basis.len())
-        .into_iter()
-        .map(|coefficients| combine_binary(basis, &coefficients))
+    let mut x_constraints = PackedBits::zero(basis.len());
+    let mut z_constraints = PackedBits::zero(basis.len());
+    for (index, vector) in basis.iter().enumerate() {
+        if vector.symplectic_inner(x) != 0 {
+            x_constraints.set(index);
+        }
+        if vector.symplectic_inner(z) != 0 {
+            z_constraints.set(index);
+        }
+    }
+    nullspace_basis_packed(vec![x_constraints, z_constraints], basis.len())
+        .iter()
+        .map(|coefficients| combine_binary_packed(basis, coefficients))
         .collect()
 }
 
@@ -747,7 +830,7 @@ fn sample_symplectic_frame(
         let z = sample_nonzero_subspace(&basis, random)?;
         let x = sample_anticommuting_vector(&basis, &z, random)?;
         retained_z.push(z.clone());
-        basis = symplectic_complement(&basis, &x, &z);
+        basis = symplectic_complement_packed(&basis, &x, &z);
     }
     Ok(retained_z)
 }
@@ -1072,14 +1155,20 @@ impl Snapshots {
         }
     }
 
-    fn setting_values(&self, operators: &[PauliOperator]) -> Result<Vec<f64>, PauliError> {
-        if operators.is_empty() {
+    fn setting_values<'a, I>(&self, operators: I) -> Result<Vec<f64>, PauliError>
+    where
+        I: IntoIterator<Item = &'a PauliOperator> + Clone,
+        I::IntoIter: ExactSizeIterator + Clone,
+    {
+        let operators = operators.into_iter();
+        let operator_count = operators.len();
+        if operator_count == 0 {
             return Err(PauliError::InvalidStructureLength {
                 expected: 1,
                 actual: 0,
             });
         }
-        for operator in operators {
+        for operator in operators.clone() {
             if operator.nqubits() != self.nqubits() {
                 return Err(PauliError::IncompatibleQubitCounts {
                     left: operator.nqubits(),
@@ -1098,11 +1187,11 @@ impl Snapshots {
                 bases,
                 outcomes,
             } => {
-                let mut values = vec![0.0; *nsettings * operators.len()];
+                let mut values = vec![0.0; *nsettings * operator_count];
                 for setting in 0..*nsettings {
                     for repeat in 0..*repeats {
                         let outcome_start = (setting * *repeats + repeat) * *nqubits;
-                        for (operator_index, operator) in operators.iter().enumerate() {
+                        for (operator_index, operator) in operators.clone().enumerate() {
                             let mut value = 0.0;
                             for term in operator.terms() {
                                 let mut matches = true;
@@ -1124,7 +1213,7 @@ impl Snapshots {
                                         * eigenvalue;
                                 }
                             }
-                            values[setting * operators.len() + operator_index] +=
+                            values[setting * operator_count + operator_index] +=
                                 value / *repeats as f64;
                         }
                     }
@@ -1141,7 +1230,7 @@ impl Snapshots {
                 outcomes,
             } => {
                 let word_count = packed_word_count(*nqubits);
-                let mut values = vec![0.0; *nsettings * operators.len()];
+                let mut values = vec![0.0; *nsettings * operator_count];
                 for setting in 0..*nsettings {
                     for repeat in 0..*repeats {
                         let outcome_start = (setting * *repeats + repeat) * *nqubits;
@@ -1167,7 +1256,7 @@ impl Snapshots {
                             generators,
                         };
                         let span = StabilizerSpan::new(&snapshot.generators, snapshot.nqubits);
-                        for (operator_index, operator) in operators.iter().enumerate() {
+                        for (operator_index, operator) in operators.clone().enumerate() {
                             let value = operator
                                 .terms()
                                 .iter()
@@ -1184,7 +1273,7 @@ impl Snapshots {
                                 .collect::<Result<Vec<_>, PauliError>>()?
                                 .into_iter()
                                 .sum::<f64>();
-                            values[setting * operators.len() + operator_index] +=
+                            values[setting * operator_count + operator_index] +=
                                 value / *repeats as f64;
                         }
                     }
@@ -1228,12 +1317,14 @@ fn sample_pauli_statevector(
     check_limit(requested, max_bytes)?;
     let mut bases = vec![0u8; basis_count];
     let mut outcomes = vec![0u8; outcome_count];
+    let mut transformed = state.to_vec();
+    let mut cumulative = Vec::with_capacity(dimension);
     for setting in 0..nsettings {
         let mut basis_random = RandomStream::new(seed, PAULI_FRAME_DOMAIN, setting, 0);
         for qubit in 0..nqubits {
             bases[setting * nqubits + qubit] = (basis_random.bounded(3)? + 1) as u8;
         }
-        let mut transformed = state.to_vec();
+        transformed.copy_from_slice(state);
         for qubit in 0..nqubits {
             match bases[setting * nqubits + qubit] {
                 1 => apply_h_in_place(&mut transformed, qubit, nqubits),
@@ -1242,7 +1333,7 @@ fn sample_pauli_statevector(
                 _ => unreachable!(),
             }
         }
-        let mut cumulative = Vec::with_capacity(dimension);
+        cumulative.clear();
         let mut total = 0.0;
         for value in &transformed {
             total += value.norm_sqr();
@@ -1301,12 +1392,33 @@ impl Snapshots {
         return_blocks: bool,
     ) -> Result<Vec<f64>, PauliError> {
         validate_linear_blocks(self.nsettings(), blocks)?;
-        let setting_values = self.setting_values(operators)?;
-        let block_values = block_means(&setting_values, self.nsettings(), operators.len(), blocks)?;
+        let setting_values = self.setting_values(operators.iter())?;
+        self.reduce_estimates(setting_values, operators.len(), blocks, return_blocks)
+    }
+
+    pub fn estimate_many_refs(
+        &self,
+        operators: &[&PauliOperator],
+        blocks: usize,
+        return_blocks: bool,
+    ) -> Result<Vec<f64>, PauliError> {
+        validate_linear_blocks(self.nsettings(), blocks)?;
+        let setting_values = self.setting_values(operators.iter().copied())?;
+        self.reduce_estimates(setting_values, operators.len(), blocks, return_blocks)
+    }
+
+    fn reduce_estimates(
+        &self,
+        setting_values: Vec<f64>,
+        operator_count: usize,
+        blocks: usize,
+        return_blocks: bool,
+    ) -> Result<Vec<f64>, PauliError> {
+        let block_values = block_means(&setting_values, self.nsettings(), operator_count, blocks)?;
         if return_blocks {
             Ok(block_values)
         } else {
-            Ok(median_columns(&block_values, blocks, operators.len()))
+            Ok(median_columns(&block_values, blocks, operator_count))
         }
     }
 
@@ -1353,6 +1465,7 @@ impl Snapshots {
         keep: &[usize],
         blocks: usize,
         method: u8,
+        max_bytes: u128,
     ) -> Result<f64, PauliError> {
         validate_subsystem(self.nqubits(), keep)?;
         match method {
@@ -1362,41 +1475,47 @@ impl Snapshots {
                         context: "shadow Renyi-2 requires at least two settings per block",
                     });
                 }
-                let mut setting_matrices = Vec::with_capacity(self.nsettings());
                 let dimension = checked_dimension(keep.len(), "computing Renyi-2 dimension")?;
                 let matrix_size = dimension
                     .checked_mul(dimension)
                     .ok_or(PauliError::Overflow {
                         context: "estimating Renyi-2 matrix storage",
                     })?;
-                for setting in 0..self.nsettings() {
-                    let mut matrix = vec![Complex64::default(); matrix_size];
-                    for repeat in 0..self.repeats() {
-                        for (target, value) in matrix
-                            .iter_mut()
-                            .zip(self.snapshot_rdm(setting, repeat, keep)?)
-                        {
-                            *target += value / self.repeats() as f64;
-                        }
-                    }
-                    setting_matrices.push(matrix);
-                }
+                let matrix_bytes =
+                    checked_bytes(matrix_size, 16, "estimating Renyi-2 matrix workspace")?;
+                let block_bytes = checked_bytes(blocks, 8, "estimating Renyi-2 block workspace")?;
+                let workspace = matrix_bytes
+                    .checked_mul(3)
+                    .and_then(|value| value.checked_add(block_bytes))
+                    .ok_or(PauliError::Overflow {
+                        context: "estimating Renyi-2 workspace",
+                    })?;
+                check_limit(workspace, max_bytes)?;
                 let mut block_purities = Vec::with_capacity(blocks);
                 let mut start = 0usize;
                 for block in 0..blocks {
                     let size = balanced_block_size(self.nsettings(), blocks, block);
-                    let values = &setting_matrices[start..start + size];
-                    let count = values.len() as f64;
                     let mut sum = vec![Complex64::default(); matrix_size];
                     let mut diagonal = 0.0;
-                    for value in values {
-                        for (target, entry) in sum.iter_mut().zip(value) {
+                    for setting in start..start + size {
+                        let mut matrix = vec![Complex64::default(); matrix_size];
+                        for repeat in 0..self.repeats() {
+                            for (target, value) in matrix
+                                .iter_mut()
+                                .zip(self.snapshot_rdm(setting, repeat, keep)?)
+                            {
+                                *target += value / self.repeats() as f64;
+                            }
+                        }
+                        for (target, entry) in sum.iter_mut().zip(&matrix) {
                             *target += *entry;
                         }
-                        diagonal += trace_product(value, value);
+                        diagonal += trace_product(&matrix, &matrix);
                     }
-                    block_purities
-                        .push((trace_product(&sum, &sum) - diagonal) / (count * (count - 1.0)));
+                    block_purities.push(
+                        (trace_product(&sum, &sum) - diagonal)
+                            / (size as f64 * (size as f64 - 1.0)),
+                    );
                     start += size;
                 }
                 let purity = median_scalar(&block_purities);
@@ -1415,6 +1534,20 @@ impl Snapshots {
                     });
                 }
                 validate_linear_blocks(self.nsettings(), blocks)?;
+                let workspace = checked_bytes(
+                    self.nsettings(),
+                    8,
+                    "estimating randomized-measurement Renyi-2 workspace",
+                )?
+                .checked_add(checked_bytes(
+                    blocks,
+                    8,
+                    "estimating randomized-measurement Renyi-2 block workspace",
+                )?)
+                .ok_or(PauliError::Overflow {
+                    context: "estimating randomized-measurement Renyi-2 workspace",
+                })?;
+                check_limit(workspace, max_bytes)?;
                 let k = keep.len();
                 let subsystem_dimension =
                     checked_dimension(k, "computing randomized-measurement Renyi-2 dimension")?;
@@ -1681,44 +1814,185 @@ fn sample_pauli_stabilizer(
         &[nsettings, repeats, nqubits],
         "estimating Pauli outcome storage",
     )?;
-    check_limit(
-        checked_bytes(
-            basis_count + outcome_count,
-            1,
-            "estimating Pauli snapshot storage",
-        )?,
-        max_bytes,
-    )?;
+    let retained_count = basis_count
+        .checked_add(outcome_count)
+        .ok_or(PauliError::Overflow {
+            context: "estimating Pauli snapshot storage",
+        })?;
+    let retained_bytes = checked_bytes(retained_count, 1, "estimating Pauli snapshot storage")?;
+    check_limit(retained_bytes, max_bytes)?;
     let mut bases = vec![0u8; basis_count];
     let mut outcomes = vec![0u8; outcome_count];
     let word_count = packed_word_count(nqubits);
-    for setting in 0..nsettings {
-        let mut basis_random = RandomStream::new(seed, PAULI_FRAME_DOMAIN, setting, 0);
-        for qubit in 0..nqubits {
-            bases[setting * nqubits + qubit] = (basis_random.bounded(3)? + 1) as u8;
-        }
-        for repeat in 0..repeats {
-            let mut current = state.clone();
-            let mut random = RandomStream::new(seed, PAULI_OUTCOME_DOMAIN, setting, repeat);
-            for qubit in 0..nqubits {
-                let mut x = vec![0u64; word_count];
-                let mut z = vec![0u64; word_count];
-                match bases[setting * nqubits + qubit] {
-                    1 => x[qubit / 64] |= 1u64 << (qubit % 64),
-                    2 => {
-                        x[qubit / 64] |= 1u64 << (qubit % 64);
-                        z[qubit / 64] |= 1u64 << (qubit % 64);
-                    }
-                    3 => z[qubit / 64] |= 1u64 << (qubit % 64),
-                    _ => unreachable!(),
-                }
-                let measured = SignedPauli::new(nqubits, &x, &z, 1)?;
-                let bit = current.measure_signed(&measured, &mut random)?;
-                outcomes[(setting * repeats + repeat) * nqubits + qubit] = bit;
-            }
+    let outcome_stride = repeats.checked_mul(nqubits).ok_or(PauliError::Overflow {
+        context: "estimating Pauli outcome stride",
+    })?;
+    let worker_bytes = checked_bytes(
+        nqubits
+            .checked_mul(word_count)
+            .ok_or(PauliError::Overflow {
+                context: "estimating Pauli stabilizer worker workspace",
+            })?,
+        16,
+        "estimating Pauli stabilizer worker workspace",
+    )?;
+    let worker_count = if nqubits >= 64 && nsettings >= 2 {
+        bounded_shadow_worker_count(nsettings, retained_bytes, worker_bytes, max_bytes)
+    } else {
+        1
+    };
+    if worker_count > 1 {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .build()
+            .expect("shadow worker count is positive");
+        pool.install(|| {
+            bases
+                .par_chunks_mut(nqubits)
+                .zip(outcomes.par_chunks_mut(outcome_stride))
+                .enumerate()
+                .map(|(setting, (setting_bases, setting_outcomes))| {
+                    sample_pauli_stabilizer_setting(
+                        state,
+                        nqubits,
+                        word_count,
+                        repeats,
+                        seed,
+                        setting,
+                        PauliSettingBuffers {
+                            bases: setting_bases,
+                            outcomes: setting_outcomes,
+                        },
+                    )
+                })
+                .collect::<Result<Vec<_>, PauliError>>()
+        })?;
+    } else {
+        for setting in 0..nsettings {
+            let basis_start = setting * nqubits;
+            let outcome_start = setting * outcome_stride;
+            sample_pauli_stabilizer_setting(
+                state,
+                nqubits,
+                word_count,
+                repeats,
+                seed,
+                setting,
+                PauliSettingBuffers {
+                    bases: &mut bases[basis_start..basis_start + nqubits],
+                    outcomes: &mut outcomes[outcome_start..outcome_start + outcome_stride],
+                },
+            )?;
         }
     }
     Snapshots::from_pauli_measurements(nsettings, nqubits, repeats, &bases, &outcomes, max_bytes)
+}
+
+struct PauliSettingBuffers<'a> {
+    bases: &'a mut [u8],
+    outcomes: &'a mut [u8],
+}
+
+fn sample_pauli_stabilizer_setting(
+    state: &StabilizerState,
+    nqubits: usize,
+    word_count: usize,
+    repeats: usize,
+    seed: u64,
+    setting: usize,
+    buffers: PauliSettingBuffers<'_>,
+) -> Result<(), PauliError> {
+    let mut basis_random = RandomStream::new(seed, PAULI_FRAME_DOMAIN, setting, 0);
+    for basis in buffers.bases.iter_mut() {
+        *basis = (basis_random.bounded(3)? + 1) as u8;
+    }
+    let mut x = vec![0u64; word_count];
+    let mut z = vec![0u64; word_count];
+    for repeat in 0..repeats {
+        let mut current = state.clone();
+        let mut random = RandomStream::new(seed, PAULI_OUTCOME_DOMAIN, setting, repeat);
+        for qubit in 0..nqubits {
+            x.fill(0);
+            z.fill(0);
+            match buffers.bases[qubit] {
+                1 => x[qubit / 64] |= 1u64 << (qubit % 64),
+                2 => {
+                    x[qubit / 64] |= 1u64 << (qubit % 64);
+                    z[qubit / 64] |= 1u64 << (qubit % 64);
+                }
+                3 => z[qubit / 64] |= 1u64 << (qubit % 64),
+                _ => unreachable!(),
+            }
+            let measured = SignedPauli::new(nqubits, &x, &z, 1)?;
+            let bit = current.measure_signed(&measured, &mut random)?;
+            buffers.outcomes[repeat * nqubits + qubit] = bit;
+        }
+    }
+    Ok(())
+}
+
+fn bounded_shadow_worker_count(
+    nsettings: usize,
+    retained_bytes: u128,
+    worker_bytes: u128,
+    max_bytes: u128,
+) -> usize {
+    let thread_count = rayon::current_num_threads().max(1);
+    let memory_workers = max_bytes
+        .saturating_sub(retained_bytes)
+        .checked_div(worker_bytes.max(1))
+        .unwrap_or(0)
+        .max(1);
+    thread_count
+        .min(nsettings.max(1))
+        .min(memory_workers.min(usize::MAX as u128) as usize)
+}
+
+struct CliffordSettingBuffers<'a> {
+    frame_x_words: &'a mut [u64],
+    frame_z_words: &'a mut [u64],
+    frame_signs: &'a mut [i8],
+    outcomes: &'a mut [u8],
+}
+
+fn sample_clifford_stabilizer_setting(
+    state: &StabilizerState,
+    nqubits: usize,
+    word_count: usize,
+    repeats: usize,
+    seed: u64,
+    setting: usize,
+    buffers: CliffordSettingBuffers<'_>,
+) -> Result<(), PauliError> {
+    let mut frame_random = RandomStream::new(seed, CLIFFORD_FRAME_DOMAIN, setting, 0);
+    let frame = sample_symplectic_frame(nqubits, &mut frame_random)?;
+    let mut sign_random = RandomStream::new(seed, CLIFFORD_SIGN_DOMAIN, setting, 0);
+    for (generator, vector) in frame.iter().enumerate() {
+        let start = generator * word_count;
+        buffers.frame_x_words[start..start + word_count].copy_from_slice(&vector.x_words);
+        buffers.frame_z_words[start..start + word_count].copy_from_slice(&vector.z_words);
+        buffers.frame_signs[generator] = if sign_random.next_u64() & 1 == 0 {
+            1
+        } else {
+            -1
+        };
+    }
+    for repeat in 0..repeats {
+        let mut current = state.clone();
+        let mut random = RandomStream::new(seed, CLIFFORD_OUTCOME_DOMAIN, setting, repeat);
+        for generator in 0..nqubits {
+            let start = generator * word_count;
+            let measured = SignedPauli::new(
+                nqubits,
+                &buffers.frame_x_words[start..start + word_count],
+                &buffers.frame_z_words[start..start + word_count],
+                buffers.frame_signs[generator],
+            )?;
+            let bit = current.measure_signed(&measured, &mut random)?;
+            buffers.outcomes[repeat * nqubits + generator] = bit;
+        }
+    }
+    Ok(())
 }
 
 fn sample_clifford_statevector(
@@ -1764,6 +2038,8 @@ fn sample_clifford_statevector(
     let mut frame_z_words = vec![0u64; frame_words];
     let mut frame_signs = vec![1i8; frame_rows];
     let mut outcomes = vec![0u8; outcome_count];
+    let mut current = vec![Complex64::default(); dimension];
+    let mut scratch = vec![Complex64::default(); dimension];
     for setting in 0..nsettings {
         let mut frame_random = RandomStream::new(seed, CLIFFORD_FRAME_DOMAIN, setting, 0);
         let frame = sample_symplectic_frame(nqubits, &mut frame_random)?;
@@ -1780,8 +2056,7 @@ fn sample_clifford_statevector(
             };
         }
         for repeat in 0..repeats {
-            let mut current = state.to_vec();
-            let mut scratch = vec![Complex64::default(); dimension];
+            current.copy_from_slice(state);
             let mut outcome_random =
                 RandomStream::new(seed, CLIFFORD_OUTCOME_DOMAIN, setting, repeat);
             for generator in 0..nqubits {
@@ -1860,36 +2135,78 @@ fn sample_clifford_stabilizer(
     let mut frame_z_words = vec![0u64; frame_words];
     let mut frame_signs = vec![1i8; frame_rows];
     let mut outcomes = vec![0u8; outcome_count];
-    for setting in 0..nsettings {
-        let mut frame_random = RandomStream::new(seed, CLIFFORD_FRAME_DOMAIN, setting, 0);
-        let frame = sample_symplectic_frame(nqubits, &mut frame_random)?;
-        let mut sign_random = RandomStream::new(seed, CLIFFORD_SIGN_DOMAIN, setting, 0);
-        for (generator, vector) in frame.iter().enumerate() {
-            let row = setting * nqubits + generator;
-            let start = row * word_count;
-            frame_x_words[start..start + word_count].copy_from_slice(&vector.x_words);
-            frame_z_words[start..start + word_count].copy_from_slice(&vector.z_words);
-            frame_signs[row] = if sign_random.next_u64() & 1 == 0 {
-                1
-            } else {
-                -1
-            };
-        }
-        for repeat in 0..repeats {
-            let mut current = state.clone();
-            let mut random = RandomStream::new(seed, CLIFFORD_OUTCOME_DOMAIN, setting, repeat);
-            for generator in 0..nqubits {
-                let row = setting * nqubits + generator;
-                let start = row * word_count;
-                let measured = SignedPauli::new(
-                    nqubits,
-                    &frame_x_words[start..start + word_count],
-                    &frame_z_words[start..start + word_count],
-                    frame_signs[row],
-                )?;
-                let bit = current.measure_signed(&measured, &mut random)?;
-                outcomes[(setting * repeats + repeat) * nqubits + generator] = bit;
-            }
+    let rows_words = nqubits
+        .checked_mul(word_count)
+        .ok_or(PauliError::Overflow {
+            context: "estimating Clifford frame row workspace",
+        })?;
+    let outcome_stride = repeats.checked_mul(nqubits).ok_or(PauliError::Overflow {
+        context: "estimating Clifford outcome stride",
+    })?;
+    let worker_bytes = checked_bytes(
+        nqubits
+            .checked_mul(word_count)
+            .ok_or(PauliError::Overflow {
+                context: "estimating Clifford stabilizer worker workspace",
+            })?,
+        16,
+        "estimating Clifford stabilizer worker workspace",
+    )?;
+    let worker_count = if nqubits >= 64 && nsettings >= 2 {
+        bounded_shadow_worker_count(nsettings, requested, worker_bytes, max_bytes)
+    } else {
+        1
+    };
+    if worker_count > 1 {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .build()
+            .expect("shadow worker count is positive");
+        pool.install(|| {
+            frame_x_words
+                .par_chunks_mut(rows_words)
+                .zip(frame_z_words.par_chunks_mut(rows_words))
+                .zip(frame_signs.par_chunks_mut(nqubits))
+                .zip(outcomes.par_chunks_mut(outcome_stride))
+                .enumerate()
+                .map(
+                    |(setting, (((frame_x, frame_z), signs), setting_outcomes))| {
+                        sample_clifford_stabilizer_setting(
+                            state,
+                            nqubits,
+                            word_count,
+                            repeats,
+                            seed,
+                            setting,
+                            CliffordSettingBuffers {
+                                frame_x_words: frame_x,
+                                frame_z_words: frame_z,
+                                frame_signs: signs,
+                                outcomes: setting_outcomes,
+                            },
+                        )
+                    },
+                )
+                .collect::<Result<Vec<_>, PauliError>>()
+        })?;
+    } else {
+        for setting in 0..nsettings {
+            let frame_start = setting * rows_words;
+            let outcome_start = setting * outcome_stride;
+            sample_clifford_stabilizer_setting(
+                state,
+                nqubits,
+                word_count,
+                repeats,
+                seed,
+                setting,
+                CliffordSettingBuffers {
+                    frame_x_words: &mut frame_x_words[frame_start..frame_start + rows_words],
+                    frame_z_words: &mut frame_z_words[frame_start..frame_start + rows_words],
+                    frame_signs: &mut frame_signs[setting * nqubits..(setting + 1) * nqubits],
+                    outcomes: &mut outcomes[outcome_start..outcome_start + outcome_stride],
+                },
+            )?;
         }
     }
     Snapshots::from_clifford_measurements(
@@ -2481,4 +2798,108 @@ fn stabilizer_overlap_squared(
     let rank = relations.len();
     let exponent = rank as i32 - left.nqubits as i32;
     Ok(2.0f64.powi(exponent))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rayon::ThreadPoolBuilder;
+
+    #[test]
+    fn packed_nullspace_matches_byte_reference() {
+        let rows = vec![
+            vec![1, 0, 1, 1, 0, 0, 1, 0, 1],
+            vec![0, 1, 1, 0, 1, 0, 1, 1, 0],
+        ];
+        let packed_rows = rows
+            .iter()
+            .map(|row| {
+                let mut packed = PackedBits::zero(row.len());
+                for (index, value) in row.iter().copied().enumerate() {
+                    if value != 0 {
+                        packed.set(index);
+                    }
+                }
+                packed
+            })
+            .collect::<Vec<_>>();
+        let expected = nullspace_basis(&rows, rows[0].len());
+        let actual = nullspace_basis_packed(packed_rows, rows[0].len());
+        assert_eq!(actual.len(), expected.len());
+        for (packed, boolean) in actual.iter().zip(expected) {
+            assert_eq!(
+                (0..rows[0].len())
+                    .map(|index| packed.get(index))
+                    .collect::<Vec<_>>(),
+                boolean
+            );
+        }
+    }
+
+    #[test]
+    fn in_place_stabilizer_product_matches_allocating_product() {
+        for left_codes in [[1, 2, 3], [3, 1, 0], [2, 3, 1]] {
+            for right_codes in [[3, 2, 1], [1, 0, 3], [2, 1, 2]] {
+                let left_word = PauliWord::from_codes(3, &left_codes).expect("left word");
+                let right_word = PauliWord::from_codes(3, &right_codes).expect("right word");
+                let left = SignedPauli::from_word(&left_word, -1).expect("left pauli");
+                let right = SignedPauli::from_word(&right_word, 1).expect("right pauli");
+                let expected = left.multiply(&right, 3);
+                let mut actual = left;
+                let actual_result = actual.multiply_in_place(&right);
+                match (expected, actual_result) {
+                    (Ok(expected), Ok(())) => {
+                        assert_eq!(actual.x_words, expected.x_words);
+                        assert_eq!(actual.z_words, expected.z_words);
+                        assert_eq!(actual.sign, expected.sign);
+                    }
+                    (Err(_), Err(_)) => {}
+                    _ => panic!("allocating and in-place products disagree"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn stabilizer_sampling_replays_across_bounded_worker_counts() {
+        let state = StabilizerState::zero_state(64).expect("zero state");
+        let serial = ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("serial pool")
+            .install(|| {
+                Snapshots::sample_stabilizer(
+                    &state,
+                    4,
+                    SnapshotProtocol::Clifford,
+                    2,
+                    901,
+                    u128::MAX,
+                )
+            })
+            .expect("serial sampling");
+        let parallel = ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("parallel pool")
+            .install(|| {
+                Snapshots::sample_stabilizer(
+                    &state,
+                    4,
+                    SnapshotProtocol::Clifford,
+                    2,
+                    901,
+                    u128::MAX,
+                )
+            })
+            .expect("parallel sampling");
+        let serial_arrays = serial.clifford_arrays().expect("serial Clifford arrays");
+        let parallel_arrays = parallel
+            .clifford_arrays()
+            .expect("parallel Clifford arrays");
+        assert_eq!(serial_arrays.0, parallel_arrays.0);
+        assert_eq!(serial_arrays.1, parallel_arrays.1);
+        assert_eq!(serial_arrays.2, parallel_arrays.2);
+        assert_eq!(serial_arrays.3, parallel_arrays.3);
+    }
 }
