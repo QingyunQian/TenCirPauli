@@ -11,8 +11,9 @@ use crate::word::packed_word_count;
 
 #[derive(Clone, Copy, Debug)]
 struct MatrixTerm {
-    action: StatevectorPauliAction,
-    coefficient: Complex64,
+    x_mask: usize,
+    z_mask: usize,
+    weighted_phase: Complex64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -84,7 +85,7 @@ impl MvpPlan {
         let direct_terms = direct.terms.as_ref().expect("direct terms");
         let group_count = direct_terms
             .iter()
-            .map(|term| term.action.x_mask())
+            .map(|term| term.x_mask)
             .collect::<BTreeSet<_>>()
             .len();
         let diagonal_bytes = group_count
@@ -123,8 +124,8 @@ impl MvpPlan {
                 let mut diagonal = vec![Complex64::default(); dimension];
                 for (column, value) in diagonal.iter_mut().enumerate() {
                     for term in &group.terms {
-                        let mut contribution = term.coefficient * term.action.phase();
-                        if (term.action.z_mask() & column).count_ones() & 1 != 0 {
+                        let mut contribution = term.weighted_phase;
+                        if (term.z_mask & column).count_ones() & 1 != 0 {
                             contribution = -contribution;
                         }
                         *value += contribution;
@@ -234,7 +235,12 @@ impl MvpPlan {
                     }
                 } else {
                     for term in self.terms.as_ref().expect("direct terms") {
-                        value += term.coefficient * term.action.value_at(state, row);
+                        let column = row ^ term.x_mask;
+                        let mut contribution = term.weighted_phase * state[column];
+                        if (term.z_mask & column).count_ones() & 1 != 0 {
+                            contribution = -contribution;
+                        }
+                        value += contribution;
                     }
                 }
                 *output = value;
@@ -249,7 +255,12 @@ impl MvpPlan {
                     }
                 } else {
                     for term in self.terms.as_ref().expect("direct terms") {
-                        value += term.coefficient * term.action.value_at(state, row);
+                        let column = row ^ term.x_mask;
+                        let mut contribution = term.weighted_phase * state[column];
+                        if (term.z_mask & column).count_ones() & 1 != 0 {
+                            contribution = -contribution;
+                        }
+                        value += contribution;
                     }
                 }
                 *output = value;
@@ -320,9 +331,9 @@ impl PauliOperator {
                 .enumerate()
                 .for_each(|(row, output)| {
                     for term in &terms {
-                        let column = row ^ term.action.x_mask();
-                        let contribution = term.coefficient * term.action.phase();
-                        if (term.action.z_mask() & column).count_ones() & 1 == 0 {
+                        let column = row ^ term.x_mask;
+                        let contribution = term.weighted_phase;
+                        if (term.z_mask & column).count_ones() & 1 == 0 {
                             output[column] += contribution;
                         } else {
                             output[column] -= contribution;
@@ -332,9 +343,9 @@ impl PauliOperator {
         } else {
             for (row, output) in matrix.chunks_exact_mut(dimension).enumerate() {
                 for term in &terms {
-                    let column = row ^ term.action.x_mask();
-                    let contribution = term.coefficient * term.action.phase();
-                    if (term.action.z_mask() & column).count_ones() & 1 == 0 {
+                    let column = row ^ term.x_mask;
+                    let contribution = term.weighted_phase;
+                    if (term.z_mask & column).count_ones() & 1 == 0 {
                         output[column] += contribution;
                     } else {
                         output[column] -= contribution;
@@ -553,15 +564,16 @@ fn check_allocation(requested: u128, limit: u128) -> Result<(), PauliError> {
 fn matrix_term(term: &PauliTerm) -> Result<MatrixTerm, PauliError> {
     let action = StatevectorPauliAction::from_word(&term.word)?;
     Ok(MatrixTerm {
-        action,
-        coefficient: term.coefficient,
+        x_mask: action.x_mask(),
+        z_mask: action.z_mask(),
+        weighted_phase: term.coefficient * action.phase(),
     })
 }
 
 fn group_matrix_terms(terms: Vec<MatrixTerm>) -> Vec<MatrixGroup> {
     let mut grouped = BTreeMap::<usize, Vec<MatrixTerm>>::new();
     for term in terms {
-        grouped.entry(term.action.x_mask()).or_default().push(term);
+        grouped.entry(term.x_mask).or_default().push(term);
     }
     grouped
         .into_iter()
@@ -716,8 +728,8 @@ fn fill_sparse_row(row: usize, groups: &[MatrixGroup], output: &mut [SparseEntry
         let column = row ^ group.x_mask;
         let mut value = Complex64::default();
         for term in &group.terms {
-            let mut contribution = term.coefficient * term.action.phase();
-            if (term.action.z_mask() & column).count_ones() & 1 != 0 {
+            let mut contribution = term.weighted_phase;
+            if (term.z_mask & column).count_ones() & 1 != 0 {
                 contribution = -contribution;
             }
             value += contribution;
