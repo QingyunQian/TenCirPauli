@@ -40,6 +40,7 @@
 - [Phase 9.5 closure evidence](phase-9.5-closure-evidence-2026-08-06.md)
 - [Phase 10 review](phase-10-review-2026-08-06.md)
 - [Phase 12 common noise channel gradients review](phase-12-review-2026-08-13.md)
+- [Phase 13 classical shadow performance review](phase-13-performance-review-2026-08-20.md): separates definite repeated-work and benchmark-coverage findings from performance hypotheses that require release-mode A/B evidence; a small isolated speedup is not sufficient to justify added structural complexity.
 
 ## Phase 10.5 records
 
