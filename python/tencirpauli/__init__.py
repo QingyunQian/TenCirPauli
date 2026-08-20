@@ -42,6 +42,13 @@ from .propagation_circuit import (
     PropagationCircuit,
     PropagationCircuitValueAndGradient,
 )
+from .shadows import (
+    CliffordSnapshotArrays,
+    PauliSnapshotArrays,
+    Snapshots,
+    StabilizerState,
+    shadow_bound,
+)
 from .spps import SPPSEstimate, SPPSValueEstimate
 from .spps_circuit import SPPSCircuit
 from .structured import (
@@ -77,6 +84,7 @@ __all__ = [
     "CSRMatrix",
     "CanonicalizationResult",
     "ChargeSector",
+    "CliffordSnapshotArrays",
     "ComputationalBasisState",
     "FermionOperator",
     "FermionQubitMapping",
@@ -94,6 +102,7 @@ __all__ = [
     "PauliOperator",
     "PauliPhase",
     "PauliProduct",
+    "PauliSnapshotArrays",
     "PauliTerm",
     "PauliWord",
     "ProductBlochState",
@@ -113,6 +122,8 @@ __all__ = [
     "SPPSCircuit",
     "SPPSEstimate",
     "SPPSValueEstimate",
+    "Snapshots",
+    "StabilizerState",
     "U1Circuit",
     "U1CircuitValueAndGradient",
     "U1Sector",
@@ -120,4 +131,5 @@ __all__ = [
     "ZeroState",
     "__version__",
     "backend_mvp",
+    "shadow_bound",
 ]

@@ -33,3 +33,7 @@ harness = false
 [[bench]]
 name = "propagation"
 harness = false
+
+[[bench]]
+name = "shadows"
+harness = false

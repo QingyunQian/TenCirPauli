@@ -9,6 +9,7 @@ mod majorana;
 mod mapping;
 mod operator;
 mod propagation;
+mod shadows;
 mod spps;
 mod structured;
 mod symmetry;
@@ -39,6 +40,11 @@ use operator::{
 use propagation::{
     pauli_gate_tape, pauli_propagation_batch_handles_tape, pauli_propagation_engine_tape,
     NativeGateTape, NativePropagationBatch, NativePropagationEngine,
+};
+use shadows::{
+    shadows_from_clifford_measurements, shadows_from_pauli_measurements, shadows_sample_stabilizer,
+    shadows_sample_statevector, stabilizer_from_tableau, stabilizer_from_tape,
+    stabilizer_zero_state, NativeSnapshotsHandle, NativeStabilizerStateHandle,
 };
 use spps::{pauli_spps_engine_tape, NativeSPPSEngine};
 use structured::{
@@ -84,6 +90,8 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeGateTape>()?;
     module.add_class::<NativePropagationBatch>()?;
     module.add_class::<NativeSPPSEngine>()?;
+    module.add_class::<NativeSnapshotsHandle>()?;
+    module.add_class::<NativeStabilizerStateHandle>()?;
     module.add_class::<NativeMappingPlan>()?;
     module.add_class::<NativeQwcGroupingHandle>()?;
     module.add_function(wrap_pyfunction!(pauli_weight, module)?)?;
@@ -127,6 +135,16 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(pauli_spps_engine_tape, module)?)?;
+    module.add_function(wrap_pyfunction!(shadows_from_pauli_measurements, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        shadows_from_clifford_measurements,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(shadows_sample_statevector, module)?)?;
+    module.add_function(wrap_pyfunction!(shadows_sample_stabilizer, module)?)?;
+    module.add_function(wrap_pyfunction!(stabilizer_zero_state, module)?)?;
+    module.add_function(wrap_pyfunction!(stabilizer_from_tableau, module)?)?;
+    module.add_function(wrap_pyfunction!(stabilizer_from_tape, module)?)?;
     module.add_function(wrap_pyfunction!(structured_dense_handle, module)?)?;
     module.add_function(wrap_pyfunction!(structured_csr_handle, module)?)?;
     module.add_function(wrap_pyfunction!(structured_sparse_handle, module)?)?;

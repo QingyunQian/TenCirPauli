@@ -18,7 +18,6 @@ use crate::propagation::{
     phase_sign_i, resolve_parameter, rotation_code, validate_state, PackedKey, ProductState,
 };
 
-const RANDOM_SCALE: f64 = 1.0 / 9_007_199_254_740_992.0;
 const STABLE_PRODUCT_RATIO_THRESHOLD: f64 = 1.0e-12;
 const SAMPLE_CHUNK_SIZE: usize = 256;
 
@@ -860,7 +859,7 @@ fn run_samples(
                     ) {
                         let q = (cosine.abs() + smoothing)
                             / (cosine.abs() + sine.abs() + 2.0 * smoothing);
-                        let random = counter_random(
+                        let random = crate::random::counter_random(
                             seed,
                             1,
                             term_index,
@@ -1036,26 +1035,6 @@ fn combine_adaptive(
         }
     }
     Ok((value, gradient, variance.max(0.0).sqrt()))
-}
-
-fn counter_random(
-    seed: u64,
-    mode: u64,
-    term: usize,
-    replicate: usize,
-    sample: usize,
-    gate: usize,
-) -> f64 {
-    let mut value = seed
-        ^ mode.wrapping_mul(0x9e37_79b9_7f4a_7c15)
-        ^ (term as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9)
-        ^ (replicate as u64).wrapping_mul(0x94d0_49bb_1331_11eb)
-        ^ (sample as u64).wrapping_mul(0xd2b7_4407_b1ce_6e93)
-        ^ (gate as u64).wrapping_mul(0x632b_be59_bd9b_4e01);
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^= value >> 31;
-    ((value >> 11) as f64) * RANDOM_SCALE
 }
 
 #[cfg(test)]

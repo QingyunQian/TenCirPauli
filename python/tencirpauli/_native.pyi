@@ -868,3 +868,103 @@ def pauli_spps_engine_tape(
     smoothing: float = 0.01,
     max_bytes: int | None = None,
 ) -> NativeSPPSEngine: ...
+
+class NativeSnapshotsHandle:
+    @property
+    def protocol(self) -> str: ...
+    @property
+    def nqubits(self) -> int: ...
+    @property
+    def nsettings(self) -> int: ...
+    @property
+    def repeats(self) -> int: ...
+    @property
+    def shots(self) -> int: ...
+    def pauli_arrays(self) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]: ...
+    def clifford_arrays(
+        self,
+    ) -> tuple[
+        np.ndarray[Any, Any],
+        np.ndarray[Any, Any],
+        np.ndarray[Any, Any],
+        np.ndarray[Any, Any],
+        int,
+        int,
+    ]: ...
+    def expectation(
+        self,
+        observable: NativePauliOperatorHandle,
+        blocks: int,
+        return_blocks: bool,
+    ) -> list[float]: ...
+    def estimate_many(
+        self,
+        observables: Sequence[NativePauliOperatorHandle],
+        blocks: int,
+        return_blocks: bool,
+    ) -> list[float]: ...
+    def energy(
+        self,
+        hamiltonian: NativePauliOperatorHandle,
+        blocks: int,
+        return_blocks: bool,
+    ) -> list[float]: ...
+    def rdm(
+        self, keep: Sequence[int], max_bytes: int
+    ) -> tuple[int, np.ndarray[Any, Any]]: ...
+    def renyi_entropy(self, keep: Sequence[int], blocks: int, method: int) -> float: ...
+    def energy_variance(
+        self, hamiltonian: NativePauliOperatorHandle, blocks: int, max_bytes: int
+    ) -> float: ...
+    def fidelity(
+        self, target: NativeStabilizerStateHandle, blocks: int, return_blocks: bool
+    ) -> list[float]: ...
+
+class NativeStabilizerStateHandle:
+    @property
+    def nqubits(self) -> int: ...
+    def tableau(
+        self,
+    ) -> tuple[
+        np.ndarray[Any, Any],
+        np.ndarray[Any, Any],
+        np.ndarray[Any, Any],
+    ]: ...
+
+def shadows_from_pauli_measurements(
+    bases: np.ndarray[Any, Any],
+    outcomes: np.ndarray[Any, Any],
+    max_bytes: int,
+) -> NativeSnapshotsHandle: ...
+def shadows_from_clifford_measurements(
+    frame_x_words: np.ndarray[Any, Any],
+    frame_z_words: np.ndarray[Any, Any],
+    frame_signs: np.ndarray[Any, Any],
+    outcomes: np.ndarray[Any, Any],
+    nqubits: int,
+    frame_version: int,
+    max_bytes: int,
+) -> NativeSnapshotsHandle: ...
+def shadows_sample_statevector(
+    state: np.ndarray[Any, Any],
+    nsettings: int,
+    protocol_code: int,
+    repeats: int,
+    seed: int,
+    max_bytes: int,
+) -> NativeSnapshotsHandle: ...
+def shadows_sample_stabilizer(
+    state: NativeStabilizerStateHandle,
+    nsettings: int,
+    protocol_code: int,
+    repeats: int,
+    seed: int,
+    max_bytes: int,
+) -> NativeSnapshotsHandle: ...
+def stabilizer_zero_state(nqubits: int) -> NativeStabilizerStateHandle: ...
+def stabilizer_from_tableau(
+    x_words: np.ndarray[Any, Any],
+    z_words: np.ndarray[Any, Any],
+    signs: np.ndarray[Any, Any],
+) -> NativeStabilizerStateHandle: ...
+def stabilizer_from_tape(tape: NativeGateTape) -> NativeStabilizerStateHandle: ...

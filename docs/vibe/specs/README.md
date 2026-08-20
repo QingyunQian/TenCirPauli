@@ -23,6 +23,7 @@
 - [Phase 10.5 structured execution and sparse materialization](phase-10.5-spec.md)
 - [Phase 11 factorized additive-charge MVP](phase-11-factorized-additive-charge-mvp-spec.md)
 - [Phase 12 common noise channels and native scalar gradients](phase-12-common-noise-channel-gradients-spec.md)
+- [Phase 13 classical shadow snapshots](phase-13-classical-shadow-snapshots-spec.md)（implemented；focused numerical and native integration checks complete）
 
 ## Experimental proposals
 

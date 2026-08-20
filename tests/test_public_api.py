@@ -27,6 +27,7 @@ def test_top_level_and_advanced_manifests_are_separated() -> None:
         "CSRMatrix",
         "CanonicalizationResult",
         "ChargeSector",
+        "CliffordSnapshotArrays",
         "ComputationalBasisState",
         "FermionOperator",
         "FermionQubitMapping",
@@ -44,6 +45,7 @@ def test_top_level_and_advanced_manifests_are_separated() -> None:
         "PauliOperator",
         "PauliPhase",
         "PauliProduct",
+        "PauliSnapshotArrays",
         "PauliTerm",
         "PauliWord",
         "ProductBlochState",
@@ -63,6 +65,8 @@ def test_top_level_and_advanced_manifests_are_separated() -> None:
         "SPPSCircuit",
         "SPPSEstimate",
         "SPPSValueEstimate",
+        "Snapshots",
+        "StabilizerState",
         "U1Circuit",
         "U1CircuitValueAndGradient",
         "U1Sector",
@@ -70,6 +74,7 @@ def test_top_level_and_advanced_manifests_are_separated() -> None:
         "ZeroState",
         "__version__",
         "backend_mvp",
+        "shadow_bound",
     )
     assert tuple(advanced.__all__) == (
         "BackendMVPPlan",

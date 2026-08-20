@@ -12,9 +12,12 @@ mod hamiltonian;
 mod majorana;
 mod mapping;
 mod operator;
+mod pauli_action;
 mod propagation;
+mod random;
 mod scalar;
 mod sector;
+mod shadows;
 mod spps;
 mod structured;
 mod symmetry;
@@ -124,6 +127,7 @@ pub use sector::{
     PackedU1Basis, U1CooMatrix, U1CsrMatrix, U1LazyMvpPlan, U1MvpPlan, U1RestrictedOperator,
     U1Sector,
 };
+pub use shadows::{SnapshotProtocol, Snapshots, StabilizerState};
 pub use spps::{SPPSEngine, SPPSEstimate, SPPSValueEstimate};
 pub use structured::{
     analyze_hybrid_charge, binary_boson_terms, binary_fermion_terms, binary_hybrid_terms,
