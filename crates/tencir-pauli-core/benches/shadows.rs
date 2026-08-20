@@ -76,9 +76,49 @@ fn benchmark_stabilizer_and_estimators(criterion: &mut Criterion) {
     group.finish();
 }
 
+fn dense_target(nqubits: usize) -> Vec<Complex64> {
+    let mut target = (0..(1usize << nqubits))
+        .map(|index| {
+            let angle = (index as f64 + 1.0) * 0.173;
+            Complex64::new(angle.sin(), (angle * 1.37).cos())
+        })
+        .collect::<Vec<_>>();
+    let norm = target
+        .iter()
+        .map(|value| value.norm_sqr())
+        .sum::<f64>()
+        .sqrt();
+    for value in &mut target {
+        *value /= norm;
+    }
+    target
+}
+
+fn benchmark_dense_target_fidelity(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("shadows/dense_target_fidelity");
+    for nqubits in [8usize, 10, 12] {
+        let state = basis_state(nqubits);
+        let target = dense_target(nqubits);
+        let snapshots =
+            Snapshots::sample_statevector(&state, 64, SnapshotProtocol::Clifford, 1, 31, u128::MAX)
+                .expect("dense Clifford snapshots");
+        group.throughput(Throughput::Elements((1usize << nqubits) as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(nqubits),
+            &snapshots,
+            |bencher, input| {
+                bencher
+                    .iter(|| black_box(input.fidelity_statevector(black_box(&target), 1, false)));
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_sampling,
-    benchmark_stabilizer_and_estimators
+    benchmark_stabilizer_and_estimators,
+    benchmark_dense_target_fidelity
 );
 criterion_main!(benches);

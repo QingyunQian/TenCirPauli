@@ -63,6 +63,51 @@ def test_seeded_sampling_roundtrips_and_stabilizer_fidelity() -> None:
     assert replay.fidelity(state) == snapshots.fidelity(state)
 
 
+def test_dense_target_fidelity_handles_arbitrary_target_states() -> None:
+    plus_snapshot = tcp.Snapshots.from_clifford_measurements(
+        np.array([[1]], dtype=np.uint64),
+        np.array([[0]], dtype=np.uint64),
+        np.array([[1]], dtype=np.int8),
+        np.array([[[0]]], dtype=np.uint8),
+        nqubits=1,
+    )
+    plus_i = np.array([1.0, 1.0j], dtype=np.complex128) / np.sqrt(2.0)
+    np.testing.assert_allclose(plus_snapshot.fidelity_statevector(plus_i), 0.5)
+
+    one_snapshot = tcp.Snapshots.from_clifford_measurements(
+        np.array([[0]], dtype=np.uint64),
+        np.array([[1]], dtype=np.uint64),
+        np.array([[-1]], dtype=np.int8),
+        np.array([[[0]]], dtype=np.uint8),
+        nqubits=1,
+    )
+    np.testing.assert_allclose(
+        one_snapshot.fidelity_statevector(np.array([0.0, 1.0], dtype=np.complex128)),
+        2.0,
+    )
+    np.testing.assert_allclose(
+        one_snapshot.fidelity_statevector(np.array([1.0, 0.0], dtype=np.complex128)),
+        -1.0,
+    )
+
+    graph_snapshot = tcp.Snapshots.from_clifford_measurements(
+        np.array([[1], [2]], dtype=np.uint64),
+        np.array([[2], [1]], dtype=np.uint64),
+        np.ones((1, 2), dtype=np.int8),
+        np.zeros((1, 1, 2), dtype=np.uint8),
+        nqubits=2,
+    )
+    graph_state = np.array([1.0, 1.0, 1.0, -1.0], dtype=np.complex128) / 2.0
+    np.testing.assert_allclose(graph_snapshot.fidelity_statevector(graph_state), 4.0)
+
+    with pytest.raises(ValueError, match="norm"):
+        plus_snapshot.fidelity_statevector(np.array([1.0, 1.0], dtype=np.complex128))
+    with pytest.raises(ValueError, match="width"):
+        plus_snapshot.fidelity_statevector(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.complex128)
+        )
+
+
 def test_blocks_and_shadow_bound_contracts() -> None:
     bases = np.full((4, 1), 3, dtype=np.uint8)
     outcomes = np.zeros((4, 1, 1), dtype=np.uint8)

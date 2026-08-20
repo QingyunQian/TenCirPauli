@@ -603,12 +603,41 @@ class Snapshots:
 
         Fidelity is supported only for global-Clifford snapshots. It is a
         linear setting-level estimator with the same mean, median-of-means,
-        and return-shape semantics as :meth:`expectation`.
+        and return-shape semantics as :meth:`expectation`. Use
+        :meth:`fidelity_statevector` for an arbitrary pure dense target.
         """
         if not isinstance(target, StabilizerState):
             raise TypeError("target must be a StabilizerState")
         block_count = _positive_count(blocks, "blocks")
         values = self._native.fidelity(target._native, block_count, bool(return_blocks))
+        array = np.asarray(values, dtype=np.float64)
+        return np.array(array, copy=True) if return_blocks else float(array[0])
+
+    def fidelity_statevector(
+        self,
+        target: object,
+        *,
+        blocks: int = 1,
+        return_blocks: bool = False,
+    ) -> Union[float, np.ndarray[Any, Any]]:
+        """Estimate fidelity to an arbitrary same-width pure statevector.
+
+        This estimator is supported only for global-Clifford snapshots. Unlike
+        :meth:`fidelity`, it cannot use a stabilizer-overlap shortcut: native
+        post-processing enumerates the nonzero amplitudes of each stabilizer
+        snapshot and performs a dense overlap with ``target``. The estimator
+        therefore costs ``O(nsettings * 2**nqubits)`` after snapshots have
+        been collected, while requiring only the supplied target vector rather
+        than materializing one full statevector per snapshot.
+        """
+        normalized_target = _normalize_statevector(target)
+        target_width = int(normalized_target.size.bit_length() - 1)
+        if target_width != self.nqubits:
+            raise ValueError("target width must match snapshots.nqubits")
+        block_count = _positive_count(blocks, "blocks")
+        values = self._native.fidelity_statevector(
+            normalized_target, block_count, bool(return_blocks)
+        )
         array = np.asarray(values, dtype=np.float64)
         return np.array(array, copy=True) if return_blocks else float(array[0])
 

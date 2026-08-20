@@ -219,6 +219,27 @@ impl NativeSnapshotsHandle {
                 .map_err(map_error)
         })
     }
+
+    fn fidelity_statevector(
+        &self,
+        py: Python<'_>,
+        target: PyReadonlyArray1<'_, NumpyComplex128>,
+        blocks: usize,
+        return_blocks: bool,
+    ) -> PyResult<Vec<f64>> {
+        let values = target
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("target must be C-contiguous"))?;
+        py.allow_threads(|| {
+            let values = values
+                .iter()
+                .map(|value| tencir_pauli_core::Complex64::new(value.re, value.im))
+                .collect::<Vec<_>>();
+            self.snapshots
+                .fidelity_statevector(&values, blocks, return_blocks)
+                .map_err(map_error)
+        })
+    }
 }
 
 #[pymethods]

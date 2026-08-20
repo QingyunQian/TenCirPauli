@@ -6,7 +6,7 @@
 
 TenCirPauli 不在共享 CI runner 上设置性能门禁，也不因 benchmark 波动阻止合并。性能测量在开发者本机手动运行；仓库提交稳定、可复现的 workload 和运行工具，本机结果保存在被 Git 忽略的 `.benchmarks/` 中。
 
-Rust core 使用 Criterion 进行统计微基准，当前覆盖 bit-packed `PauliWord` 的 weight 与 commutation。Python 层使用 pytest-benchmark 测量公开 wrapper、PyO3 转换、FFI 和小型端到端 workload。后续新增 canonicalization、grouping、Hamiltonian、symmetry 和 propagation 时，应分别增加 Rust kernel 与公开 Python API 两层 benchmark。
+Rust core 使用 Criterion 进行统计微基准，当前覆盖 bit-packed `PauliWord` 的 weight 与 commutation。Python 层使用 pytest-benchmark 测量公开 wrapper、PyO3 转换、FFI 和小型端到端 workload；classical-shadow 的 dense-target fidelity 同时保留 Rust kernel 和公开 Python API 两层 benchmark。后续新增 canonicalization、grouping、Hamiltonian、symmetry 和 propagation 时，应分别增加 Rust kernel 与公开 Python API 两层 benchmark。
 
 ## 记录模型
 

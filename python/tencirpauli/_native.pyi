@@ -919,6 +919,9 @@ class NativeSnapshotsHandle:
     def fidelity(
         self, target: NativeStabilizerStateHandle, blocks: int, return_blocks: bool
     ) -> list[float]: ...
+    def fidelity_statevector(
+        self, target: np.ndarray[Any, Any], blocks: int, return_blocks: bool
+    ) -> list[float]: ...
 
 class NativeStabilizerStateHandle:
     @property

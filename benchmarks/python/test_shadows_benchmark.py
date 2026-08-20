@@ -17,6 +17,14 @@ def _state(nqubits: int) -> np.ndarray[object, object]:
     return values
 
 
+def _dense_target(nqubits: int) -> np.ndarray[object, object]:
+    rng = np.random.default_rng(20260820 + nqubits)
+    values = rng.normal(size=1 << nqubits) + 1j * rng.normal(size=1 << nqubits)
+    values = values.astype(np.complex128, copy=False)
+    values /= np.linalg.norm(values)
+    return np.ascontiguousarray(values, dtype=np.complex128)
+
+
 @pytest.mark.parametrize("protocol", ("pauli", "clifford"))
 @pytest.mark.parametrize("nqubits", (4, 8, 10))
 def test_dense_sampling(
@@ -65,6 +73,29 @@ def test_stabilizer_sampling_and_estimation(
             "nqubits": nqubits,
             "nsettings": snapshots.nsettings,
             "repeats": snapshots.repeats,
+            "thread_count": int(os.environ.get("RAYON_NUM_THREADS", "1")),
+        }
+    )
+
+
+@pytest.mark.parametrize("nqubits", (8, 10, 12))
+def test_dense_target_fidelity(benchmark: BenchmarkFixture, nqubits: int) -> None:
+    state = _state(nqubits)
+    target = _dense_target(nqubits)
+    snapshots = tcp.Snapshots.sample(
+        state, nsettings=64, repeats=1, protocol="clifford", seed=29
+    )
+    expected = snapshots.fidelity_statevector(target)
+    result = benchmark(snapshots.fidelity_statevector, target)
+    np.testing.assert_allclose(result, expected)
+    benchmark.extra_info.update(
+        {
+            "protocol": "clifford",
+            "estimator": "dense_target_fidelity",
+            "nqubits": nqubits,
+            "nsettings": snapshots.nsettings,
+            "repeats": snapshots.repeats,
+            "target_bytes": target.nbytes,
             "thread_count": int(os.environ.get("RAYON_NUM_THREADS", "1")),
         }
     )

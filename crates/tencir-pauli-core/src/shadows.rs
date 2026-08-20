@@ -153,6 +153,53 @@ impl SignedPauli {
         };
         Self::from_word(&word, self.sign * other.sign * phase_sign)
     }
+
+    fn multiply_in_place(&mut self, other: &Self) -> Result<(), PauliError> {
+        let left_y = self
+            .x_words
+            .iter()
+            .zip(&self.z_words)
+            .map(|(x, z)| (x & z).count_ones())
+            .sum::<u32>();
+        let right_y = other
+            .x_words
+            .iter()
+            .zip(&other.z_words)
+            .map(|(x, z)| (x & z).count_ones())
+            .sum::<u32>();
+        let cross = self
+            .z_words
+            .iter()
+            .zip(&other.x_words)
+            .map(|(z, x)| (z & x).count_ones())
+            .sum::<u32>();
+        for (left, right) in self.x_words.iter_mut().zip(&other.x_words) {
+            *left ^= *right;
+        }
+        for (left, right) in self.z_words.iter_mut().zip(&other.z_words) {
+            *left ^= *right;
+        }
+        let result_y = self
+            .x_words
+            .iter()
+            .zip(&self.z_words)
+            .map(|(x, z)| (x & z).count_ones())
+            .sum::<u32>();
+        let exponent = (i64::from(left_y) + i64::from(right_y) - i64::from(result_y)
+            + 2 * i64::from(cross))
+        .rem_euclid(4) as u8;
+        let phase_sign = match PauliPhase::from_exponent(exponent) {
+            PauliPhase::PlusOne => 1,
+            PauliPhase::MinusOne => -1,
+            PauliPhase::PlusI | PauliPhase::MinusI => {
+                return Err(PauliError::InvalidClifford {
+                    context: "multiplying stabilizer generators produced a non-Hermitian phase",
+                })
+            }
+        };
+        self.sign *= other.sign * phase_sign;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1463,6 +1510,60 @@ impl Snapshots {
         }
     }
 
+    pub fn fidelity_statevector(
+        &self,
+        target: &[Complex64],
+        blocks: usize,
+        return_blocks: bool,
+    ) -> Result<Vec<f64>, PauliError> {
+        if self.protocol() != SnapshotProtocol::Clifford {
+            return Err(PauliError::InvalidClifford {
+                context: "fidelity is supported only for global-Clifford snapshots",
+            });
+        }
+        let dimension = checked_dimension(
+            self.nqubits(),
+            "computing dense global-Clifford fidelity dimension",
+        )?;
+        if target.len() != dimension {
+            return Err(PauliError::InvalidStructureLength {
+                expected: dimension,
+                actual: target.len(),
+            });
+        }
+        if target
+            .iter()
+            .any(|value| !value.re.is_finite() || !value.im.is_finite())
+        {
+            return Err(PauliError::InvalidClifford {
+                context: "dense fidelity target entries must be finite",
+            });
+        }
+        let norm = target.iter().map(|value| value.norm_sqr()).sum::<f64>();
+        if !norm.is_finite() || (norm - 1.0).abs() > 1e-10 {
+            return Err(PauliError::InvalidClifford {
+                context: "dense fidelity target norm must be within 1e-10 of one",
+            });
+        }
+        validate_linear_blocks(self.nsettings(), blocks)?;
+        let scale = dimension as f64 + 1.0;
+        let mut values = vec![0.0; self.nsettings()];
+        for (setting, value) in values.iter_mut().enumerate() {
+            for repeat in 0..self.repeats() {
+                let snapshot = self.snapshot_stabilizer(setting, repeat)?;
+                let overlap = dense_stabilizer_overlap_squared(target, &snapshot)?;
+                *value += scale * overlap - 1.0;
+            }
+            *value /= self.repeats() as f64;
+        }
+        let block_values = block_means(&values, self.nsettings(), 1, blocks)?;
+        if return_blocks {
+            Ok(block_values)
+        } else {
+            Ok(vec![median_scalar(&block_values)])
+        }
+    }
+
     fn snapshot_stabilizer(
         &self,
         setting: usize,
@@ -2071,6 +2172,206 @@ fn stabilizer_rdm(state: &StabilizerState, keep: &[usize]) -> Result<Vec<Complex
         }
     }
     Ok(rho)
+}
+
+fn dense_stabilizer_overlap_squared(
+    target: &[Complex64],
+    state: &StabilizerState,
+) -> Result<f64, PauliError> {
+    let dimension = checked_dimension(
+        state.nqubits,
+        "computing dense stabilizer-overlap dimension",
+    )?;
+    if target.len() != dimension {
+        return Err(PauliError::InvalidStructureLength {
+            expected: dimension,
+            actual: target.len(),
+        });
+    }
+    let x_basis = stabilizer_x_basis(state)?;
+    let x_rank = x_basis.len();
+    let support_size = checked_dimension(x_rank, "enumerating dense stabilizer support")?;
+    let z_generators = stabilizer_z_generators(state)?;
+    let equations = z_generators
+        .iter()
+        .map(|generator| {
+            (0..state.nqubits)
+                .map(|qubit| ((generator.z_words[qubit / 64] >> (qubit % 64)) & 1) as u8)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let right_hand_side = z_generators
+        .iter()
+        .map(|generator| u8::from(generator.sign < 0))
+        .collect::<Vec<_>>();
+    let base_solution = solve_binary_affine(&equations, &right_hand_side, state.nqubits)?;
+    let mut base_packed = 0u64;
+    for (qubit, bit) in base_solution.iter().copied().enumerate() {
+        if bit != 0 {
+            base_packed |= 1u64 << qubit;
+        }
+    }
+    let base_index = packed_to_dense_index(&[base_packed], state.nqubits);
+    let normalization = (support_size as f64).sqrt().recip();
+    let mut overlap = Complex64::default();
+    let mut product = signed_identity(state.nqubits);
+    let mut previous_gray = 0usize;
+    for mask in 0..support_size {
+        let gray = mask ^ (mask >> 1);
+        if mask != 0 {
+            let changed = (gray ^ previous_gray).trailing_zeros() as usize;
+            product.multiply_in_place(&x_basis[changed])?;
+        }
+        previous_gray = gray;
+        let dense_index = base_index ^ packed_to_dense_index(&product.x_words, state.nqubits);
+        let amplitude = signed_pauli_amplitude(&product, base_packed, normalization);
+        overlap += target[dense_index].conj() * amplitude;
+    }
+    let result = overlap.norm_sqr();
+    if !result.is_finite() {
+        return Err(PauliError::InvalidClifford {
+            context: "dense stabilizer overlap became non-finite",
+        });
+    }
+    Ok(result.max(0.0))
+}
+
+fn stabilizer_x_basis(state: &StabilizerState) -> Result<Vec<SignedPauli>, PauliError> {
+    let mut basis = (0..state.nqubits)
+        .map(|_| None::<SignedPauli>)
+        .collect::<Vec<_>>();
+    for generator in &state.generators {
+        let mut row = generator.clone();
+        while let Some(pivot) = first_x_bit(&row.x_words) {
+            if let Some(existing) = basis[pivot].as_ref() {
+                row.multiply_in_place(existing)?;
+            } else {
+                basis[pivot] = Some(row);
+                break;
+            }
+        }
+    }
+    Ok(basis.into_iter().flatten().collect())
+}
+
+fn stabilizer_z_generators(state: &StabilizerState) -> Result<Vec<SignedPauli>, PauliError> {
+    let equations = (0..state.nqubits)
+        .map(|qubit| {
+            state
+                .generators
+                .iter()
+                .map(|generator| ((generator.x_words[qubit / 64] >> (qubit % 64)) & 1) as u8)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    nullspace_basis(&equations, state.generators.len())
+        .into_iter()
+        .map(|coefficients| {
+            let mut product = signed_identity(state.nqubits);
+            for (generator, selected) in state.generators.iter().zip(coefficients) {
+                if selected {
+                    product.multiply_in_place(generator)?;
+                }
+            }
+            if product.x_words.iter().any(|value| *value != 0) {
+                return Err(PauliError::InvalidClifford {
+                    context: "stabilizer X-nullspace reduction returned an X component",
+                });
+            }
+            Ok(product)
+        })
+        .collect()
+}
+
+fn first_x_bit(x_words: &[u64]) -> Option<usize> {
+    x_words.iter().enumerate().find_map(|(index, value)| {
+        (*value != 0).then_some(index * 64 + value.trailing_zeros() as usize)
+    })
+}
+
+fn solve_binary_affine(
+    equations: &[Vec<u8>],
+    right_hand_side: &[u8],
+    dimension: usize,
+) -> Result<Vec<u8>, PauliError> {
+    if equations.len() != right_hand_side.len()
+        || equations.iter().any(|row| row.len() != dimension)
+        || right_hand_side.iter().any(|value| *value > 1)
+    {
+        return Err(PauliError::InvalidClifford {
+            context: "stabilizer affine-support equations have an invalid shape",
+        });
+    }
+    let mut matrix = equations
+        .iter()
+        .zip(right_hand_side)
+        .map(|(row, value)| {
+            let mut augmented = row.clone();
+            augmented.push(*value);
+            augmented
+        })
+        .collect::<Vec<_>>();
+    let mut pivots = Vec::new();
+    let mut rank = 0usize;
+    for column in 0..dimension {
+        let Some(source) = (rank..matrix.len()).find(|row| matrix[*row][column] != 0) else {
+            continue;
+        };
+        matrix.swap(rank, source);
+        let pivot_values = matrix[rank][column..=dimension].to_vec();
+        for (row, current) in matrix.iter_mut().enumerate() {
+            if row != rank && current[column] != 0 {
+                for (value, pivot) in current[column..=dimension].iter_mut().zip(&pivot_values) {
+                    *value ^= *pivot;
+                }
+            }
+        }
+        pivots.push(column);
+        rank += 1;
+        if rank == matrix.len() {
+            break;
+        }
+    }
+    if matrix[rank..]
+        .iter()
+        .any(|row| row[..dimension].iter().all(|value| *value == 0) && row[dimension] != 0)
+    {
+        return Err(PauliError::InvalidClifford {
+            context: "stabilizer affine-support equations are inconsistent",
+        });
+    }
+    let mut solution = vec![0u8; dimension];
+    for (row, pivot) in pivots.into_iter().enumerate() {
+        solution[pivot] = matrix[row][dimension];
+    }
+    Ok(solution)
+}
+
+fn packed_to_dense_index(x_words: &[u64], nqubits: usize) -> usize {
+    if nqubits == 0 {
+        return 0;
+    }
+    (x_words[0].reverse_bits() >> (64 - nqubits)) as usize
+}
+
+fn signed_pauli_amplitude(pauli: &SignedPauli, base_packed: u64, normalization: f64) -> Complex64 {
+    let y_count = pauli
+        .x_words
+        .iter()
+        .zip(&pauli.z_words)
+        .map(|(x, z)| (x & z).count_ones())
+        .sum::<u32>();
+    let mut amplitude = match y_count % 4 {
+        0 => Complex64::new(1.0, 0.0),
+        1 => Complex64::new(0.0, 1.0),
+        2 => Complex64::new(-1.0, 0.0),
+        _ => Complex64::new(0.0, -1.0),
+    } * f64::from(pauli.sign)
+        * normalization;
+    if (pauli.z_words.first().copied().unwrap_or(0) & base_packed).count_ones() & 1 != 0 {
+        amplitude = -amplitude;
+    }
+    amplitude
 }
 
 fn stabilizer_overlap_squared(
