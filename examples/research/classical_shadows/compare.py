@@ -6,11 +6,14 @@ import argparse
 import json
 import math
 import time
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 
 import tencirpauli as tcp
+
+
+MAX_BENCHMARK_BYTES = 16 * 1024**3
 
 
 def _non_clifford_state(nqubits: int) -> np.ndarray[Any, Any]:
@@ -42,7 +45,9 @@ def _benchmark(
     function: Callable[[], Any], repetitions: int
 ) -> Tuple[Dict[str, Any], Any]:
     """Warm up once and return steady-state timing statistics plus the last result."""
+    warmup_start = time.perf_counter()
     function()
+    warmup_seconds = time.perf_counter() - warmup_start
     durations = []
     result: Any = None
     for _ in range(repetitions):
@@ -56,6 +61,7 @@ def _benchmark(
             "minimum_seconds": float(np.min(values)),
             "maximum_seconds": float(np.max(values)),
             "repetitions": repetitions,
+            "warmup_seconds": warmup_seconds,
         },
         result,
     )
@@ -90,6 +96,7 @@ def _run_pauli_comparison(
     repetitions: int,
     seed: int,
     tensorcircuit_backend: str,
+    tensorcircuit_batch_size: Optional[int],
 ) -> Dict[str, Any]:
     codes = _pauli_codes(nqubits)
     observable = tcp.PauliWord.from_codes(codes)
@@ -102,6 +109,7 @@ def _run_pauli_comparison(
             repeats=repeats,
             protocol="pauli",
             seed=seed,
+            max_bytes=MAX_BENCHMARK_BYTES,
         ),
         repetitions,
     )
@@ -111,31 +119,51 @@ def _run_pauli_comparison(
     native_arrays = native_snapshots.to_arrays()
     native_rdm = native_snapshots.rdm(subsystem_to_keep=list(range(min(2, nqubits))))
 
-    _, tc_shadows = _load_tensorcircuit(tensorcircuit_backend)
+    tc, tc_shadows = _load_tensorcircuit(tensorcircuit_backend)
     settings_rng = np.random.default_rng(seed ^ 0x51A0)
     bases = settings_rng.integers(1, 4, size=(nsettings, nqubits), dtype=np.int32)
     statuses = settings_rng.random((nsettings, repeats), dtype=np.float32)
 
-    def tensorcircuit_sample() -> np.ndarray[Any, Any]:
-        samples = tc_shadows.shadow_snapshots(
-            state,
-            bases,
-            status=statuses,
+    batch_size = tensorcircuit_batch_size
+    if batch_size is None:
+        batch_size = min(64, nsettings) if tensorcircuit_backend == "jax" else nsettings
+
+    def tensorcircuit_sample_batch(
+        input_state: Any, batch_bases: Any, batch_statuses: Any
+    ) -> Any:
+        return tc_shadows.shadow_snapshots(
+            input_state,
+            batch_bases,
+            status=batch_statuses,
             measurement_only=True,
         )
-        return np.asarray(samples)
+
+    def tensorcircuit_estimate_batch(batch_outcomes: Any, batch_bases: Any) -> Any:
+        return tc_shadows.expectation_ps_shadow(
+            batch_outcomes,
+            pauli_strings=batch_bases,
+            ps=codes,
+        )[0]
+
+    if tensorcircuit_backend == "jax":
+        tensorcircuit_sample_batch = tc.backend.jit(tensorcircuit_sample_batch)
+        tensorcircuit_estimate_batch = tc.backend.jit(tensorcircuit_estimate_batch)
+
+    def tensorcircuit_sample() -> np.ndarray[Any, Any]:
+        chunks = []
+        for start in range(0, nsettings, batch_size):
+            stop = min(start + batch_size, nsettings)
+            samples = tensorcircuit_sample_batch(
+                state,
+                bases[start:stop],
+                statuses[start:stop],
+            )
+            chunks.append(np.asarray(samples))
+        return chunks[0] if len(chunks) == 1 else np.concatenate(chunks, axis=0)
 
     tc_sampling, tc_outcomes = _benchmark(tensorcircuit_sample, repetitions)
     tc_estimation, tc_estimate = _benchmark(
-        lambda: float(
-            np.asarray(
-                tc_shadows.expectation_ps_shadow(
-                    tc_outcomes,
-                    pauli_strings=bases,
-                    ps=codes,
-                )
-            )[0]
-        ),
+        lambda: float(np.asarray(tensorcircuit_estimate_batch(tc_outcomes, bases))),
         repetitions,
     )
 
@@ -171,6 +199,8 @@ def _run_pauli_comparison(
         },
         "tensorcircuit": {
             "backend": tensorcircuit_backend,
+            "batch_size": batch_size,
+            "jit": tensorcircuit_backend == "jax",
             "sampling": _per_shot(tc_sampling, shots),
             "estimation": tc_estimation,
             "estimate": float(tc_estimate),
@@ -211,6 +241,7 @@ def _run_clifford_timing(
             repeats=repeats,
             protocol="clifford",
             seed=seed ^ 0xC11F,
+            max_bytes=MAX_BENCHMARK_BYTES,
         ),
         repetitions,
     )
@@ -250,6 +281,7 @@ def _run_clifford_timing(
             repeats=1,
             protocol="clifford",
             seed=seed ^ 0x57AB,
+            max_bytes=MAX_BENCHMARK_BYTES,
         ),
         repetitions,
     )
@@ -317,6 +349,12 @@ def main() -> None:
         choices=("numpy", "jax", "tensorflow", "pytorch"),
         default="numpy",
     )
+    parser.add_argument(
+        "--tensorcircuit-batch-size",
+        type=int,
+        default=None,
+        help="compile TensorCircuit shadow sampling in fixed-size batches",
+    )
     parser.add_argument("--skip-tensorcircuit", action="store_true")
     args = parser.parse_args()
     _positive(args.nqubits, "nqubits")
@@ -325,6 +363,8 @@ def main() -> None:
     _positive(args.repetitions, "repetitions")
     _positive(args.stabilizer_nqubits, "stabilizer-nqubits")
     _positive(args.stabilizer_settings, "stabilizer-settings")
+    if args.tensorcircuit_batch_size is not None:
+        _positive(args.tensorcircuit_batch_size, "tensorcircuit-batch-size")
 
     state = _non_clifford_state(args.nqubits)
     dense_target_statevector = _dense_non_clifford_target(
@@ -361,6 +401,7 @@ def main() -> None:
             args.repetitions,
             args.seed,
             args.tensorcircuit_backend,
+            args.tensorcircuit_batch_size,
         )
     print(json.dumps(result, sort_keys=True))
 

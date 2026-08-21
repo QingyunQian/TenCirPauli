@@ -1298,35 +1298,115 @@ fn sample_pauli_statevector(
         &[nsettings, repeats, nqubits],
         "estimating Pauli outcome storage",
     )?;
-    let requested = checked_bytes(
-        basis_count + outcome_count,
+    let retained_bytes = checked_bytes(
+        basis_count
+            .checked_add(outcome_count)
+            .ok_or(PauliError::Overflow {
+                context: "estimating Pauli snapshot storage",
+            })?,
         1,
         "estimating Pauli snapshot storage",
-    )?
-    .checked_add(checked_bytes(
-        dimension,
-        16,
-        "estimating Pauli state scratch",
-    )?)
-    .and_then(|value| {
-        value.checked_add(checked_bytes(dimension, 8, "estimating Pauli probability scratch").ok()?)
-    })
-    .ok_or(PauliError::Overflow {
-        context: "estimating Pauli sampler memory",
-    })?;
+    )?;
+    let worker_bytes = checked_bytes(dimension, 16, "estimating Pauli state scratch")?
+        .checked_add(checked_bytes(
+            dimension,
+            8,
+            "estimating Pauli probability scratch",
+        )?)
+        .ok_or(PauliError::Overflow {
+            context: "estimating Pauli sampler memory",
+        })?;
+    let worker_count =
+        bounded_shadow_worker_count(nsettings, retained_bytes, worker_bytes, max_bytes);
+    let requested = retained_bytes
+        .checked_add(worker_bytes.checked_mul(worker_count as u128).ok_or(
+            PauliError::Overflow {
+                context: "estimating parallel Pauli sampler memory",
+            },
+        )?)
+        .ok_or(PauliError::Overflow {
+            context: "estimating parallel Pauli sampler memory",
+        })?;
     check_limit(requested, max_bytes)?;
     let mut bases = vec![0u8; basis_count];
     let mut outcomes = vec![0u8; outcome_count];
+    if nqubits == 0 {
+        return Snapshots::from_pauli_measurements(
+            nsettings, nqubits, repeats, &bases, &outcomes, max_bytes,
+        );
+    }
+    let outcome_stride = checked_product(&[repeats, nqubits], "estimating Pauli outcome stride")?;
+    let settings_per_chunk = nsettings.div_ceil(worker_count);
+    let basis_chunk_len = checked_product(
+        &[settings_per_chunk, nqubits],
+        "estimating Pauli basis chunk",
+    )?;
+    let outcome_chunk_len = checked_product(
+        &[settings_per_chunk, outcome_stride],
+        "estimating Pauli outcome chunk",
+    )?;
+    let mut sample_chunks = || {
+        bases
+            .par_chunks_mut(basis_chunk_len)
+            .zip(outcomes.par_chunks_mut(outcome_chunk_len))
+            .enumerate()
+            .map(|(chunk, (basis_chunk, outcome_chunk))| {
+                let chunk_settings = basis_chunk.len() / nqubits;
+                sample_pauli_statevector_chunk(
+                    state,
+                    nqubits,
+                    dimension,
+                    repeats,
+                    seed,
+                    PauliStatevectorChunk {
+                        setting_start: chunk * settings_per_chunk,
+                        chunk_settings,
+                        bases: basis_chunk,
+                        outcomes: outcome_chunk,
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, PauliError>>()
+    };
+    if worker_count > 1 {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .build()
+            .expect("shadow worker count is positive");
+        pool.install(sample_chunks)?;
+    } else {
+        sample_chunks()?;
+    }
+
+    Snapshots::from_pauli_measurements(nsettings, nqubits, repeats, &bases, &outcomes, max_bytes)
+}
+
+struct PauliStatevectorChunk<'a> {
+    setting_start: usize,
+    chunk_settings: usize,
+    bases: &'a mut [u8],
+    outcomes: &'a mut [u8],
+}
+
+fn sample_pauli_statevector_chunk(
+    state: &[Complex64],
+    nqubits: usize,
+    dimension: usize,
+    repeats: usize,
+    seed: u64,
+    chunk: PauliStatevectorChunk<'_>,
+) -> Result<(), PauliError> {
     let mut transformed = state.to_vec();
     let mut cumulative = Vec::with_capacity(dimension);
-    for setting in 0..nsettings {
+    for local_setting in 0..chunk.chunk_settings {
+        let setting = chunk.setting_start + local_setting;
         let mut basis_random = RandomStream::new(seed, PAULI_FRAME_DOMAIN, setting, 0);
         for qubit in 0..nqubits {
-            bases[setting * nqubits + qubit] = (basis_random.bounded(3)? + 1) as u8;
+            chunk.bases[local_setting * nqubits + qubit] = (basis_random.bounded(3)? + 1) as u8;
         }
         transformed.copy_from_slice(state);
         for qubit in 0..nqubits {
-            match bases[setting * nqubits + qubit] {
+            match chunk.bases[local_setting * nqubits + qubit] {
                 1 => apply_h_in_place(&mut transformed, qubit, nqubits),
                 2 => apply_y_measurement_rotation(&mut transformed, qubit, nqubits),
                 3 => {}
@@ -1365,14 +1445,13 @@ fn sample_pauli_statevector(
                 }
             }
             let index = low.min(dimension - 1);
-            let start = (setting * repeats + repeat) * nqubits;
+            let start = (local_setting * repeats + repeat) * nqubits;
             for qubit in 0..nqubits {
-                outcomes[start + qubit] = ((index >> (nqubits - 1 - qubit)) & 1) as u8;
+                chunk.outcomes[start + qubit] = ((index >> (nqubits - 1 - qubit)) & 1) as u8;
             }
         }
     }
-
-    Snapshots::from_pauli_measurements(nsettings, nqubits, repeats, &bases, &outcomes, max_bytes)
+    Ok(())
 }
 
 impl Snapshots {
@@ -2901,5 +2980,45 @@ mod tests {
         assert_eq!(serial_arrays.1, parallel_arrays.1);
         assert_eq!(serial_arrays.2, parallel_arrays.2);
         assert_eq!(serial_arrays.3, parallel_arrays.3);
+    }
+
+    #[test]
+    fn pauli_statevector_sampling_replays_across_bounded_worker_counts() {
+        let mut state = vec![Complex64::default(); 1usize << 8];
+        state[0] = Complex64::new(1.0, 0.0);
+        let serial = ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("serial pool")
+            .install(|| {
+                Snapshots::sample_statevector(
+                    &state,
+                    17,
+                    SnapshotProtocol::Pauli,
+                    2,
+                    901,
+                    u128::MAX,
+                )
+            })
+            .expect("serial sampling");
+        let parallel = ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("parallel pool")
+            .install(|| {
+                Snapshots::sample_statevector(
+                    &state,
+                    17,
+                    SnapshotProtocol::Pauli,
+                    2,
+                    901,
+                    u128::MAX,
+                )
+            })
+            .expect("parallel sampling");
+        let serial_arrays = serial.pauli_arrays().expect("serial Pauli arrays");
+        let parallel_arrays = parallel.pauli_arrays().expect("parallel Pauli arrays");
+        assert_eq!(serial_arrays.0, parallel_arrays.0);
+        assert_eq!(serial_arrays.1, parallel_arrays.1);
     }
 }
