@@ -79,7 +79,8 @@ def test_stabilizer_sampling_and_estimation(
 
 
 @pytest.mark.parametrize(
-    "nqubits, nsettings, repeats", ((64, 16, 1), (256, 8, 1), (64, 8, 8))
+    "nqubits, nsettings, repeats",
+    ((16, 2048, 1), (64, 16, 1), (256, 8, 1), (64, 8, 8)),
 )
 def test_stabilizer_sampling(
     benchmark: BenchmarkFixture, nqubits: int, nsettings: int, repeats: int
@@ -252,7 +253,7 @@ def test_stabilizer_fidelity(benchmark: BenchmarkFixture) -> None:
     )
 
 
-@pytest.mark.parametrize("nqubits", (8, 10, 12))
+@pytest.mark.parametrize("nqubits", (8, 10, 12, 16))
 def test_dense_target_fidelity(benchmark: BenchmarkFixture, nqubits: int) -> None:
     state = _state(nqubits)
     target = _dense_target(nqubits)

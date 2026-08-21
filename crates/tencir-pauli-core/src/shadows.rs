@@ -21,6 +21,9 @@ const PAULI_OUTCOME_DOMAIN: u64 = 0x7061_756c_695f_6f75;
 const CLIFFORD_FRAME_DOMAIN: u64 = 0x636c_6966_666f_726d;
 const CLIFFORD_SIGN_DOMAIN: u64 = 0x636c_6966_665f_7367;
 const CLIFFORD_OUTCOME_DOMAIN: u64 = 0x636c_6966_665f_6f75;
+const MIN_CLIFFORD_STATEVECTOR_PARALLEL_WORK: usize = 32_768;
+const MIN_CLIFFORD_STABILIZER_PARALLEL_WORK: usize = 2_048;
+const MIN_DENSE_FIDELITY_PARALLEL_WORK: usize = 8_192;
 
 fn checked_product(values: &[usize], context: &'static str) -> Result<usize, PauliError> {
     values.iter().try_fold(1usize, |product, value| {
@@ -1785,13 +1788,31 @@ impl Snapshots {
         validate_linear_blocks(self.nsettings(), blocks)?;
         let scale = dimension as f64 + 1.0;
         let mut values = vec![0.0; self.nsettings()];
-        for (setting, value) in values.iter_mut().enumerate() {
+        let setting_value = |setting| {
+            let mut value = 0.0;
             for repeat in 0..self.repeats() {
                 let snapshot = self.snapshot_stabilizer(setting, repeat)?;
                 let overlap = dense_stabilizer_overlap_squared(target, &snapshot)?;
-                *value += scale * overlap - 1.0;
+                value += scale * overlap - 1.0;
             }
-            *value /= self.repeats() as f64;
+            Ok::<f64, PauliError>(value / self.repeats() as f64)
+        };
+        let parallel_work = self
+            .nsettings()
+            .saturating_mul(self.repeats())
+            .saturating_mul(dimension);
+        if parallel_work >= MIN_DENSE_FIDELITY_PARALLEL_WORK {
+            values
+                .par_iter_mut()
+                .enumerate()
+                .try_for_each(|(setting, value)| {
+                    *value = setting_value(setting)?;
+                    Ok::<(), PauliError>(())
+                })?;
+        } else {
+            for (setting, value) in values.iter_mut().enumerate() {
+                *value = setting_value(setting)?;
+            }
         }
         let block_values = block_means(&values, self.nsettings(), 1, blocks)?;
         if return_blocks {
@@ -2093,7 +2114,7 @@ fn sample_clifford_statevector(
         &[nsettings, repeats, nqubits],
         "estimating Clifford outcome storage",
     )?;
-    let requested = checked_bytes(frame_words * 2, 8, "estimating Clifford frame storage")?
+    let retained_bytes = checked_bytes(frame_words * 2, 8, "estimating Clifford frame storage")?
         .checked_add(checked_bytes(
             frame_rows,
             1,
@@ -2104,31 +2125,146 @@ fn sample_clifford_statevector(
                 checked_bytes(outcome_count, 1, "estimating Clifford outcome storage").ok()?,
             )
         })
-        .and_then(|value| {
-            value.checked_add(
-                checked_bytes(dimension, 32, "estimating Clifford state scratch").ok()?,
-            )
-        })
         .ok_or(PauliError::Overflow {
-            context: "estimating Clifford sampler memory",
+            context: "estimating Clifford snapshot storage",
+        })?;
+    let worker_bytes = checked_bytes(dimension, 32, "estimating Clifford state scratch")?;
+    let parallel_work = nsettings
+        .saturating_mul(repeats)
+        .saturating_mul(nqubits)
+        .saturating_mul(dimension);
+    let worker_count = if nsettings >= 2 && parallel_work >= MIN_CLIFFORD_STATEVECTOR_PARALLEL_WORK
+    {
+        bounded_shadow_worker_count(nsettings, retained_bytes, worker_bytes, max_bytes)
+    } else {
+        1
+    };
+    let requested = retained_bytes
+        .checked_add(worker_bytes.checked_mul(worker_count as u128).ok_or(
+            PauliError::Overflow {
+                context: "estimating parallel Clifford sampler memory",
+            },
+        )?)
+        .ok_or(PauliError::Overflow {
+            context: "estimating parallel Clifford sampler memory",
         })?;
     check_limit(requested, max_bytes)?;
     let mut frame_x_words = vec![0u64; frame_words];
     let mut frame_z_words = vec![0u64; frame_words];
     let mut frame_signs = vec![1i8; frame_rows];
     let mut outcomes = vec![0u8; outcome_count];
+    if nqubits == 0 {
+        return Snapshots::from_clifford_measurements(
+            nsettings,
+            nqubits,
+            repeats,
+            &frame_x_words,
+            &frame_z_words,
+            &frame_signs,
+            &outcomes,
+            max_bytes,
+        );
+    }
+    let frame_words_per_setting = checked_product(
+        &[nqubits, word_count],
+        "estimating Clifford frame setting storage",
+    )?;
+    let outcome_stride =
+        checked_product(&[repeats, nqubits], "estimating Clifford outcome stride")?;
+    let settings_per_chunk = nsettings.div_ceil(worker_count);
+    let frame_chunk_words = checked_product(
+        &[settings_per_chunk, frame_words_per_setting],
+        "estimating Clifford frame chunk",
+    )?;
+    let sign_chunk_len = checked_product(
+        &[settings_per_chunk, nqubits],
+        "estimating Clifford sign chunk",
+    )?;
+    let outcome_chunk_len = checked_product(
+        &[settings_per_chunk, outcome_stride],
+        "estimating Clifford outcome chunk",
+    )?;
+    let mut sample_chunks = || {
+        frame_x_words
+            .par_chunks_mut(frame_chunk_words)
+            .zip(frame_z_words.par_chunks_mut(frame_chunk_words))
+            .zip(frame_signs.par_chunks_mut(sign_chunk_len))
+            .zip(outcomes.par_chunks_mut(outcome_chunk_len))
+            .enumerate()
+            .map(|(chunk, (((frame_x, frame_z), signs), chunk_outcomes))| {
+                let chunk_settings = signs.len() / nqubits;
+                sample_clifford_statevector_chunk(
+                    state,
+                    nqubits,
+                    dimension,
+                    word_count,
+                    repeats,
+                    seed,
+                    CliffordStatevectorChunk {
+                        setting_start: chunk * settings_per_chunk,
+                        chunk_settings,
+                        frame_x_words: frame_x,
+                        frame_z_words: frame_z,
+                        frame_signs: signs,
+                        outcomes: chunk_outcomes,
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, PauliError>>()
+    };
+    if worker_count > 1 {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .build()
+            .expect("shadow worker count is positive");
+        pool.install(sample_chunks)?;
+    } else {
+        sample_chunks()?;
+    }
+
+    Snapshots::from_clifford_measurements(
+        nsettings,
+        nqubits,
+        repeats,
+        &frame_x_words,
+        &frame_z_words,
+        &frame_signs,
+        &outcomes,
+        max_bytes,
+    )
+}
+
+struct CliffordStatevectorChunk<'a> {
+    setting_start: usize,
+    chunk_settings: usize,
+    frame_x_words: &'a mut [u64],
+    frame_z_words: &'a mut [u64],
+    frame_signs: &'a mut [i8],
+    outcomes: &'a mut [u8],
+}
+
+fn sample_clifford_statevector_chunk(
+    state: &[Complex64],
+    nqubits: usize,
+    dimension: usize,
+    word_count: usize,
+    repeats: usize,
+    seed: u64,
+    chunk: CliffordStatevectorChunk<'_>,
+) -> Result<(), PauliError> {
     let mut current = vec![Complex64::default(); dimension];
     let mut scratch = vec![Complex64::default(); dimension];
-    for setting in 0..nsettings {
+    for local_setting in 0..chunk.chunk_settings {
+        let setting = chunk.setting_start + local_setting;
         let mut frame_random = RandomStream::new(seed, CLIFFORD_FRAME_DOMAIN, setting, 0);
         let frame = sample_symplectic_frame(nqubits, &mut frame_random)?;
         let mut sign_random = RandomStream::new(seed, CLIFFORD_SIGN_DOMAIN, setting, 0);
         for (generator, vector) in frame.iter().enumerate() {
-            let row = setting * nqubits + generator;
+            let row = local_setting * nqubits + generator;
             let start = row * word_count;
-            frame_x_words[start..start + word_count].copy_from_slice(&vector.x_words);
-            frame_z_words[start..start + word_count].copy_from_slice(&vector.z_words);
-            frame_signs[row] = if sign_random.next_u64() & 1 == 0 {
+            chunk.frame_x_words[start..start + word_count].copy_from_slice(&vector.x_words);
+            chunk.frame_z_words[start..start + word_count].copy_from_slice(&vector.z_words);
+            chunk.frame_signs[row] = if sign_random.next_u64() & 1 == 0 {
                 1
             } else {
                 -1
@@ -2139,13 +2275,13 @@ fn sample_clifford_statevector(
             let mut outcome_random =
                 RandomStream::new(seed, CLIFFORD_OUTCOME_DOMAIN, setting, repeat);
             for generator in 0..nqubits {
-                let row = setting * nqubits + generator;
+                let row = local_setting * nqubits + generator;
                 let start = row * word_count;
                 let action = StatevectorPauliAction::from_packed(
                     nqubits,
-                    &frame_x_words[start..start + word_count],
-                    &frame_z_words[start..start + word_count],
-                    f64::from(frame_signs[row]),
+                    &chunk.frame_x_words[start..start + word_count],
+                    &chunk.frame_z_words[start..start + word_count],
+                    f64::from(chunk.frame_signs[row]),
                 )?;
                 let expectation = action.apply_into_and_expectation(&current, &mut scratch)?;
                 let probability_zero = ((1.0 + expectation) * 0.5).clamp(0.0, 1.0);
@@ -2161,20 +2297,11 @@ fn sample_clifford_statevector(
                     eigenvalue,
                     expectation,
                 )?;
-                outcomes[(setting * repeats + repeat) * nqubits + generator] = bit;
+                chunk.outcomes[(local_setting * repeats + repeat) * nqubits + generator] = bit;
             }
         }
     }
-    Snapshots::from_clifford_measurements(
-        nsettings,
-        nqubits,
-        repeats,
-        &frame_x_words,
-        &frame_z_words,
-        &frame_signs,
-        &outcomes,
-        max_bytes,
-    )
+    Ok(())
 }
 
 fn sample_clifford_stabilizer(
@@ -2231,7 +2358,11 @@ fn sample_clifford_stabilizer(
         16,
         "estimating Clifford stabilizer worker workspace",
     )?;
-    let worker_count = if nqubits >= 64 && nsettings >= 2 {
+    let parallel_work = nsettings
+        .saturating_mul(repeats)
+        .saturating_mul(nqubits)
+        .saturating_mul(nqubits);
+    let worker_count = if nsettings >= 2 && parallel_work >= MIN_CLIFFORD_STABILIZER_PARALLEL_WORK {
         bounded_shadow_worker_count(nsettings, requested, worker_bytes, max_bytes)
     } else {
         1
@@ -2941,7 +3072,7 @@ mod tests {
 
     #[test]
     fn stabilizer_sampling_replays_across_bounded_worker_counts() {
-        let state = StabilizerState::zero_state(64).expect("zero state");
+        let state = StabilizerState::zero_state(16).expect("zero state");
         let serial = ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
@@ -2949,7 +3080,7 @@ mod tests {
             .install(|| {
                 Snapshots::sample_stabilizer(
                     &state,
-                    4,
+                    16,
                     SnapshotProtocol::Clifford,
                     2,
                     901,
@@ -2964,7 +3095,7 @@ mod tests {
             .install(|| {
                 Snapshots::sample_stabilizer(
                     &state,
-                    4,
+                    16,
                     SnapshotProtocol::Clifford,
                     2,
                     901,
@@ -3020,5 +3151,85 @@ mod tests {
         let parallel_arrays = parallel.pauli_arrays().expect("parallel Pauli arrays");
         assert_eq!(serial_arrays.0, parallel_arrays.0);
         assert_eq!(serial_arrays.1, parallel_arrays.1);
+    }
+
+    #[test]
+    fn clifford_statevector_sampling_replays_across_bounded_worker_counts() {
+        let mut state = vec![Complex64::default(); 1usize << 8];
+        state[0] = Complex64::new(3.0f64.sqrt() * 0.5, 0.0);
+        state[128] = Complex64::new(0.0, 0.5);
+        let serial = ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("serial pool")
+            .install(|| {
+                Snapshots::sample_statevector(
+                    &state,
+                    17,
+                    SnapshotProtocol::Clifford,
+                    2,
+                    902,
+                    u128::MAX,
+                )
+            })
+            .expect("serial sampling");
+        let parallel = ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("parallel pool")
+            .install(|| {
+                Snapshots::sample_statevector(
+                    &state,
+                    17,
+                    SnapshotProtocol::Clifford,
+                    2,
+                    902,
+                    u128::MAX,
+                )
+            })
+            .expect("parallel sampling");
+        let serial_arrays = serial.clifford_arrays().expect("serial Clifford arrays");
+        let parallel_arrays = parallel
+            .clifford_arrays()
+            .expect("parallel Clifford arrays");
+        assert_eq!(serial_arrays.0, parallel_arrays.0);
+        assert_eq!(serial_arrays.1, parallel_arrays.1);
+        assert_eq!(serial_arrays.2, parallel_arrays.2);
+        assert_eq!(serial_arrays.3, parallel_arrays.3);
+    }
+
+    #[test]
+    fn dense_fidelity_replays_across_worker_counts() {
+        let state = StabilizerState::zero_state(10).expect("zero state");
+        let snapshots =
+            Snapshots::sample_stabilizer(&state, 16, SnapshotProtocol::Clifford, 1, 903, u128::MAX)
+                .expect("Clifford snapshots");
+        let mut target = (0..1usize << 10)
+            .map(|index| {
+                let value = index as f64 + 1.0;
+                Complex64::new((value * 0.17).sin(), (value * 0.31).cos())
+            })
+            .collect::<Vec<_>>();
+        let norm = target
+            .iter()
+            .map(|value| value.norm_sqr())
+            .sum::<f64>()
+            .sqrt();
+        for value in &mut target {
+            *value /= norm;
+        }
+        let serial = ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("serial pool")
+            .install(|| snapshots.fidelity_statevector(&target, 4, true))
+            .expect("serial fidelity");
+        let parallel = ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("parallel pool")
+            .install(|| snapshots.fidelity_statevector(&target, 4, true))
+            .expect("parallel fidelity");
+        assert_eq!(serial, parallel);
     }
 }
