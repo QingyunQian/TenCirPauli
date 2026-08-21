@@ -148,7 +148,15 @@ Phase 3 不提供 coefficient-magnitude cutoff。Phase 4 deterministic reverse�
 
 PTM 使用 Hermitian Pauli basis `I/X/Y/Z`。若 local map 保持 Hermiticity，则 `R_ab = 2**(-m) Tr[P_a E(P_b)]` 必为实数；负值是正常的实数系数，不意味着需要 complex PTM。Phase 3 公开 custom PTM API 只接受 finite real `float64` arrays，complex dtype 明确失败。Complex entries 只对应非 Hermiticity-preserving 的一般线性 Pauli map、非 Hermitian basis，或数值噪声；未来若有真实需求，必须另设不宣称物理 PTM 的 complex linear-Pauli-map API。
 
-初始态 expectation 第一阶段支持 `|0...0>`、computational basis product state 和 tensor-product single-qubit Bloch vector。stabilizer state、mixed product state 和一般 MPS 可以后续通过显式 expectation callback plan 增加，但不能让 Rust hot loop 回调 Python。
+Propagation 初始态 expectation 支持 `|0...0>`、computational basis product state 和 tensor-product single-qubit Bloch vector。Classical-shadow sampling 另有独立的 statevector/stabilizer 输入路径；它不把 stabilizer state 注入 propagation hot loop，也不让 Rust hot loop 回调 Python。
+
+### 8.5 Classical-shadow snapshots
+
+Classical shadows are a separate randomized-measurement subsystem rather than a second Pauli-propagation recurrence. `Snapshots.sample()` accepts a complete normalized statevector or an immutable native `StabilizerState`, samples either local Pauli bases or exact packed global-Clifford frames, and stores setting-major outcomes in an immutable native handle. `nsettings` is the independent statistical unit; `repeats` retains conditional outcomes under one setting and is not a substitute for independent randomized settings for linear estimators.
+
+The public estimator layer supports single and batched Hermitian Pauli observables, Hamiltonian energy, reduced density matrices, Rényi-2 entropy, energy variance, stabilizer-target fidelity, arbitrary dense-target fidelity, and the TensorCircuit-compatible local-Pauli `shadow_bound()`. Imported local-Pauli arrays and versioned packed Clifford frames use one read-back ABI with owned flat NumPy arrays, explicit `q0_first` ordering, and boundary validation. Dense and stabilizer sampling run in deterministic memory-bounded setting-level workers; seeded calls preserve replay across worker counts without global mutable state.
+
+This subsystem does not claim to be a general-purpose statevector or Clifford simulator. The dense path consumes a caller-supplied statevector and performs the required conditional measurements; the stabilizer path uses tableau kernels and exposes only the snapshot/state contracts needed by the estimators.
 
 ## 9. 两种执行模式
 

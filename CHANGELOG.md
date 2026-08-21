@@ -4,6 +4,22 @@ All notable changes to TenCirPauli will be documented in this file.
 
 The project follows Semantic Versioning.
 
+## 0.5.0 - 2026-08-21
+
+This release adds native classical-shadow snapshots and makes randomized-measurement estimation a first-class public workflow.
+
+### Added
+
+- Added `Snapshots.sample()` for local-Pauli and global-Clifford sampling from complete statevectors or native `StabilizerState` inputs, with deterministic seeded replay and setting-level memory-bounded execution.
+- Added snapshot import and read-back through `Snapshots.from_pauli_measurements()`, `Snapshots.from_clifford_measurements()`, and `Snapshots.to_arrays()` with explicit shapes, signed packed frames, and `q0_first` ordering.
+- Added native estimators for single and batched Pauli observables, Hamiltonian energy, reduced density matrices, Rényi-2 entropy, energy variance, stabilizer-target fidelity, arbitrary dense-target fidelity, and `shadow_bound()`.
+- Added immutable stabilizer-state construction from zero states, generators, tableaux, and supported Clifford tapes.
+- Added a reproducible classical-shadow research workflow and release benchmark coverage for dense statevector, stabilizer, local-Pauli, global-Clifford, estimator, RDM, entropy, and fidelity workloads.
+
+### Documentation
+
+- Documented the classical-shadow public surface in the README, quickstart, concepts, API, performance, and architecture documentation.
+
 ## 0.4.1 - 2026-08-11
 
 This patch release improves backend compatibility and tightens native structured-operator execution while the project remains pre-1.0.

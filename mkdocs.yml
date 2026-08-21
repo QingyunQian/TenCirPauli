@@ -1,5 +1,5 @@
 site_name: TenCirPauli
-site_description: Fast Pauli algebra and quantum-circuit primitives for TensorCircuit.
+site_description: Fast Pauli algebra, classical-shadow estimators, and quantum-circuit primitives for TensorCircuit.
 site_url: https://tensorcircuit.github.io/TenCirPauli/
 repo_name: tensorcircuit/TenCirPauli
 repo_url: https://github.com/tensorcircuit/TenCirPauli

@@ -8,7 +8,7 @@ hide:
   <div class="tp-hero-copy">
     <p class="tp-kicker">RUST-NATIVE · PYTHON-FIRST · TENSORCIRCUIT</p>
     <h1>Pauli structure,<br><em>made practical.</em></h1>
-    <p class="tp-hero-lede">TenCirPauli brings fast Pauli algebra, Hamiltonian plans, symmetry tools, and native observable propagation to the TensorCircuit ecosystem.</p>
+    <p class="tp-hero-lede">TenCirPauli brings fast Pauli algebra, Hamiltonian plans, symmetry tools, native observable propagation, and classical-shadow estimators to the TensorCircuit ecosystem.</p>
     <div class="tp-actions">
       <a class="tp-button tp-button-primary" href="quickstart/">Start with Python</a>
       <a class="tp-button tp-button-secondary" href="api/">Browse the API</a>
@@ -29,9 +29,9 @@ hide:
   <div class="tp-flow-arrow">→</div>
   <div class="tp-flow-item"><span>02</span><strong>Compile</strong><small>Dense, sparse, matrix-free, and backend plans.</small></div>
   <div class="tp-flow-arrow">→</div>
-  <div class="tp-flow-item"><span>03</span><strong>Analyze</strong><small>Grouping, symmetries, sectors, and mappings.</small></div>
+  <div class="tp-flow-item"><span>03</span><strong>Analyze</strong><small>Grouping, shadows, symmetries, sectors, and mappings.</small></div>
   <div class="tp-flow-arrow">→</div>
-  <div class="tp-flow-item"><span>04</span><strong>Execute</strong><small>Propagation, gradients, and TensorCircuit interop.</small></div>
+  <div class="tp-flow-item"><span>04</span><strong>Execute</strong><small>Propagation, shadow sampling, gradients, and TensorCircuit interop.</small></div>
 </div>
 
 ## What it covers
@@ -50,12 +50,12 @@ hide:
   <div class="tp-card">
     <p class="tp-card-index">03 / STRUCTURE</p>
     <h3>Measure and reduce</h3>
-    <p>Group measurements, analyze Z₂ and U(1) structure, map fermions, and work in restricted sectors.</p>
+    <p>Group measurements, estimate with classical shadows, analyze Z₂ and U(1) structure, and work in restricted sectors.</p>
   </div>
   <div class="tp-card">
     <p class="tp-card-index">04 / CIRCUITS</p>
     <h3>Propagate observables</h3>
-    <p>Run deterministic or stochastic Pauli propagation with native gradients and familiar Python facades.</p>
+    <p>Run deterministic or stochastic Pauli propagation, native shadow sampling, and gradients through familiar Python facades.</p>
   </div>
 </div>
 

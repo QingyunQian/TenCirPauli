@@ -55,6 +55,21 @@ print(circuit.expectation(observable))
 
 For a parameterized circuit, pass concrete values with `theta=` and call `value_and_grad(observable)`. The returned gradient is ordered by gate occurrence. For an execution that must stay inside JAX or another TensorCircuit backend, use `expectation_jax()` for circuit differentiation or compile an operator backend MVP plan instead of calling a native circuit engine.
 
+## Estimate with classical shadows
+
+```python
+import numpy as np
+import tencirpauli as tcp
+
+state = np.array([1.0, 1.0], dtype=np.complex128) / np.sqrt(2.0)
+snapshots = tcp.Snapshots.sample(
+    state, nsettings=256, protocol="pauli", seed=7
+)
+print(snapshots.expectation(tcp.PauliWord.from_string("X")))
+```
+
+`Snapshots.sample()` also accepts `StabilizerState.zero_state(nqubits)` and supports `protocol="clifford"` for global-Clifford snapshots. Use `estimate_many()` for a batch of Pauli targets, `energy()` for a Hermitian Hamiltonian, and `rdm()`, `renyi_entropy()`, `energy_variance()`, `fidelity()`, or `fidelity_statevector()` for post-processing. To analyze measurements collected elsewhere, use `Snapshots.from_pauli_measurements()` or `Snapshots.from_clifford_measurements()`.
+
 ## Choose the next layer
 
 | If you need to... | Start with... |
@@ -62,6 +77,7 @@ For a parameterized circuit, pass concrete values with `theta=` and call `value_
 | Inspect or transform Pauli terms | `PauliWord`, `PauliOperator` |
 | Materialize or apply a Hamiltonian | `dense()`, `coo()`, `csr()`, `compile("native_mvp")` |
 | Keep JAX/TensorCircuit active | `backend_mvp_plan()` and `backend_mvp()` |
+| Estimate randomized measurements | `Snapshots` and `StabilizerState` |
 | Run a native circuit observable | `PropagationCircuit`, `U1Circuit`, or `SPPSCircuit` |
 | Work with structured fermions or charges | `OperatorSpace`, `FermionQubitMapping`, `AdditiveCharge` |
 

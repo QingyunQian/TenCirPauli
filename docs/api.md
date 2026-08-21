@@ -4,6 +4,8 @@ This page is generated from the public Python package. The source docstrings are
 
 The homepage and concepts pages explain how the pieces fit together; use this page when you already know the object or method you want to look up.
 
+The classical-shadow surface is available at the top level through `Snapshots`, `StabilizerState`, `PauliSnapshotArrays`, `CliffordSnapshotArrays`, and `shadow_bound`. Their docstrings specify the sampling protocols, array shapes, estimator restrictions, and memory/ordering contracts.
+
 ::: tencirpauli
     options:
       docstring_style: google

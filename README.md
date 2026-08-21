@@ -10,7 +10,7 @@
   </p>
 </div>
 
-TenCirPauli moves Pauli-heavy quantum workflows from Python object graphs into compact native data and Rust execution. It is the [TensorCircuit-NG](https://github.com/tensorcircuit/tensorcircuit-ng)-facing layer for Hamiltonians, measurement grouping, symmetry reduction, restricted sectors, structured operators, and observable propagation.
+TenCirPauli moves Pauli-heavy quantum workflows from Python object graphs into compact native data and Rust execution. It is the [TensorCircuit-NG](https://github.com/tensorcircuit/tensorcircuit-ng)-facing layer for Hamiltonians, measurement grouping, symmetry reduction, restricted sectors, structured operators, classical-shadow snapshots, and observable propagation.
 
 ## What it does
 
@@ -18,6 +18,7 @@ TenCirPauli moves Pauli-heavy quantum workflows from Python object graphs into c
 | --- | --- |
 | Pauli algebra and Hamiltonians | `PauliWord`, `PauliOperator`, products, commutators, dense/COO/CSR targets, matrix-free MVP |
 | Measurement planning | `group_commuting(mode="qubit_wise")`, `QWCGroupingResult`, basis-aware bitstring reconstruction |
+| Classical-shadow snapshots | `Snapshots.sample()`, Pauli/global-Clifford protocols, native estimators, RDM, Rényi-2 entropy, and fidelity |
 | Symmetry reduction | `find_z2_symmetries()`, `taper_z2()`, `restrict_charge()` with `U1Sector` or `ChargeSector` |
 | Native circuit execution | `U1Circuit`, `PropagationCircuit`, `SPPSCircuit`, value/gradient and expectation terminals |
 | Structured quantum operators | `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, `HybridOperator`, `MajoranaOperator` |
@@ -48,6 +49,7 @@ These are representative runs from the linked research studies, not universal ma
 | --- | --- |
 | Build or transform Pauli operators | `PauliOperator.from_terms()` and `PauliWord.from_string()` |
 | Group terms for measurements | `operator.group_commuting()`; use QWC mode for measurement-ready bases |
+| Estimate observables from randomized measurements | `Snapshots.sample()` followed by `expectation()`, `estimate_many()`, or `energy()` |
 | Apply a large Hamiltonian without a matrix | `operator.native_mvp_plan()` or `operator.mvp()` |
 | Keep TensorCircuit-NG/JAX active | `operator.backend_mvp_plan()` and `tencirpauli.backend_mvp()` |
 | Reduce a symmetry sector | `operator.find_z2_symmetries()` / `operator.taper_z2()` |
@@ -63,7 +65,7 @@ TenCirPauli is designed as a [TensorCircuit-NG](https://github.com/tensorcircuit
 
 ## Research examples
 
-The [research index](examples/research/README.md) links to reproducible, manual studies covering [Fermi–Hubbard](examples/research/fermi_hubbard/), [Holstein](examples/research/holstein/), [SYK Majorana](examples/research/syk_majorana/), [BCH convergence](examples/research/bch_convergence/), [Lie closure](examples/research/lie_closure/), [fermion mapping](examples/research/fermion_mapping/), [U(1) VQE](examples/research/u1_vqe_60q/), [Pauli propagation](examples/research/pauli_propagation_julia_vqe/), and [measurement grouping](examples/research/measurement_grouping/).
+The [research index](examples/research/README.md) links to reproducible, manual studies covering [Fermi–Hubbard](examples/research/fermi_hubbard/), [Holstein](examples/research/holstein/), [SYK Majorana](examples/research/syk_majorana/), [BCH convergence](examples/research/bch_convergence/), [Lie closure](examples/research/lie_closure/), [fermion mapping](examples/research/fermion_mapping/), [U(1) VQE](examples/research/u1_vqe_60q/), [Pauli propagation](examples/research/pauli_propagation_julia_vqe/), [measurement grouping](examples/research/measurement_grouping/), and [classical shadows](examples/research/classical_shadows/).
 
 ## Install
 

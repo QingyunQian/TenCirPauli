@@ -21,7 +21,13 @@ Protocol = Literal["pauli", "clifford"]
 
 @dataclass(frozen=True)
 class PauliSnapshotArrays:
-    """Owned setting-major local-Pauli snapshot arrays."""
+    """Owned setting-major local-Pauli snapshot arrays.
+
+    ``bases`` has shape ``(nsettings, nqubits)`` and uses codes ``1=X``,
+    ``2=Y``, and ``3=Z``. ``outcomes`` has shape
+    ``(nsettings, repeats, nqubits)`` and contains binary computational-basis
+    outcomes. Arrays are C-contiguous, read-only, and use ``q0_first`` order.
+    """
 
     __slots__ = ("bases", "outcomes", "qubit_order")
 
@@ -32,7 +38,15 @@ class PauliSnapshotArrays:
 
 @dataclass(frozen=True)
 class CliffordSnapshotArrays:
-    """Owned packed global-Clifford frame and outcome arrays."""
+    """Owned packed global-Clifford frame and outcome arrays.
+
+    ``frame_x_words`` and ``frame_z_words`` have shape
+    ``(nsettings * nqubits, ceil(nqubits / 64))``; consecutive rows form one
+    signed commuting frame per setting. ``frame_signs`` has shape
+    ``(nsettings, nqubits)`` with values ``+1`` or ``-1``, and ``outcomes``
+    has shape ``(nsettings, repeats, nqubits)``. ``frame_version`` is ``1``.
+    Arrays are C-contiguous, read-only, and use ``q0_first`` order.
+    """
 
     __slots__ = (
         "frame_signs",
@@ -387,26 +401,32 @@ class Snapshots:
 
     @property
     def protocol(self) -> Protocol:
+        """Sampling protocol, either ``"pauli"`` or ``"clifford"``."""
         return cast(Protocol, self._protocol)
 
     @property
     def nqubits(self) -> int:
+        """Number of measured qubits."""
         return self._nqubits
 
     @property
     def nsettings(self) -> int:
+        """Number of independent randomized measurement settings."""
         return self._nsettings
 
     @property
     def repeats(self) -> int:
+        """Number of conditional outcomes retained per setting."""
         return self._repeats
 
     @property
     def shots(self) -> int:
+        """Total number of retained outcomes, equal to ``nsettings * repeats``."""
         return self.nsettings * self.repeats
 
     @property
     def qubit_order(self) -> QubitOrder:
+        """Qubit ordering used by all public arrays and estimators."""
         return "q0_first"
 
     def to_arrays(self) -> Union[PauliSnapshotArrays, CliffordSnapshotArrays]:
@@ -658,7 +678,13 @@ class Snapshots:
 
 
 class StabilizerState:
-    """Immutable pure stabilizer state backed by a native tableau."""
+    """Immutable pure stabilizer state backed by a native tableau.
+
+    A state stores exactly ``nqubits`` independent signed commuting Pauli
+    generators. It can be sampled by ``Snapshots.sample()`` without creating
+    a dense statevector, and its tableau can be exported only through the
+    owned read-only arrays returned by :meth:`to_tableau`.
+    """
 
     __slots__ = ("_native", "_nqubits")
 
@@ -674,6 +700,7 @@ class StabilizerState:
 
     @classmethod
     def zero_state(cls, nqubits: int) -> "StabilizerState":
+        """Construct the computational ``|0...0>`` stabilizer state."""
         if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
             raise ValueError("nqubits must be a non-negative integer")
         return cls(_native.stabilizer_zero_state(int(nqubits)))
@@ -682,6 +709,13 @@ class StabilizerState:
     def from_generators(
         cls, generators: Sequence[Tuple[PauliWord, int]]
     ) -> "StabilizerState":
+        """Construct a state from ``(generator, sign)`` pairs.
+
+        The sequence must contain exactly ``nqubits`` same-width
+        ``PauliWord`` generators. Signs are eigenvalues and must be ``+1`` or
+        ``-1``; the native tableau validator checks commutation, independence,
+        and the canonical Pauli representation.
+        """
         values = tuple(generators)
         if not values:
             raise ValueError("from_generators requires exactly nqubits generators")
@@ -714,6 +748,14 @@ class StabilizerState:
     def from_tableau(
         cls, x_words: object, z_words: object, signs: object
     ) -> "StabilizerState":
+        """Construct a state from packed tableau arrays.
+
+        ``x_words`` and ``z_words`` must have shape
+        ``(nqubits, ceil(nqubits / 64))`` and unsigned-64-bit integer entries;
+        ``signs`` must have shape ``(nqubits,)`` and contain only ``+1`` or
+        ``-1``. Inputs are copied into the native tableau after boundary
+        validation.
+        """
         x = _normalize_integer_array(x_words, "x_words", np.dtype(np.uint64))
         z = _normalize_integer_array(z_words, "z_words", np.dtype(np.uint64))
         sign_array = np.asarray(signs)
@@ -732,6 +774,12 @@ class StabilizerState:
 
     @classmethod
     def from_clifford_tape(cls, tape: object) -> "StabilizerState":
+        """Apply a parameter-free supported Clifford ``GateTape`` to ``|0>``.
+
+        The tape must contain only ``X``, ``Y``, ``Z``, ``H``, ``S``, ``Sdg``,
+        ``CNOT``, ``CZ``, or ``SWAP`` gates with concrete angles absent. The
+        complete tape is validated and executed in one native call.
+        """
         from .propagation import GateTape
 
         if not isinstance(tape, GateTape):
@@ -740,6 +788,7 @@ class StabilizerState:
 
     @property
     def nqubits(self) -> int:
+        """Number of qubits represented by the tableau."""
         return self._nqubits
 
     def to_tableau(

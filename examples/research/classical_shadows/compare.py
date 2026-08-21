@@ -337,17 +337,17 @@ def _run_clifford_timing(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--nqubits", type=int, default=16)
-    parser.add_argument("--nsettings", type=int, default=128)
+    parser.add_argument("--nqubits", type=int, default=20)
+    parser.add_argument("--nsettings", type=int, default=8192)
     parser.add_argument("--repeats", type=int, default=1)
-    parser.add_argument("--repetitions", type=int, default=5)
+    parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20260820)
     parser.add_argument("--stabilizer-nqubits", type=int, default=64)
     parser.add_argument("--stabilizer-settings", type=int, default=128)
     parser.add_argument(
         "--tensorcircuit-backend",
         choices=("numpy", "jax", "tensorflow", "pytorch"),
-        default="numpy",
+        default="jax",
     )
     parser.add_argument(
         "--tensorcircuit-batch-size",

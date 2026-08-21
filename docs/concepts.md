@@ -31,9 +31,15 @@ These tools are deliberately explicit about their contracts. A qubit-wise commut
 
 ### Execute
 
-The circuit facades cover three different numerical contracts: fixed-particle-number native circuits, deterministic Pauli propagation, and stochastic Pauli-path estimation. They share a Python-level shape while keeping their native executors separate.
+The circuit facades cover three different numerical contracts: fixed-particle-number native circuits, deterministic Pauli propagation, and stochastic Pauli-path estimation. They share a Python-level shape while keeping their native executors separate. Classical-shadow snapshots form a separate randomized-measurement path for state sampling and observable post-processing.
 
 These facades store concrete gate angles and expose `expectation(observable)`, `value_and_grad(observable)`, and `expectation_jax(observable)`. The direct gradient has one entry per supported gate occurrence. There is no public circuit compilation or symbolic parameter object; compile targets remain an operator API.
+
+### Estimate with classical shadows
+
+`Snapshots.sample()` accepts either a complete normalized statevector or an immutable `StabilizerState` and records randomized settings plus outcomes in a native-owned immutable handle. `protocol="pauli"` samples independent local X/Y/Z bases; `protocol="clifford"` samples packed global-Clifford frames. `nsettings` is the number of independent randomized settings, while `repeats` keeps multiple outcomes under each setting; for linear estimators, `repeats=1` is normally the useful default.
+
+Use `expectation()` or `estimate_many()` for Hermitian Pauli observables and `energy()` for a Hermitian `PauliOperator`. The same snapshots can produce an `rdm()`, a Rényi-2 estimate, an energy variance, or fidelity to either a `StabilizerState` or an arbitrary pure dense target. External experiment data can enter through `from_pauli_measurements()` or `from_clifford_measurements()`, and `to_arrays()` returns owned read-only arrays with explicit `q0_first` ordering.
 
 ## Two execution paths
 
@@ -54,7 +60,7 @@ These facades store concrete gate angles and expose `expectation(observable)`, `
 
 ## What it is not
 
-TenCirPauli is not a general-purpose statevector simulator, tensor-network engine, or replacement for TensorCircuit backends. It prepares and executes the structured Pauli work around those systems, and it fails explicitly when a target would require an unbounded or unsupported expansion.
+TenCirPauli is not a general-purpose statevector simulator, tensor-network engine, or replacement for TensorCircuit backends. Its dense shadow sampler accepts a supplied statevector for randomized measurement, but does not turn the package into a general state-preparation or circuit-simulation frontend. It prepares and executes the structured Pauli work around those systems, and it fails explicitly when a target would require an unbounded or unsupported expansion.
 
 ## Where to go next
 

@@ -45,6 +45,14 @@ TenCirPauli is built to keep structured quantum workloads compact from the Pytho
     <p class="tp-benchmark-copy">This is the grouping stage; the same study also validates 26 groups and measures native bitstring post-processing separately.</p>
     <a href="https://github.com/tensorcircuit/TenCirPauli/tree/main/examples/research/measurement_grouping">Open the Research Example →</a>
   </div>
+  <div class="tp-benchmark-card">
+    <p class="tp-card-index">06 / CLASSICAL SHADOWS</p>
+    <p class="tp-benchmark-number">3.93×</p>
+    <p class="tp-benchmark-label">faster local-Pauli sampling</p>
+    <h3>20-qubit, 8,192-shot shadow workload</h3>
+    <p class="tp-benchmark-copy">19.73 s native versus 77.56 s for TensorCircuit/JAX with synchronized batches of 64.</p>
+    <a href="https://github.com/tensorcircuit/TenCirPauli/tree/main/examples/research/classical_shadows">Open the Research Example →</a>
+  </div>
 </div>
 
 The cards show the strongest headline results. The tables below add the resource and symbolic-algebra comparisons without competing with the main message.
@@ -74,5 +82,18 @@ These studies compare the native implementation with small independent Python di
 | --- | --- | --- | --- |
 | Fourth-order Pauli BCH; 8 qubits and 44 terms per generator | Python dictionary recurrence | About 4.7× faster native end-to-end | [BCH convergence example](https://github.com/tensorcircuit/TenCirPauli/tree/main/examples/research/bch_convergence) |
 | Bounded 64-qubit Pauli Lie closure; dimension cap 512 | Python dictionary recurrence | About 7.7× faster native closure | [Lie-closure example](https://github.com/tensorcircuit/TenCirPauli/tree/main/examples/research/lie_closure) |
+
+## Classical-shadow workloads
+
+The default [classical-shadow research example](https://github.com/tensorcircuit/TenCirPauli/tree/main/examples/research/classical_shadows) uses 20 qubits, 8,192 settings, one repeat, and the JAX CPU backend in batches of 64. The release-mode record below includes the public call and synchronized JAX conversion; it is a single Apple arm64/macOS 15.3.1 run with Python 3.11.15, TensorCircuit-NG 1.9.1, JAX 0.10.2, TenCirPauli 0.5.0, and `RAYON_NUM_THREADS=4`.
+
+| Workload | TenCirPauli | TensorCircuit/JAX | Result |
+| --- | ---: | ---: | --- |
+| Local-Pauli sampling, dense non-Clifford state, 20q/8,192 shots | 19.73 s, 2.409 ms/shot | 77.56 s, 9.468 ms/shot | Native 3.93× lower total time |
+| Pauli estimator on 8,192 imported snapshots | 67.2 μs | 1.855 ms | Native 27.3× lower; same-data path |
+| Global-Clifford sampling, dense non-Clifford state, 20q/8,192 shots | 106.78 s, 13.034 ms/shot | — | Standalone native workload; no equivalent baseline claimed |
+| Dense-target fidelity post-processing on the same Clifford snapshots | 28.54 s | — | Standalone native workload; dense target has `2**20` amplitudes |
+
+The run also sampled a 64-qubit stabilizer input with 128 settings in 19.7 ms. These values are informational rather than universal speed guarantees; the exact command, seed, estimates, and cold JAX setup are recorded in the example README. The complete benchmark suite additionally covers RDM, Rényi-2, energy variance, batched estimators, and both fidelity paths.
 
 All numbers are representative results from the linked studies, not universal maxima. Each example contains the workload definition, correctness checks, and the command used to reproduce the comparison.
