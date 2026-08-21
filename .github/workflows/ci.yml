@@ -26,6 +26,7 @@ jobs:
       - run: python -m pip install --upgrade "black>=24.10,<26" "mypy>=1.14,<2" "ruff>=0.9,<1" "numpy>=1.23,<2.5"
       - run: black --check python tests benchmarks scripts
       - run: ruff check python tests benchmarks scripts
+      - run: python scripts/check_architecture.py
       - run: mypy
 
   python:
