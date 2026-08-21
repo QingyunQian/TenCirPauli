@@ -107,6 +107,39 @@ def _function_symbol(stack: Sequence[str], name: str) -> str:
     return "::".join((*stack, name)) if stack else name
 
 
+_NAMESPACE_MUTATION_METHODS = frozenset(
+    {"clear", "pop", "popitem", "setdefault", "update", "__setitem__"}
+)
+
+
+def _contains_module_dict(node: Optional[ast.AST]) -> bool:
+    """Return whether an expression accesses an object's module dictionary."""
+    if node is None:
+        return False
+    return any(
+        isinstance(item, ast.Attribute) and item.attr == "__dict__"
+        for item in ast.walk(node)
+    )
+
+
+def _is_namespace_reference(node: ast.AST) -> bool:
+    """Return whether an assignment target aliases a module namespace."""
+    return _contains_name(node, {"globals"}) or _contains_module_dict(node)
+
+
+def _is_namespace_mutation_call(node: ast.Call) -> bool:
+    """Return whether a call mutates ``globals()`` or an object's ``__dict__``."""
+    function = node.func
+    if not isinstance(function, ast.Attribute):
+        return False
+    if function.attr not in _NAMESPACE_MUTATION_METHODS:
+        return False
+    receiver = function.value
+    return _contains_name(receiver, {"globals"}) or (
+        isinstance(receiver, ast.Attribute) and receiver.attr == "__dict__"
+    )
+
+
 def _entry_matches(
     entry: ExceptionEntry, rule: str, path: str, symbol: str, position: str
 ) -> bool:
@@ -194,7 +227,7 @@ class _Visitor(ast.NodeVisitor):
         self.class_stack.pop()
 
     def _check_assignment(self, node: ast.AST, value: Optional[ast.AST]) -> None:
-        if _contains_name(node, {"globals"}) or _contains_name(node, {"__dict__"}):
+        if _is_namespace_reference(node):
             _violation(
                 self.violations,
                 self.used,
@@ -206,6 +239,22 @@ class _Visitor(ast.NodeVisitor):
                 line=getattr(node, "lineno", 0),
                 message="module namespace mutation hides ownership and dependencies",
             )
+
+    def visit_Call(self, node: ast.Call) -> None:
+        """Reject mutating calls on module namespace dictionaries."""
+        if _is_namespace_mutation_call(node):
+            _violation(
+                self.violations,
+                self.used,
+                self.entries,
+                rule="namespace-mutation",
+                path=self.path,
+                symbol=self.symbol,
+                position="call",
+                line=node.lineno,
+                message="module namespace mutation hides ownership and dependencies",
+            )
+        self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         for target in node.targets:
@@ -222,9 +271,7 @@ class _Visitor(ast.NodeVisitor):
 
 
 def _annotation_has_broad_type(annotation: Optional[ast.AST]) -> bool:
-    if isinstance(annotation, ast.Name):
-        return annotation.id in {"object", "Any"}
-    return _contains_name(annotation, {"object"})
+    return _contains_name(annotation, {"object", "Any"})
 
 
 def _check_stub_annotations(

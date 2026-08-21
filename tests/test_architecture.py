@@ -16,6 +16,31 @@ def test_architecture_checker_detects_namespace_mutation() -> None:
     assert [violation.rule for violation in violations] == ["namespace-mutation"]
 
 
+def test_architecture_checker_detects_namespace_mutation_calls() -> None:
+    for source in (
+        'globals().update({"hidden": 1})\n',
+        'module.__dict__.setdefault("hidden", 1)\n',
+    ):
+        violations, _ = check_source(
+            source,
+            Path("python/tencirpauli/example.py"),
+            entries=(),
+        )
+        assert [violation.rule for violation in violations] == ["namespace-mutation"]
+
+
+def test_architecture_checker_detects_composite_any_annotations() -> None:
+    violations, _ = check_source(
+        "def native(value: tuple[int, Any]) -> list[Any]: ...\n",
+        Path("python/tencirpauli/_native.pyi"),
+        entries=(),
+    )
+    assert [violation.position for violation in violations] == [
+        "parameter:value",
+        "return",
+    ]
+
+
 def test_architecture_checker_accepts_a_stable_exception_entry() -> None:
     entry = ExceptionEntry(
         "TEST-NAMESPACE",
