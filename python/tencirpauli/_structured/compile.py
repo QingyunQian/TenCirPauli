@@ -2,28 +2,16 @@
 
 from __future__ import annotations
 
-# The modules share the native-handle boundary in ``base``.  Some imports are
-# intentionally consumed by dynamically resolved cross-domain methods after
-# the package has completed its acyclic construction order.
-# ruff: noqa: F401, I001
-
-import cmath
+# This module owns family composition and finite target compilation.
 import math
-import numbers
-import struct
-from dataclasses import dataclass, replace
-from itertools import product
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Dict,
-    Iterable,
     List,
     Literal,
     Mapping,
     Optional,
-    Sequence,
     Tuple,
     Union,
     cast,
@@ -32,7 +20,6 @@ from typing import (
 import numpy as np
 
 from .. import _native
-from .._validation import normalize_pauli_code, validate_nonnegative_int
 from ..hamiltonian import (
     _PLAN_FACTORY_TOKEN,
     DEFAULT_MAX_BYTES,
@@ -45,61 +32,17 @@ from ..hamiltonian import (
     NativeMVPPlan,
     _check_allocation,
     _effective_max_bytes,
-    _validate_max_bytes,
 )
-from ..pauli import _PAULI_CHAR_TO_CODE, PauliOperator
+from ..pauli import PauliOperator
 from .base import (
-    MappedOperator,
-    StructuredNativeHandle,
-    _IDENTITY_CODES,
-    _PAULI_PRODUCT,
-    _U32_MAX,
-    _action,
-    _add_native_handles,
-    _adjoint_native_handle,
-    _boson_arrays,
-    _boson_from_native,
-    _complex_sort_key,
-    _estimate_terms,
-    _factor,
-    _fermion_arrays,
-    _fermion_from_integral_blocks,
-    _fermion_from_native,
-    _finite_complex,
-    _guard_terms,
-    _hybrid_arrays,
-    _hybrid_from_native,
-    _native_boson_raw,
-    _native_fermion_raw,
-    _native_result_class,
     _nonnegative_int,
     _positive_mode,
-    _prepare_integral_array,
-    _prepare_integral_constant,
-    _scale_native_handle,
-    _terms_from_native_handle,
     _StructuredOperator,
-    _Term,
 )
-from .words import (
-    BosonTerm,
-    BosonWord,
-    FermionTerm,
-    FermionWord,
-    QuditProduct,
-    QuditWeylTerm,
-    QuditWeylWord,
-)
+from .mapping import _mapping_name, _pauli_axis_descriptor, _with_plan_metadata
+
 
 if TYPE_CHECKING:
-    from ..charge import (
-        AdditiveCharge,
-        AdditiveSymmetryAnalysis,
-        ChargeRestrictedOperator,
-        ChargeSector,
-        ChargeStorage,
-    )
-    from ..majorana import MajoranaOperator
     from ..mapping import FermionQubitMapping
 
 from .space import OperatorSpace
@@ -118,6 +61,97 @@ def _validate_cutoffs(
             cutoff, "boson cutoff"
         )
     return result
+
+
+def _compile_operator(
+    operator: _StructuredOperator,
+    target: str,
+    *,
+    storage: Literal["lazy", "eager"] = "lazy",
+    mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
+    boson_cutoffs: Optional[Mapping[object, object]] = None,
+    max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+) -> CompileResult:
+    """Compose one structured family into a concrete compilation target."""
+    if target not in {"dense", "coo", "csr", "native_mvp", "backend_mvp"}:
+        raise ValueError(
+            "target must be one of 'dense', 'coo', 'csr', 'native_mvp', or 'backend_mvp'"
+        )
+    use_raw_native_fermions = (
+        target == "native_mvp"
+        and mapping == "jordan_wigner"
+        and (
+            isinstance(operator._native_handle, _native.NativeFermionOperatorHandle)
+            or (
+                isinstance(operator._native_handle, _native.NativeHybridOperatorHandle)
+                and bool(operator._native_handle.has_raw_fermions())
+                and not bool(operator._native_handle.has_mapped_fermions())
+            )
+        )
+    )
+    mapped = (
+        operator
+        if use_raw_native_fermions
+        else operator.map_fermions(mapping, max_bytes=max_bytes)
+    )
+    if (
+        target != "backend_mvp"
+        and isinstance(mapped, _StructuredOperator)
+        and all(axis.domain == "qubit" for axis in mapped.space._axes)
+        and isinstance(mapped._native_handle, _native.NativeHybridOperatorHandle)
+    ):
+        packed = PauliOperator._from_native_handle(
+            mapped._native_handle.to_pauli(
+                _pauli_axis_descriptor(mapped.space),
+                _effective_max_bytes(max_bytes),
+            )
+        )
+        packed_result = packed.compile(target, storage=storage, max_bytes=max_bytes)
+        if isinstance(packed_result, (NativeMVPPlan, BackendMVPPlan)):
+            return _with_plan_metadata(
+                packed_result,
+                mapping=(_mapping_name(mapping) if operator.space.fermions else None),
+                source_term_count=operator.term_count,
+            )
+        return packed_result
+    if isinstance(mapped, PauliOperator):
+        result: CompileResult = mapped.compile(
+            target, storage=storage, max_bytes=max_bytes
+        )
+        if isinstance(result, (NativeMVPPlan, BackendMVPPlan)):
+            return _with_plan_metadata(
+                result,
+                mapping=(_mapping_name(mapping) if operator.space.fermions else None),
+                source_term_count=operator.term_count,
+            )
+        return result
+    cutoffs = boson_cutoffs
+    if mapped.space.bosons:
+        if not isinstance(cutoffs, Mapping):
+            raise ValueError("boson_cutoffs is required for every finite boson target")
+        normalized_cutoffs = _validate_cutoffs(mapped.space, cutoffs)
+    else:
+        if cutoffs is not None:
+            raise ValueError("boson_cutoffs is only valid for spaces containing bosons")
+        normalized_cutoffs = {}
+    if target == "backend_mvp" and mapped.space.bosons:
+        raise NotImplementedError(
+            "backend_mvp is deferred for finite boson and mixed hybrid layouts"
+        )
+    if target == "backend_mvp" and mapped.space.qudits:
+        if not all(axis.domain == "qudit" for axis in mapped.space._axes):
+            raise NotImplementedError(
+                "backend_mvp is deferred for mixed local-dimension layouts"
+            )
+        return _direct_weyl_backend_plan(mapped, max_bytes)
+    return _compile_finite(
+        mapped,
+        target,
+        normalized_cutoffs,
+        max_bytes,
+        storage=storage,
+        mapping=(_mapping_name(mapping) if operator.space.fermions else None),
+    )
 
 
 def _compile_finite(
@@ -152,22 +186,14 @@ def _compile_finite(
             and not operator.space.qudits
             else MIXED_RADIX_BASIS_ORDERING
         )
-        execution_family = str(getattr(native_plan, "execution_family", "cartesian"))
-        retained_format = str(
-            getattr(
-                native_plan,
-                "retained_format",
-                "compiled_actions" if storage == "lazy" else "csr",
-            )
-        )
-        schedule_count = int(
-            getattr(native_plan, "schedule_count", operator.term_count)
-        )
+        execution_family = str(native_plan.execution_family)
+        retained_format = str(native_plan.retained_format)
+        schedule_count = int(native_plan.schedule_count)
         estimated_retained_bytes = int(native_plan.estimated_bytes)
         estimated_construction_peak_bytes = int(
-            getattr(native_plan, "estimated_construction_peak_bytes", 0)
+            native_plan.estimated_construction_peak_bytes
         )
-        native_transition_count = getattr(native_plan, "transition_count", None)
+        native_transition_count = native_plan.transition_count
         transition_count = (
             int(native_transition_count)
             if native_transition_count is not None

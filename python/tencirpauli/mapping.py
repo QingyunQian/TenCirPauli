@@ -409,7 +409,7 @@ class FermionQubitMapping:
             jordan_wigner._native_handle,
             _effective_max_bytes(max_bytes),
         )
-        return _hybrid_from_native(jordan_wigner.space, result)
+        return _hybrid_from_native(jordan_wigner.space, result, type(jordan_wigner))
 
     def __repr__(self) -> str:
         return f"FermionQubitMapping({self.name!r}, n_modes={self.n_modes})"

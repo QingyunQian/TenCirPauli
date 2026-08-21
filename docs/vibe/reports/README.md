@@ -5,6 +5,7 @@
 ## Audits and release reviews
 
 - [Current-tree audit reconciliation, 2026-08-11](audit-report-2026-08-11-current.md): current `e38533f` disposition of the findings from the deprecated August 8 Round 5 audit.
+- [Technical debt remediation plan, 2026-08-21](technical-debt-audit-2026-08-21.md): current `264ff67` execution plan for Structured dependency cleanup, native-plan ABI contracts, and architecture guardrails.
 - [Deep audits](audit-report-2026-08-04.md)
 - [Deep audit round 2](audit-report-2026-08-04-round2.md)
 - [Deep audit round 3](audit-report-2026-08-05-round3.md)

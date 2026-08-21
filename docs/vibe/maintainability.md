@@ -72,7 +72,7 @@ Do not introduce a universal trait object, a runtime-heavy mega-enum, or a singl
 
 ### 6. Treat compatibility as a bounded migration
 
-Deprecated public aliases may forward to the authoritative implementation, but they must not receive new behavior or new internal branches. `PauliOperator.restrict_u1()` is a compatibility alias for `restrict_charge(U1Sector(...))`; migrate tests, examples, and internal callers, document the removal version, and then delete the alias. Keep the U1 sector algorithm and specialized backend: removing the redundant entry point is not removing the optimized capability.
+Deprecated public aliases may forward to the authoritative implementation, but they must not receive new behavior or new internal branches. `PauliOperator.restrict_u1()` remains a deprecated thin forwarding API for `restrict_charge(U1Sector(...))`; its warning and equivalence contract are covered by tests. Removing it requires a separately approved breaking release and is outside the current maintenance plan. Keep the U1 sector algorithm and specialized backend: preserving the compatibility alias does not preserve a second optimized implementation.
 
 ### 7. Keep diagnostics out of scalable hot loops
 
@@ -96,7 +96,7 @@ For each new plan or execution family, record a compact ownership row with the p
 
 Implementation modules must import the shared symbols they use through explicit module imports or narrow private protocols. Do not add module-wide `globals()` copying, `module.__dict__` mutation, wildcard imports, or bottom-of-file imports whose main purpose is to repair a circular dependency. These techniques hide the dependency graph and make static analysis, deletion, and local reasoning unreliable.
 
-The current structured package has a known remnant at `python/tencirpauli/_structured/base.py`: after importing the concrete implementation modules, it copies most of its globals into those modules with `setdefault()`. This is an initialization-time namespace bridge, not a per-call data copy, and it was introduced to avoid import cycles. It remains structural debt. New code must not depend on it, and future cleanup should replace it with explicit imports while preserving the public facade's module, repr, identity, and pickle contracts.
+The structured namespace bridge at `python/tencirpauli/_structured/base.py` has been removed. Sibling modules now import shared symbols explicitly, family composition is owned by `compile.py` and concrete facades, and `scripts/check_architecture.py` rejects namespace mutation, wildcard imports, whole-file Ruff suppression, and unregistered broad native annotations. The public facade's module, repr, identity, pickle, and narrowly documented private forwarder contracts remain covered by tests.
 
 The public facade may retain a narrowly documented dynamic compatibility forwarder when it is required for an existing import contract. Such a forwarder must not be used to hide implementation dependencies or to provide a second implementation.
 

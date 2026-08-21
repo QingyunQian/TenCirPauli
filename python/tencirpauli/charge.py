@@ -23,6 +23,7 @@ import numpy as np
 from . import _native
 from ._native_mvp import (
     NativePlanMetadata,
+    _build_native_plan_metadata,
     _NativeMvpFacade,
     _read_coo_arrays,
     _read_csr_arrays,
@@ -826,24 +827,19 @@ class ChargeMvpPlan(_NativeMvpFacade):
         object.__setattr__(
             self,
             "_metadata",
-            NativePlanMetadata(
+            _build_native_plan_metadata(
                 dimension=int(dimension),
                 term_count=int(term_count),
                 storage=normalized_storage,
                 basis_ordering=MIXED_RADIX_BASIS_ORDERING,
-                target="native_mvp",
                 execution_family=execution_family,
-                native_variant=str(getattr(native_plan, "native_variant", "generic")),
+                native_variant=str(native_plan.native_variant),
                 retained_format="csr",
                 source_term_count=int(term_count),
-                schedule_count=int(getattr(native_plan, "schedule_count", term_count)),
+                schedule_count=int(native_plan.schedule_count),
                 estimated_retained_bytes=retained_bytes,
                 estimated_construction_peak_bytes=int(
-                    getattr(
-                        native_plan,
-                        "estimated_construction_peak_bytes",
-                        retained_bytes,
-                    )
+                    native_plan.estimated_construction_peak_bytes
                 ),
                 transition_count=int(native_plan.transition_count),
             ),
@@ -1043,21 +1039,16 @@ class ChargeLazyMvpPlan(_NativeMvpFacade):
         object.__setattr__(
             self,
             "_metadata",
-            NativePlanMetadata(
+            _build_native_plan_metadata(
                 dimension=sector.dimension,
                 term_count=int(term_count),
                 storage="lazy",
                 basis_ordering=MIXED_RADIX_BASIS_ORDERING,
-                target="native_mvp",
                 execution_family=str(native_execution.execution_family),
-                native_variant=str(
-                    getattr(native_execution, "native_variant", "generic")
-                ),
+                native_variant=str(native_execution.native_variant),
                 retained_format="compiled_actions",
                 source_term_count=int(term_count),
-                schedule_count=int(
-                    getattr(native_execution, "schedule_count", term_count)
-                ),
+                schedule_count=int(native_execution.schedule_count),
                 estimated_retained_bytes=retained_bytes,
                 estimated_construction_peak_bytes=retained_bytes,
                 transition_count=None,
@@ -1144,7 +1135,7 @@ class ChargeRestrictedOperator:
             native = _compile_charge_eager_native(sector, operator, max_bytes)
             execution_family = (
                 "factorized"
-                if str(getattr(native, "native_variant", "generic")) == "factorized"
+                if str(native.native_variant) == "factorized"
                 else "generic"
             )
             eager_plan = ChargeMvpPlan(

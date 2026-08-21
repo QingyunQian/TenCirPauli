@@ -10,7 +10,11 @@ from typing import Any, Literal, Optional, Sequence, Tuple, Union, cast
 import numpy as np
 
 from . import _native
-from ._native_mvp import NativePlanMetadata, _NativeMvpFacade
+from ._native_mvp import (
+    NativePlanMetadata,
+    _build_native_plan_metadata,
+    _NativeMvpFacade,
+)
 from .hamiltonian import (
     DEFAULT_MAX_BYTES,
     COOMatrix,
@@ -571,14 +575,13 @@ class U1MvpPlan(_NativeMvpFacade):
         object.__setattr__(
             self,
             "_metadata",
-            NativePlanMetadata(
+            _build_native_plan_metadata(
                 dimension=dimension,
                 term_count=int(term_count),
                 storage=storage,
                 basis_ordering="qubit0_msb_matrix",
-                target="native_mvp",
                 execution_family="product",
-                native_variant=str(getattr(native_plan, "native_variant", "qubit")),
+                native_variant=str(native_plan.native_variant),
                 retained_format="compiled_actions" if storage == "lazy" else "csr",
                 source_term_count=int(term_count),
                 schedule_count=int(term_count),

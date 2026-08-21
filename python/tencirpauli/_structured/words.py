@@ -10,7 +10,8 @@ from .base import _U32_MAX, _nonnegative_int, _positive_mode
 
 
 if TYPE_CHECKING:
-    from .base import BosonOperator, FermionOperator
+    from .boson import BosonOperator
+    from .fermion import FermionOperator
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ class FermionWord:
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "FermionOperator":
         """Construct and canonicalize one raw fermion word."""
-        from .base import FermionOperator
+        from .fermion import FermionOperator
 
         return FermionOperator.from_terms(
             n_modes, ((tuple(factors), 1.0),), max_bytes=max_bytes
@@ -83,7 +84,7 @@ class FermionWord:
 
     def adjoint(self) -> "FermionOperator":
         """Return the coefficient-free adjoint word as an operator."""
-        from .base import FermionOperator
+        from .fermion import FermionOperator
 
         factors = tuple(
             (mode, "create") for mode in reversed(self.annihilation_modes)
@@ -94,7 +95,7 @@ class FermionWord:
         """Multiply two words and retain all CAR contraction terms."""
         if not isinstance(other, FermionWord) or other.n_modes != self.n_modes:
             raise ValueError("fermion words require equal n_modes")
-        from .base import FermionOperator
+        from .fermion import FermionOperator
 
         return FermionOperator.from_terms(
             self.n_modes, ((self.factors + other.factors, 1.0),)
@@ -154,7 +155,7 @@ class BosonWord:
 
     def adjoint(self) -> "BosonOperator":
         """Return the coefficient-free adjoint word as an operator."""
-        from .base import BosonOperator
+        from .boson import BosonOperator
 
         factors = tuple(
             (mode, "create")
@@ -171,7 +172,7 @@ class BosonWord:
         """Multiply two words and retain all CCR contraction terms."""
         if not isinstance(other, BosonWord) or other.n_modes != self.n_modes:
             raise ValueError("boson words require equal n_modes")
-        from .base import BosonOperator
+        from .boson import BosonOperator
 
         return BosonOperator.from_terms(
             self.n_modes, ((self.factors + other.factors, 1.0),)

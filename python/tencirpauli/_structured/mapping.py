@@ -2,21 +2,13 @@
 
 from __future__ import annotations
 
-# The modules share the native-handle boundary in ``base``.  Some imports are
-# intentionally consumed by dynamically resolved cross-domain methods after
-# the package has completed its acyclic construction order.
-# ruff: noqa: F401, I001
-
+# This module owns mapping and Weyl composition around the shared native handle.
 import cmath
 import math
-import numbers
-import struct
-from dataclasses import dataclass, replace
-from itertools import product
+from dataclasses import replace
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Dict,
     Iterable,
     List,
@@ -29,85 +21,34 @@ from typing import (
     cast,
 )
 
-import numpy as np
-
 from .. import _native
-from .._validation import normalize_pauli_code, validate_nonnegative_int
 from ..hamiltonian import (
-    _PLAN_FACTORY_TOKEN,
     DEFAULT_MAX_BYTES,
-    DIRECT_WEYL_BASIS_ORDERING,
-    MIXED_RADIX_BASIS_ORDERING,
     BackendMVPPlan,
     CompileResult,
-    COOMatrix,
-    CSRMatrix,
     NativeMVPPlan,
-    _check_allocation,
     _effective_max_bytes,
-    _validate_max_bytes,
 )
-from ..pauli import _PAULI_CHAR_TO_CODE, PauliOperator
 from .base import (
-    MappedOperator,
-    StructuredNativeHandle,
-    _IDENTITY_CODES,
     _PAULI_PRODUCT,
     _U32_MAX,
-    _action,
-    _add_native_handles,
-    _adjoint_native_handle,
-    _boson_arrays,
-    _boson_from_native,
-    _complex_sort_key,
-    _estimate_terms,
-    _factor,
-    _fermion_arrays,
-    _fermion_from_integral_blocks,
-    _fermion_from_native,
     _finite_complex,
-    _guard_terms,
-    _hybrid_arrays,
     _hybrid_from_native,
-    _native_boson_raw,
-    _native_fermion_raw,
-    _native_result_class,
     _nonnegative_int,
-    _positive_mode,
-    _prepare_integral_array,
-    _prepare_integral_constant,
-    _scale_native_handle,
-    _terms_from_native_handle,
     _StructuredOperator,
     _Term,
 )
 from .words import (
-    BosonTerm,
     BosonWord,
-    FermionTerm,
     FermionWord,
-    QuditProduct,
-    QuditWeylTerm,
     QuditWeylWord,
 )
 
+
 if TYPE_CHECKING:
-    from ..charge import (
-        AdditiveCharge,
-        AdditiveSymmetryAnalysis,
-        ChargeRestrictedOperator,
-        ChargeSector,
-        ChargeStorage,
-    )
-    from ..majorana import MajoranaOperator
     from ..mapping import FermionQubitMapping
 
 from .space import OperatorSpace, _Axis
-
-if TYPE_CHECKING:
-    from .boson import BosonOperator
-    from .fermion import FermionOperator
-    from .hybrid import HybridOperator
 
 
 def _replace(term: _Term, **changes: Any) -> _Term:
@@ -138,30 +79,10 @@ def _with_plan_metadata(
 ) -> CompileResult:
     """Copy a reusable plan while preserving its private native handle."""
     if isinstance(plan, NativeMVPPlan):
-        return NativeMVPPlan(
-            plan.nqubits,
-            plan.term_count,
-            plan._native_plan,
-            storage=plan.storage,
-            local_dimensions=plan.local_dimensions,
-            basis_ordering=plan.basis_ordering,
-            estimated_bytes=plan.estimated_bytes,
-            schema_version=plan.schema_version,
-            target=plan.target,
-            source_term_count=source_term_count,
-            plan_term_count=plan.plan_term_count,
+        return NativeMVPPlan._copy_with_plan_metadata(
+            plan,
             mapping=mapping,
-            boson_cutoffs=plan.boson_cutoffs,
-            boson_boundary=plan.boson_boundary,
-            qudit_dimension=plan.qudit_dimension,
-            weyl_convention=plan.weyl_convention,
-            execution_family=plan.execution_family,
-            retained_format=plan.retained_format,
-            schedule_count=plan.schedule_count,
-            estimated_retained_bytes=plan.estimated_retained_bytes,
-            estimated_construction_peak_bytes=plan.estimated_construction_peak_bytes,
-            transition_count=plan.transition_count,
-            _factory_token=_PLAN_FACTORY_TOKEN,
+            source_term_count=source_term_count,
         )
     return replace(
         plan,
@@ -182,6 +103,10 @@ def _mapping_name(mapping: Union[str, "FermionQubitMapping"]) -> str:
 def _make_operator(
     space: OperatorSpace, terms: Iterable[_Term], max_bytes: Optional[int]
 ) -> "_StructuredOperator":
+    from .boson import BosonOperator
+    from .fermion import FermionOperator
+    from .hybrid import HybridOperator
+
     # A domain-specific object is retained for low-level one-domain spaces.
     terms = tuple(terms)
     if space.fermions and space.bosons == space.qubits == len(space.qudits) == 0:
@@ -306,21 +231,6 @@ def _multiply_mapped(
 def _term_has_raw_and_mapped_fermions(term: _Term) -> bool:
     """Whether a term has an ambiguous raw/mapped fermion product."""
     return term.fermion is not None and term.mapped_fermion is not None
-
-
-def _requires_eager_fermion_mapping(
-    left: "HybridOperator", right: "HybridOperator"
-) -> bool:
-    """Detect a product whose operands do not share one fermion encoding."""
-    left_handle = left._native_handle
-    right_handle = right._native_handle
-    if not isinstance(
-        left_handle, _native.NativeHybridOperatorHandle
-    ) or not isinstance(right_handle, _native.NativeHybridOperatorHandle):
-        raise RuntimeError("hybrid operators must retain native handles")
-    return (left_handle.has_raw_fermions() and right_handle.has_mapped_fermions()) or (
-        left_handle.has_mapped_fermions() and right_handle.has_raw_fermions()
-    )
 
 
 def _tensor_mapped_fermion_terms(
@@ -547,7 +457,7 @@ class QuditWeylOperator(_StructuredOperator):
         )
         return cast("QuditWeylOperator", _hybrid_from_native(space, result, cls))
 
-    def compile(  # type: ignore[override]
+    def compile(
         self,
         target: str,
         *,
@@ -555,4 +465,6 @@ class QuditWeylOperator(_StructuredOperator):
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> CompileResult:
         """Compile a uniform-dimension Weyl operator."""
-        return super().compile(target, storage=storage, max_bytes=max_bytes)
+        from .compile import _compile_operator
+
+        return _compile_operator(self, target, storage=storage, max_bytes=max_bytes)

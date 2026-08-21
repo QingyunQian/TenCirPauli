@@ -32,6 +32,7 @@ from ._structured.boson import BosonOperator
 from ._structured.fermion import FermionOperator
 from ._structured.hybrid import HybridOperator, OperatorBuilder
 from ._structured.mapping import QuditWeylOperator
+from ._structured.mapping import _jordan_wigner_word as _jordan_wigner_word
 from ._structured.mapping import _make_operator as _make_operator
 from ._structured.mapping import _with_plan_metadata as _with_plan_metadata
 from ._structured.space import OperatorSpace
@@ -64,17 +65,6 @@ __all__ = [
     "QuditWeylTerm",
     "QuditWeylWord",
 ]
-
-_PRIVATE_COMPATIBILITY_EXPORTS = (
-    _fermion_from_integral_blocks,
-    _fermion_from_native,
-    _finite_complex,
-    _hybrid_from_native,
-    _make_operator,
-    _StructuredOperator,
-    _Term,
-    _with_plan_metadata,
-)
 
 for _public_name in __all__:
     _public_value = globals()[_public_name]

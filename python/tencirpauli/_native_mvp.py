@@ -148,6 +148,57 @@ class NativePlanMetadata:
             raise ValueError("transition_count must be a non-negative integer or None")
 
 
+def _build_native_plan_metadata(
+    *,
+    dimension: int,
+    term_count: int,
+    storage: Literal["lazy", "eager"],
+    basis_ordering: str,
+    execution_family: str,
+    native_variant: Optional[str],
+    retained_format: Optional[str],
+    source_term_count: Optional[int],
+    schedule_count: Optional[int],
+    estimated_retained_bytes: int,
+    estimated_construction_peak_bytes: Optional[int],
+    transition_count: Optional[int],
+) -> NativePlanMetadata:
+    """Normalize metadata fields shared by every native MVP family.
+
+    Callers provide family-specific semantics explicitly. Only the common
+    count and storage fallbacks live here, so a new family cannot accidentally
+    inherit another family's basis or execution labels.
+    """
+    resolved_retained = int(estimated_retained_bytes)
+    return NativePlanMetadata(
+        dimension=int(dimension),
+        term_count=int(term_count),
+        storage=storage,
+        basis_ordering=basis_ordering,
+        target="native_mvp",
+        execution_family=execution_family,
+        native_variant=execution_family if native_variant is None else native_variant,
+        retained_format=(
+            ("compiled_actions" if storage == "lazy" else "csr")
+            if retained_format is None
+            else retained_format
+        ),
+        source_term_count=(
+            int(term_count) if source_term_count is None else int(source_term_count)
+        ),
+        schedule_count=(
+            int(term_count) if schedule_count is None else int(schedule_count)
+        ),
+        estimated_retained_bytes=resolved_retained,
+        estimated_construction_peak_bytes=(
+            resolved_retained
+            if estimated_construction_peak_bytes is None
+            else int(estimated_construction_peak_bytes)
+        ),
+        transition_count=(None if transition_count is None else int(transition_count)),
+    )
+
+
 class _NativeMvpFacade:
     """Mixin implementing the common native-plan public-call contract."""
 

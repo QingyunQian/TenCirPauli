@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from typing import Any, Literal, Optional, Protocol, Sequence, Tuple, Union, cast
 
 import numpy as np
@@ -13,6 +13,7 @@ from ._native_mvp import (
 )
 from ._native_mvp import (
     NativePlanMetadata,
+    _build_native_plan_metadata,
     _NativeMvpFacade,
     _read_csr_arrays,
 )
@@ -261,46 +262,59 @@ class NativeMVPPlan(_NativeMvpFacade):
             raise ValueError("Weyl plans require convention 'X^a Z^b'")
         object.__setattr__(self, "qudit_dimension", qudit_dimension)
         object.__setattr__(self, "weyl_convention", weyl_convention)
-        resolved_native_variant = (
-            str(getattr(native_plan, "native_variant", execution_family))
-            if native_variant is None
-            else native_variant
-        )
-        resolved_format = retained_format or (
-            "compiled_actions" if storage == "lazy" else "csr"
-        )
-        resolved_schedule_count = (
-            term_count if schedule_count is None else schedule_count
-        )
-        resolved_retained = (
-            int(estimated_bytes)
-            if estimated_retained_bytes is None
-            else estimated_retained_bytes
-        )
-        resolved_peak = (
-            resolved_retained
-            if estimated_construction_peak_bytes is None
-            else estimated_construction_peak_bytes
-        )
         object.__setattr__(
             self,
             "_metadata",
-            NativePlanMetadata(
+            _build_native_plan_metadata(
                 dimension=dimension,
                 term_count=term_count,
                 storage=storage,
                 basis_ordering=basis_ordering,
-                target=cast(Literal["native_mvp"], target),
                 execution_family=execution_family,
-                native_variant=resolved_native_variant,
-                retained_format=resolved_format,
+                native_variant=(
+                    native_plan.native_variant
+                    if native_variant is None
+                    else native_variant
+                ),
+                retained_format=retained_format,
                 source_term_count=resolved_source_term_count,
-                schedule_count=resolved_schedule_count,
-                estimated_retained_bytes=int(resolved_retained),
-                estimated_construction_peak_bytes=int(resolved_peak),
+                schedule_count=schedule_count,
+                estimated_retained_bytes=(
+                    int(estimated_bytes)
+                    if estimated_retained_bytes is None
+                    else int(estimated_retained_bytes)
+                ),
+                estimated_construction_peak_bytes=estimated_construction_peak_bytes,
                 transition_count=transition_count,
             ),
         )
+
+    @classmethod
+    def _copy_with_plan_metadata(
+        cls,
+        plan: "NativeMVPPlan",
+        *,
+        mapping: Optional[str],
+        source_term_count: int,
+    ) -> "NativeMVPPlan":
+        """Copy only Python metadata while retaining the native execution handle."""
+        if not isinstance(plan, cls):
+            raise TypeError("plan metadata copy requires a NativeMVPPlan")
+        instance = object.__new__(cls)
+        metadata = replace(
+            plan._metadata,
+            source_term_count=source_term_count,
+        )
+        for plan_field in fields(cls):
+            value = (
+                metadata
+                if plan_field.name == "_metadata"
+                else getattr(plan, plan_field.name)
+            )
+            if plan_field.name == "mapping":
+                value = mapping
+            object.__setattr__(instance, plan_field.name, value)
+        return instance
 
     @property
     def _native_plan(self) -> Any:

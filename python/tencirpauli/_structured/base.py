@@ -6,28 +6,22 @@ Weyl words are modular site triples.  Public operations canonicalize a whole
 operator at a time and finite targets use one mixed-radix basis convention.
 """
 
-# This module is the private common/native boundary and legacy compatibility
-# namespace; concrete implementations live in sibling modules and are imported
-# only after the shared storage primitives are defined.
-# ruff: noqa: F401, I001
+# This module owns the common/native boundary. Concrete implementations import
+# the shared primitives explicitly; family composition stays in sibling modules.
 
 from __future__ import annotations
 
-import cmath
 import math
 import numbers
 import struct
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from itertools import product
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Dict,
     Iterable,
     List,
-    Literal,
-    Mapping,
     Optional,
     Sequence,
     Tuple,
@@ -38,17 +32,9 @@ from typing import (
 import numpy as np
 
 from .. import _native
-from .._validation import normalize_pauli_code, validate_nonnegative_int
+from .._validation import validate_nonnegative_int
 from ..hamiltonian import (
-    _PLAN_FACTORY_TOKEN,
     DEFAULT_MAX_BYTES,
-    DIRECT_WEYL_BASIS_ORDERING,
-    MIXED_RADIX_BASIS_ORDERING,
-    BackendMVPPlan,
-    CompileResult,
-    COOMatrix,
-    CSRMatrix,
-    NativeMVPPlan,
     _check_allocation,
     _effective_max_bytes,
     _validate_max_bytes,
@@ -64,8 +50,11 @@ if TYPE_CHECKING:
         ChargeSector,
         ChargeStorage,
     )
-    from ..majorana import MajoranaOperator
     from ..mapping import FermionQubitMapping
+    from .boson import BosonOperator
+    from .fermion import FermionOperator
+    from .hybrid import HybridOperator
+    from .space import OperatorSpace
 
 
 _U32_MAX = 2**32 - 1
@@ -214,7 +203,6 @@ from .words import (  # noqa: E402  # Depends on the validation helpers above.
     BosonWord,
     FermionTerm,
     FermionWord,
-    QuditProduct,
     QuditWeylTerm,
     QuditWeylWord,
 )
@@ -251,6 +239,16 @@ StructuredNativeHandle = Union[
 ]
 
 
+def _native_handles_require_fermion_mapping(
+    left: _native.NativeHybridOperatorHandle,
+    right: _native.NativeHybridOperatorHandle,
+) -> bool:
+    """Return whether two hybrid handles use incompatible fermion roles."""
+    return (left.has_raw_fermions() and right.has_mapped_fermions()) or (
+        left.has_mapped_fermions() and right.has_raw_fermions()
+    )
+
+
 class _StructuredOperator:
     _domain = "hybrid"
     space: OperatorSpace
@@ -264,8 +262,6 @@ class _StructuredOperator:
         terms: Optional[Sequence[_Term]] = None,
         native_handle: Optional[StructuredNativeHandle] = None,
     ) -> None:
-        if not isinstance(space, OperatorSpace):
-            raise TypeError("space must be an OperatorSpace")
         if terms is not None or native_handle is None:
             raise RuntimeError("structured operators require native storage")
         object.__setattr__(self, "space", space)
@@ -357,6 +353,9 @@ class _StructuredOperator:
 
     def to_dict(self) -> Dict[Any, complex]:
         """Return plain canonical word data without constructing typed terms."""
+        from .boson import BosonOperator
+        from .fermion import FermionOperator
+
         if self._domain == "fermion":
             creation, annihilation, real, imaginary = _fermion_arrays(
                 cast(FermionOperator, self)
@@ -433,9 +432,11 @@ class _StructuredOperator:
             self._native_handle, _native.NativeHybridOperatorHandle
         ) and isinstance(other._native_handle, _native.NativeHybridOperatorHandle):
             if (
-                isinstance(self, HybridOperator)
-                and isinstance(other, HybridOperator)
-                and _requires_eager_fermion_mapping(self, other)
+                self._domain == "hybrid"
+                and other._domain == "hybrid"
+                and _native_handles_require_fermion_mapping(
+                    self._native_handle, other._native_handle
+                )
             ):
                 mapped_left = self.map_fermions(max_bytes=max_bytes)
                 mapped_right = other.map_fermions(max_bytes=max_bytes)
@@ -464,6 +465,9 @@ class _StructuredOperator:
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> MappedOperator:
         """Return ``self * other - other * self``."""
+        from .boson import BosonOperator
+        from .fermion import FermionOperator
+
         other = self._check_other(other)
         if self._native_handle is not None and other._native_handle is not None:
             if isinstance(
@@ -490,9 +494,11 @@ class _StructuredOperator:
                 self._native_handle, _native.NativeHybridOperatorHandle
             ) and isinstance(other._native_handle, _native.NativeHybridOperatorHandle):
                 if not (
-                    isinstance(self, HybridOperator)
-                    and isinstance(other, HybridOperator)
-                    and _requires_eager_fermion_mapping(self, other)
+                    self._domain == "hybrid"
+                    and other._domain == "hybrid"
+                    and _native_handles_require_fermion_mapping(
+                        self._native_handle, other._native_handle
+                    )
                 ):
                     return _hybrid_from_native(
                         self.space,
@@ -521,6 +527,9 @@ class _StructuredOperator:
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> MappedOperator:
         """Return ``self * other + other * self``."""
+        from .boson import BosonOperator
+        from .fermion import FermionOperator
+
         other = self._check_other(other)
         if self._native_handle is not None and other._native_handle is not None:
             if isinstance(
@@ -547,9 +556,11 @@ class _StructuredOperator:
                 self._native_handle, _native.NativeHybridOperatorHandle
             ) and isinstance(other._native_handle, _native.NativeHybridOperatorHandle):
                 if not (
-                    isinstance(self, HybridOperator)
-                    and isinstance(other, HybridOperator)
-                    and _requires_eager_fermion_mapping(self, other)
+                    self._domain == "hybrid"
+                    and other._domain == "hybrid"
+                    and _native_handles_require_fermion_mapping(
+                        self._native_handle, other._native_handle
+                    )
                 ):
                     return _hybrid_from_native(
                         self.space,
@@ -633,6 +644,7 @@ class _StructuredOperator:
         ``Z2`` tapering and does not remove qubits.
         """
         from ..symmetry import _canonical_u1_sector, _restrict_u1
+        from .mapping import _pauli_axis_descriptor
 
         canonical_u1 = _canonical_u1_sector(sector)
         if canonical_u1 is not None and all(
@@ -666,6 +678,15 @@ class _StructuredOperator:
         max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
     ) -> "HybridOperator":
         """Combine independent spaces using ordinary or graded tensor rules."""
+        from .hybrid import HybridOperator
+        from .mapping import (
+            _combine_nonexpanding_terms,
+            _shift_term,
+            _tensor_mapped_fermion_terms,
+            _term_has_raw_and_mapped_fermions,
+        )
+        from .space import OperatorSpace, _Axis
+
         if not isinstance(other, _StructuredOperator):
             raise TypeError("tensor_product expects a structured operator")
         if (
@@ -743,11 +764,11 @@ class _StructuredOperator:
                         "mapping plan and fermion axis counts are incompatible"
                     )
                 return self
-            if not isinstance(self, HybridOperator):
+            if self._domain != "hybrid":
                 raise TypeError(
                     "reusable mappings require a hybrid or fermion operator"
                 )
-            return mapping.map_hybrid(self, max_bytes=max_bytes)
+            return mapping.map_hybrid(cast("HybridOperator", self), max_bytes=max_bytes)
         if mapping != "jordan_wigner":
             from ..mapping import FermionQubitMapping
 
@@ -756,11 +777,11 @@ class _StructuredOperator:
             )
             if self.space.fermions == 0:
                 return self
-            if not isinstance(self, HybridOperator):
+            if self._domain != "hybrid":
                 raise TypeError(
                     "reusable mappings require a hybrid or fermion operator"
                 )
-            return plan.map_hybrid(self, max_bytes=max_bytes)
+            return plan.map_hybrid(cast("HybridOperator", self), max_bytes=max_bytes)
         if self.space.fermions == 0:
             return self
         handle = self._native_handle
@@ -769,120 +790,26 @@ class _StructuredOperator:
                 raise ValueError(
                     "cannot map a term containing both raw and mapped fermion factors"
                 )
-            if isinstance(self, HybridOperator):
+            if self._domain == "hybrid":
                 result = handle.jordan_wigner(_effective_max_bytes(max_bytes))
                 if all(
                     axis.domain in ("fermion", "qubit") for axis in self.space._axes
                 ):
+                    from .mapping import _pauli_axis_descriptor
+
                     return PauliOperator._from_native_handle(
                         result.to_pauli(
                             _pauli_axis_descriptor(self.space),
                             _effective_max_bytes(max_bytes),
                         )
                     )
-                return _hybrid_from_native(self.space, result)
+                return _hybrid_from_native(self.space, result, type(self))
         if isinstance(handle, _native.NativeFermionOperatorHandle):
             return PauliOperator._from_native_handle(
                 handle.jordan_wigner(_effective_max_bytes(max_bytes))
             )
         raise TypeError(
             "raw fermion mapping requires a FermionOperator or HybridOperator"
-        )
-
-    def compile(
-        self,
-        target: str,
-        *,
-        storage: Literal["lazy", "eager"] = "lazy",
-        mapping: Union[str, "FermionQubitMapping"] = "jordan_wigner",
-        boson_cutoffs: Optional[Mapping[object, object]] = None,
-        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
-    ) -> CompileResult:
-        """Compile into a dense, sparse, native, or backend MVP target.
-
-        Raw Fermion factors remain raw descriptors for the default
-        ``compile("native_mvp")`` path. Its ``mapping="jordan_wigner"``
-        default denotes the public occupation-basis convention; it does not
-        force Pauli expansion. Call :meth:`map_fermions` before compiling to
-        explicitly request mapped-Pauli execution.
-        """
-        if target not in {"dense", "coo", "csr", "native_mvp", "backend_mvp"}:
-            raise ValueError(
-                "target must be one of 'dense', 'coo', 'csr', 'native_mvp', or 'backend_mvp'"
-            )
-        use_raw_native_fermions = (
-            target == "native_mvp"
-            and mapping == "jordan_wigner"
-            and isinstance(self._native_handle, _native.NativeHybridOperatorHandle)
-            and bool(self._native_handle.has_raw_fermions())
-            and not bool(self._native_handle.has_mapped_fermions())
-        )
-        mapped = (
-            self
-            if use_raw_native_fermions
-            else self.map_fermions(mapping, max_bytes=max_bytes)
-        )
-        if (
-            target != "backend_mvp"
-            and isinstance(mapped, _StructuredOperator)
-            and all(axis.domain == "qubit" for axis in mapped.space._axes)
-            and isinstance(mapped._native_handle, _native.NativeHybridOperatorHandle)
-        ):
-            packed = PauliOperator._from_native_handle(
-                mapped._native_handle.to_pauli(
-                    _pauli_axis_descriptor(mapped.space),
-                    _effective_max_bytes(max_bytes),
-                )
-            )
-            packed_result = packed.compile(target, storage=storage, max_bytes=max_bytes)
-            if isinstance(packed_result, (NativeMVPPlan, BackendMVPPlan)):
-                return _with_plan_metadata(
-                    packed_result,
-                    mapping=(_mapping_name(mapping) if self.space.fermions else None),
-                    source_term_count=self.term_count,
-                )
-            return packed_result
-        if isinstance(mapped, PauliOperator):
-            result: CompileResult = mapped.compile(
-                target, storage=storage, max_bytes=max_bytes
-            )
-            if isinstance(result, (NativeMVPPlan, BackendMVPPlan)):
-                return _with_plan_metadata(
-                    result,
-                    mapping=(_mapping_name(mapping) if self.space.fermions else None),
-                    source_term_count=self.term_count,
-                )
-            return result
-        cutoffs = boson_cutoffs
-        if mapped.space.bosons:
-            if not isinstance(cutoffs, Mapping):
-                raise ValueError(
-                    "boson_cutoffs is required for every finite boson target"
-                )
-            normalized_cutoffs = _validate_cutoffs(mapped.space, cutoffs)
-        else:
-            if cutoffs is not None:
-                raise ValueError(
-                    "boson_cutoffs is only valid for spaces containing bosons"
-                )
-            normalized_cutoffs = {}
-        if target == "backend_mvp" and mapped.space.bosons:
-            raise NotImplementedError(
-                "backend_mvp is deferred for finite boson and mixed hybrid layouts"
-            )
-        if target == "backend_mvp" and mapped.space.qudits:
-            if not all(axis.domain == "qudit" for axis in mapped.space._axes):
-                raise NotImplementedError(
-                    "backend_mvp is deferred for mixed local-dimension layouts"
-                )
-            return _direct_weyl_backend_plan(mapped, max_bytes)
-        return _compile_finite(
-            mapped,
-            target,
-            normalized_cutoffs,
-            max_bytes,
-            storage=storage,
-            mapping=(_mapping_name(mapping) if self.space.fermions else None),
         )
 
     def __add__(self, other: object) -> "_StructuredOperator":
@@ -1297,28 +1224,28 @@ def _add_native_handles(
         result = left_handle.to_hybrid().add(
             right_handle, _effective_max_bytes(max_bytes)
         )
-        return _hybrid_from_native(left.space, result)
+        return _hybrid_from_native(left.space, result, type(right))
     if isinstance(left_handle, _native.NativeHybridOperatorHandle) and isinstance(
         right_handle, _native.NativeFermionOperatorHandle
     ):
         result = left_handle.add(
             right_handle.to_hybrid(), _effective_max_bytes(max_bytes)
         )
-        return _hybrid_from_native(left.space, result)
+        return _hybrid_from_native(left.space, result, type(left))
     if isinstance(left_handle, _native.NativeBosonOperatorHandle) and isinstance(
         right_handle, _native.NativeHybridOperatorHandle
     ):
         result = left_handle.to_hybrid().add(
             right_handle, _effective_max_bytes(max_bytes)
         )
-        return _hybrid_from_native(left.space, result)
+        return _hybrid_from_native(left.space, result, type(right))
     if isinstance(left_handle, _native.NativeHybridOperatorHandle) and isinstance(
         right_handle, _native.NativeBosonOperatorHandle
     ):
         result = left_handle.add(
             right_handle.to_hybrid(), _effective_max_bytes(max_bytes)
         )
-        return _hybrid_from_native(left.space, result)
+        return _hybrid_from_native(left.space, result, type(left))
     raise TypeError("native structured handles have incompatible families")
 
 
@@ -1369,6 +1296,8 @@ def _fermion_from_native(
     n_modes: int,
     result: _native.NativeFermionOperatorHandle,
 ) -> "FermionOperator":
+    from .space import OperatorSpace
+
     instance = object.__new__(cls)
     _StructuredOperator.__init__(
         instance,
@@ -1383,6 +1312,8 @@ def _boson_from_native(
     n_modes: int,
     result: _native.NativeBosonOperatorHandle,
 ) -> "BosonOperator":
+    from .space import OperatorSpace
+
     instance = object.__new__(cls)
     _StructuredOperator.__init__(
         instance,
@@ -1398,6 +1329,8 @@ def _hybrid_from_native(
     cls: Any = None,
 ) -> "HybridOperator":
     if cls is None:
+        from .hybrid import HybridOperator
+
         cls = HybridOperator
     instance = object.__new__(cls)
     _StructuredOperator.__init__(instance, space, native_handle=result)
@@ -1406,96 +1339,12 @@ def _hybrid_from_native(
 
 def _native_result_class(left: _StructuredOperator, right: _StructuredOperator) -> Any:
     """Keep pure-family facades while promoting genuinely mixed results."""
-    if type(left) is type(right) and isinstance(
-        left, (QuditWeylOperator, HybridOperator)
-    ):
+    if type(left) is type(right) and left._domain in {"hybrid", "qudit"}:
         return type(left)
+    if left._domain == "hybrid":
+        return type(left)
+    if right._domain == "hybrid":
+        return type(right)
+    from .hybrid import HybridOperator
+
     return HybridOperator
-
-
-# Import after the common native storage boundary is fully defined.  The
-# implementation modules import this file for those shared primitives, while
-# the stable facade re-exports the public values below.
-from .space import (  # noqa: E402
-    OperatorSpace,
-    _Axis,
-    _BosonFactory,
-    _Factory,
-    _FermionFactory,
-    _QubitFactory,
-    _QuditFactory,
-    _factory_native_operator,
-)
-
-from .mapping import (  # noqa: E402
-    QuditWeylOperator,
-    _combine_nonexpanding_terms,
-    _jordan_wigner_word,
-    _make_operator,
-    _mapping_name,
-    _multiply_mapped,
-    _pauli_axis_descriptor,
-    _pauli_fermion_parity,
-    _replace,
-    _requires_eager_fermion_mapping,
-    _shift_term,
-    _tensor_mapped_fermion_terms,
-    _term_has_raw_and_mapped_fermions,
-    _with_plan_metadata,
-)
-from .fermion import FermionOperator  # noqa: E402
-from .boson import BosonOperator  # noqa: E402
-from .hybrid import HybridOperator, OperatorBuilder  # noqa: E402
-from .compile import (  # noqa: E402
-    _compile_finite,
-    _compile_native_hybrid_handle,
-    _direct_weyl_backend_plan,
-    _native_structured_csr,
-    _native_structured_dense,
-    _native_structured_mvp_plan,
-    _native_structured_sparse,
-    _structured_axis_descriptor,
-    _validate_cutoffs,
-)
-
-# The implementation modules intentionally share the compact native-storage
-# primitives above.  Their cross-domain references are resolved once after all
-# concrete classes have been imported, rather than through import-time class
-# cycles or duplicate compatibility implementations.
-from . import boson as _boson_module  # noqa: E402
-from . import compile as _compile_module  # noqa: E402
-from . import fermion as _fermion_module  # noqa: E402
-from . import hybrid as _hybrid_module  # noqa: E402
-from . import mapping as _mapping_module  # noqa: E402
-from . import space as _space_module  # noqa: E402
-
-for _implementation_module in (
-    _space_module,
-    _mapping_module,
-    _fermion_module,
-    _boson_module,
-    _hybrid_module,
-    _compile_module,
-):
-    for _name, _value in tuple(globals().items()):
-        if not _name.startswith("__"):
-            _implementation_module.__dict__.setdefault(_name, _value)
-
-del _implementation_module, _name, _value
-
-__all__ = [
-    "BosonOperator",
-    "BosonTerm",
-    "BosonWord",
-    "FermionOperator",
-    "FermionTerm",
-    "FermionWord",
-    "HybridOperator",
-    "HybridTerm",
-    "OperatorBuilder",
-    "OperatorSpace",
-    "QuditProduct",
-    "QuditWeylOperator",
-    "QuditWeylTerm",
-    "QuditWeylWord",
-]

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import inspect
 import pickle
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -144,6 +146,65 @@ def test_structured_public_facade_preserves_identity_module_repr_and_pickle() ->
         assert value.__class__.__module__ == "tencirpauli.structured"
         assert repr(value).startswith(value.__class__.__name__ + "(")
         assert pickle.loads(pickle.dumps(value)) == value
+
+
+def test_structured_siblings_are_explicit_and_compile_contracts_remain_stable() -> None:
+    modules = (
+        "tencirpauli._structured.compile",
+        "tencirpauli._structured.mapping",
+        "tencirpauli._structured.space",
+        "tencirpauli._structured.hybrid",
+        "tencirpauli._structured.fermion",
+        "tencirpauli._structured.boson",
+    )
+    script = """
+import importlib
+import sys
+for name in sys.argv[1:]:
+    importlib.import_module(name)
+import tencirpauli._structured.base as base
+assert not hasattr(base, "_implementation_module")
+assert not hasattr(base, "_space_module")
+"""
+    for order in (modules, tuple(reversed(modules)), modules[2:] + modules[:2]):
+        subprocess.run([sys.executable, "-c", script, *order], check=True)
+
+    signatures = {
+        tcp.FermionOperator: ("self", "target", "storage", "mapping", "max_bytes"),
+        tcp.BosonOperator: (
+            "self",
+            "target",
+            "storage",
+            "boson_cutoffs",
+            "max_bytes",
+        ),
+        tcp.HybridOperator: (
+            "self",
+            "target",
+            "storage",
+            "mapping",
+            "boson_cutoffs",
+            "max_bytes",
+        ),
+        tcp.QuditWeylOperator: ("self", "target", "storage", "max_bytes"),
+    }
+    for operator_type, expected in signatures.items():
+        assert tuple(inspect.signature(operator_type.compile).parameters) == expected
+
+    fermion_number = tcp.FermionOperator.from_terms(
+        1, [(((0, "create"), (0, "annihilate")), 1.0)]
+    ).compile("dense")
+    np.testing.assert_allclose(fermion_number, [[0.0, 0.0], [0.0, 1.0]])
+    boson_number = tcp.BosonOperator.from_terms(
+        1, [(((0, "create"), (0, "annihilate")), 1.0)]
+    ).compile("dense", boson_cutoffs={0: 1})
+    np.testing.assert_allclose(boson_number, [[0.0, 0.0], [0.0, 1.0]])
+    hybrid_z = tcp.OperatorSpace(qubits=1).qubit.z(0).compile("dense")
+    np.testing.assert_allclose(hybrid_z, [[1.0, 0.0], [0.0, -1.0]])
+    qudit_identity = tcp.QuditWeylOperator.from_terms(
+        3, [(((0, 0, 0),), 1.0)], n_sites=1
+    ).compile("dense")
+    np.testing.assert_allclose(qudit_identity, np.eye(3))
 
 
 def test_operator_counts_and_unified_code_validation() -> None:

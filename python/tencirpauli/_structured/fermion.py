@@ -2,24 +2,11 @@
 
 from __future__ import annotations
 
-# The modules share the native-handle boundary in ``base``.  Some imports are
-# intentionally consumed by dynamically resolved cross-domain methods after
-# the package has completed its acyclic construction order.
-# ruff: noqa: F401, I001
-
-import cmath
-import math
-import numbers
-import struct
-from dataclasses import dataclass, replace
-from itertools import product
+# This module owns the public Fermion facade and its explicit compile contract.
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Dict,
     Iterable,
-    List,
     Literal,
     Mapping,
     Optional,
@@ -32,78 +19,32 @@ from typing import (
 import numpy as np
 
 from .. import _native
-from .._validation import normalize_pauli_code, validate_nonnegative_int
 from ..hamiltonian import (
-    _PLAN_FACTORY_TOKEN,
     DEFAULT_MAX_BYTES,
-    DIRECT_WEYL_BASIS_ORDERING,
-    MIXED_RADIX_BASIS_ORDERING,
-    BackendMVPPlan,
     CompileResult,
-    COOMatrix,
-    CSRMatrix,
-    NativeMVPPlan,
-    _check_allocation,
     _effective_max_bytes,
     _validate_max_bytes,
 )
-from ..pauli import _PAULI_CHAR_TO_CODE, PauliOperator
+from ..pauli import PauliOperator
 from .base import (
-    MappedOperator,
-    StructuredNativeHandle,
-    _IDENTITY_CODES,
-    _PAULI_PRODUCT,
-    _U32_MAX,
-    _action,
-    _add_native_handles,
-    _adjoint_native_handle,
-    _boson_arrays,
-    _boson_from_native,
-    _complex_sort_key,
-    _estimate_terms,
-    _factor,
-    _fermion_arrays,
-    _fermion_from_integral_blocks,
     _fermion_from_native,
-    _finite_complex,
-    _guard_terms,
-    _hybrid_arrays,
-    _hybrid_from_native,
-    _native_boson_raw,
     _native_fermion_raw,
-    _native_result_class,
     _nonnegative_int,
-    _positive_mode,
     _prepare_integral_array,
     _prepare_integral_constant,
-    _scale_native_handle,
-    _terms_from_native_handle,
     _StructuredOperator,
     _Term,
 )
 from .words import (
-    BosonTerm,
-    BosonWord,
-    FermionTerm,
     FermionWord,
-    QuditProduct,
-    QuditWeylTerm,
-    QuditWeylWord,
 )
 
+
 if TYPE_CHECKING:
-    from ..charge import (
-        AdditiveCharge,
-        AdditiveSymmetryAnalysis,
-        ChargeRestrictedOperator,
-        ChargeSector,
-        ChargeStorage,
-    )
     from ..majorana import MajoranaOperator
     from ..mapping import FermionQubitMapping
 
-from .compile import _compile_finite
-from .mapping import _mapping_name, _with_plan_metadata
+from .compile import _compile_operator
 from .space import OperatorSpace
 
 
@@ -304,7 +245,7 @@ class FermionOperator(_StructuredOperator):
             handle.jordan_wigner(_effective_max_bytes(max_bytes))
         )
 
-    def compile(  # type: ignore[override]
+    def compile(
         self,
         target: str,
         *,
@@ -318,26 +259,13 @@ class FermionOperator(_StructuredOperator):
         Jordan--Wigner occupation-basis order. Call :meth:`map_fermions`
         first to force a Pauli mapping.
         """
-        if target == "native_mvp" and mapping == "jordan_wigner":
-            result = _compile_finite(
-                self,
-                target,
-                {},
-                max_bytes,
-                storage=storage,
-                mapping="jordan_wigner",
-            )
-        else:
-            result = self.map_fermions(mapping, max_bytes=max_bytes).compile(
-                target, storage=storage, max_bytes=max_bytes
-            )
-        if isinstance(result, (NativeMVPPlan, BackendMVPPlan)):
-            return _with_plan_metadata(
-                result,
-                mapping=_mapping_name(mapping),
-                source_term_count=self.term_count,
-            )
-        return result
+        return _compile_operator(
+            self,
+            target,
+            storage=storage,
+            mapping=mapping,
+            max_bytes=max_bytes,
+        )
 
     def to_majorana(
         self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES

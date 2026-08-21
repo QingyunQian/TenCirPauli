@@ -2,111 +2,37 @@
 
 from __future__ import annotations
 
-# The modules share the native-handle boundary in ``base``.  Some imports are
-# intentionally consumed by dynamically resolved cross-domain methods after
-# the package has completed its acyclic construction order.
-# ruff: noqa: F401, I001
-
-import cmath
-import math
-import numbers
-import struct
-from dataclasses import dataclass, replace
-from itertools import product
+# This module owns layout validation and the explicit family factories.
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
-    Any,
     Callable,
     Dict,
-    Iterable,
     List,
-    Literal,
     Mapping,
     Optional,
     Sequence,
     Tuple,
-    Union,
-    cast,
 )
-
-import numpy as np
 
 from .. import _native
-from .._validation import normalize_pauli_code, validate_nonnegative_int
 from ..hamiltonian import (
-    _PLAN_FACTORY_TOKEN,
     DEFAULT_MAX_BYTES,
-    DIRECT_WEYL_BASIS_ORDERING,
-    MIXED_RADIX_BASIS_ORDERING,
-    BackendMVPPlan,
-    CompileResult,
-    COOMatrix,
-    CSRMatrix,
-    NativeMVPPlan,
-    _check_allocation,
     _effective_max_bytes,
-    _validate_max_bytes,
 )
-from ..pauli import _PAULI_CHAR_TO_CODE, PauliOperator
 from .base import (
-    MappedOperator,
-    StructuredNativeHandle,
-    _IDENTITY_CODES,
-    _PAULI_PRODUCT,
     _U32_MAX,
-    _action,
-    _add_native_handles,
-    _adjoint_native_handle,
-    _boson_arrays,
     _boson_from_native,
-    _complex_sort_key,
-    _estimate_terms,
-    _factor,
-    _fermion_arrays,
-    _fermion_from_integral_blocks,
     _fermion_from_native,
-    _finite_complex,
-    _guard_terms,
-    _hybrid_arrays,
     _hybrid_from_native,
-    _native_boson_raw,
-    _native_fermion_raw,
-    _native_result_class,
     _nonnegative_int,
     _positive_mode,
-    _prepare_integral_array,
-    _prepare_integral_constant,
-    _scale_native_handle,
-    _terms_from_native_handle,
     _StructuredOperator,
-    _Term,
-)
-from .words import (
-    BosonTerm,
-    BosonWord,
-    FermionTerm,
-    FermionWord,
-    QuditProduct,
-    QuditWeylTerm,
-    QuditWeylWord,
 )
 
-if TYPE_CHECKING:
-    from ..charge import (
-        AdditiveCharge,
-        AdditiveSymmetryAnalysis,
-        ChargeRestrictedOperator,
-        ChargeSector,
-        ChargeStorage,
-    )
-    from ..majorana import MajoranaOperator
-    from ..mapping import FermionQubitMapping
 
 if TYPE_CHECKING:
-    from .boson import BosonOperator
-    from .fermion import FermionOperator
     from .hybrid import HybridOperator, OperatorBuilder
-    from .mapping import QuditWeylOperator
 
 
 @dataclass(frozen=True)
@@ -251,6 +177,8 @@ class OperatorSpace:
 
     def builder(self) -> "OperatorBuilder":
         """Create a mutable batched builder for this immutable space."""
+        from .hybrid import OperatorBuilder
+
         return OperatorBuilder(self)
 
     def embed(
@@ -368,19 +296,27 @@ class OperatorSpace:
             _effective_max_bytes(DEFAULT_MAX_BYTES),
         )
         if self.fermions and not self.bosons and not self.qubits and not self.qudits:
+            from .fermion import FermionOperator
+
             return _fermion_from_native(
                 FermionOperator,
                 self.fermions,
                 result.to_fermion(),
             )
         if self.bosons and not self.fermions and not self.qubits and not self.qudits:
+            from .boson import BosonOperator
+
             return _boson_from_native(
                 BosonOperator,
                 self.bosons,
                 result.to_boson(),
             )
         if self.qudits and not self.fermions and not self.bosons and not self.qubits:
+            from .mapping import QuditWeylOperator
+
             return _hybrid_from_native(self, result, QuditWeylOperator)
+        if operator._domain == "hybrid":
+            return _hybrid_from_native(self, result, type(operator))
         return _hybrid_from_native(self, result)
 
 
