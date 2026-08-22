@@ -32,7 +32,9 @@ def make_operator(
 ) -> Tuple[PauliOperator, Terms, Weights, np.ndarray[Any, Any]]:
     """Build a full-width operator and a normalized complex128 state."""
     structures, weights = make_terms(nqubits, count, seed)
-    operator = PauliOperator.from_terms(nqubits, tuple(zip(structures, weights)))
+    operator = PauliOperator.from_terms(
+        nqubits, tuple(zip(structures, weights, strict=True))
+    )
     rng = np.random.default_rng(seed + 1)
     state = rng.normal(size=1 << nqubits) + 1j * rng.normal(size=1 << nqubits)
     state = (state / np.linalg.norm(state)).astype(np.complex128)
@@ -58,7 +60,7 @@ def make_heisenberg_chain(
     structure_tuple = tuple(structures)
     weight_tuple = tuple(weights)
     operator = PauliOperator.from_terms(
-        nqubits, tuple(zip(structure_tuple, weight_tuple))
+        nqubits, tuple(zip(structure_tuple, weight_tuple, strict=True))
     )
     state = np.random.default_rng(20260801 + nqubits).normal(
         size=1 << nqubits

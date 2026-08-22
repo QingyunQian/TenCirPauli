@@ -727,7 +727,7 @@ class ChargeSector:
             raise ValueError("occupations must match OperatorSpace.axes length")
         if any(
             value >= dimension
-            for value, dimension in zip(values, self.local_dimensions)
+            for value, dimension in zip(values, self.local_dimensions, strict=True)
         ):
             raise ValueError("occupation is outside the finite sector layout")
         return values
@@ -942,7 +942,7 @@ def _compile_charge_eager_native(
             qudit_weights,
         )
         for (charge, _), levels, qudit_weights in zip(
-            sector.constraints, level_rows, qudit_rows
+            sector.constraints, level_rows, qudit_rows, strict=True
         )
     )
     return sector._native_plan.compile_eager_hybrid_handle(
@@ -1025,7 +1025,7 @@ class ChargeLazyMvpPlan(_NativeMvpFacade):
                     qudit_weights,
                 )
                 for (charge, _), levels, qudit_weights in zip(
-                    sector.constraints, level_rows, qudit_rows
+                    sector.constraints, level_rows, qudit_rows, strict=True
                 )
             )
             native_execution = sector._native_plan.compile_mvp_hybrid_handle(

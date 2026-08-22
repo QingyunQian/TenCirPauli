@@ -84,7 +84,7 @@ def make_native(
         )
         coefficients.append(coefficient)
     observable = tcp.PauliOperator.from_terms(
-        case.nqubits, list(zip(structures, coefficients))
+        case.nqubits, list(zip(structures, coefficients, strict=True))
     )
     parameters = np.linspace(
         -0.19, 0.23, 2 * case.layers * case.nqubits, dtype=np.float64

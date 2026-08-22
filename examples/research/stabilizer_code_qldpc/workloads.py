@@ -274,7 +274,7 @@ def _zero_syndrome_pool(workload: Workload) -> list[np.ndarray[Any, Any]]:
         for z_row in workload.z_checks:
             pool.append(_codes_from_xz(zero, z_row))
     else:
-        for x_row, z_row in zip(workload.x_checks, workload.z_checks):
+        for x_row, z_row in zip(workload.x_checks, workload.z_checks, strict=True):
             pool.append(_codes_from_xz(x_row, z_row))
     return pool
 

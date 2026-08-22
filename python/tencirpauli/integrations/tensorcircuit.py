@@ -139,7 +139,9 @@ def gate_tape_from_circuit(
                 "amplitude_damping": "amplitudedamping",
             }[name]
             parameter_names = channels[name]
-            getattr(tape, method)(wires[0], **dict(zip(parameter_names, payload)))
+            getattr(tape, method)(
+                wires[0], **dict(zip(parameter_names, payload, strict=True))
+            )
             continue
         if name in {"rx", "ry", "rz"}:
             append = getattr(tape, name)

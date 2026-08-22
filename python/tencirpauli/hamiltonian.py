@@ -566,7 +566,11 @@ class BackendMVPPlan:
         for term_index, coefficient in enumerate(self.coefficients):
             term = tensor
             for axis, (a, b) in enumerate(
-                zip(self.a_exponents[term_index], self.b_exponents[term_index])
+                zip(
+                    self.a_exponents[term_index],
+                    self.b_exponents[term_index],
+                    strict=True,
+                )
             ):
                 if b:
                     phase = omega ** (int(b) * np.arange(self.qudit_dimension))

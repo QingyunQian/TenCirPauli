@@ -249,6 +249,8 @@ def test_batch_concurrent_calls_are_isolated() -> None:
         )
     with ThreadPoolExecutor(max_workers=2) as executor:
         actual = list(executor.map(batch.values_and_gradients, parameters))
-    for result, (expected_values, expected_gradients) in zip(actual, expected):
+    for result, (expected_values, expected_gradients) in zip(
+        actual, expected, strict=True
+    ):
         np.testing.assert_array_equal(result.values, expected_values)
         np.testing.assert_array_equal(result.gradients, expected_gradients)

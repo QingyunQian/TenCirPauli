@@ -15,7 +15,7 @@ import math
 import numbers
 import struct
 from dataclasses import dataclass
-from itertools import product
+from itertools import pairwise, product
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -365,23 +365,25 @@ class _StructuredOperator:
                     [(int(mode), "create") for mode in left]
                     + [(int(mode), "annihilate") for mode in right]
                 ): complex(re, im)
-                for left, right, re, im in zip(creation, annihilation, real, imaginary)
+                for left, right, re, im in zip(
+                    creation, annihilation, real, imaginary, strict=True
+                )
             }
         if self._domain == "boson":
             blocks, real, imaginary = _boson_arrays(cast(BosonOperator, self))
             return {
                 tuple(tuple(block) for block in word): complex(re, im)
-                for word, re, im in zip(blocks, real, imaginary)
+                for word, re, im in zip(blocks, real, imaginary, strict=True)
             }
         data = _hybrid_arrays(self)
         real, imaginary = data[-2], data[-1]
         if self._domain == "qudit":
             return {
                 tuple(tuple(triple) for triple in data[9][index]): complex(re, im)
-                for index, (re, im) in enumerate(zip(real, imaginary))
+                for index, (re, im) in enumerate(zip(real, imaginary, strict=True))
             }
         result: Dict[Any, complex] = {}
-        for index, (re, im) in enumerate(zip(real, imaginary)):
+        for index, (re, im) in enumerate(zip(real, imaginary, strict=True)):
             key = (
                 tuple(data[1][index]) if data[0][index] else (),
                 tuple(data[2][index]) if data[0][index] else (),
@@ -905,11 +907,11 @@ def _fermion_arrays(
     annihilation_stops = np.asarray(annihilation_offsets, dtype=np.uintp)
     creation_rows = [
         [int(mode) for mode in creation_values[start:stop]]
-        for start, stop in zip(creation_stops[:-1], creation_stops[1:])
+        for start, stop in pairwise(creation_stops)
     ]
     annihilation_rows = [
         [int(mode) for mode in annihilation_values[start:stop]]
-        for start, stop in zip(annihilation_stops[:-1], annihilation_stops[1:])
+        for start, stop in pairwise(annihilation_stops)
     ]
     values = np.asarray(coefficients, dtype=np.complex128)
     return (
@@ -934,7 +936,7 @@ def _boson_arrays(
             cast(Tuple[int, int, int], tuple(int(value) for value in block))
             for block in blocks_values[start:stop]
         ]
-        for start, stop in zip(offsets[:-1], offsets[1:])
+        for start, stop in pairwise(offsets)
     ]
     values = np.asarray(coefficients, dtype=np.complex128)
     return (
@@ -985,25 +987,25 @@ def _hybrid_arrays(
     qudit_stops = np.asarray(qudit_offsets, dtype=np.uintp)
     f_creation_rows = [
         [int(value) for value in f_creation_values[start:stop]]
-        for start, stop in zip(f_creation_stops[:-1], f_creation_stops[1:])
+        for start, stop in pairwise(f_creation_stops)
     ]
     f_annihilation_rows = [
         [int(value) for value in f_annihilation_values[start:stop]]
-        for start, stop in zip(f_annihilation_stops[:-1], f_annihilation_stops[1:])
+        for start, stop in pairwise(f_annihilation_stops)
     ]
     boson_rows: List[List[Tuple[int, int, int]]] = [
         [
             cast(Tuple[int, int, int], tuple(int(value) for value in block))
             for block in boson_values[start:stop]
         ]
-        for start, stop in zip(boson_stops[:-1], boson_stops[1:])
+        for start, stop in pairwise(boson_stops)
     ]
     qudit_rows: List[List[Tuple[int, int, int]]] = [
         [
             cast(Tuple[int, int, int], tuple(int(value) for value in triple))
             for triple in qudit_values[start:stop]
         ]
-        for start, stop in zip(qudit_stops[:-1], qudit_stops[1:])
+        for start, stop in pairwise(qudit_stops)
     ]
     values = np.asarray(coefficients, dtype=np.complex128)
     qubit_values = np.asarray(qubit_codes, dtype=np.uint8).reshape(
@@ -1063,9 +1065,10 @@ def _terms_from_native_handle(
                 complex(value),
             )
             for (start, stop), (ann_start, ann_stop), value in zip(
-                zip(creation_stops[:-1], creation_stops[1:]),
-                zip(annihilation_stops[:-1], annihilation_stops[1:]),
+                pairwise(creation_stops),
+                pairwise(annihilation_stops),
                 values,
+                strict=True,
             )
         )
     if domain == "boson":
@@ -1088,7 +1091,7 @@ def _terms_from_native_handle(
                 None,
                 complex(value),
             )
-            for (start, stop), value in zip(zip(offsets[:-1], offsets[1:]), values)
+            for (start, stop), value in zip(pairwise(offsets), values, strict=True)
         )
     (
         term_count,
@@ -1176,11 +1179,12 @@ def _terms_from_native_handle(
             value,
         ) in enumerate(
             zip(
-                zip(creation_stops[:-1], creation_stops[1:]),
-                zip(annihilation_stops[:-1], annihilation_stops[1:]),
-                zip(boson_stops[:-1], boson_stops[1:]),
-                zip(qudit_stops[:-1], qudit_stops[1:]),
+                pairwise(creation_stops),
+                pairwise(annihilation_stops),
+                pairwise(boson_stops),
+                pairwise(qudit_stops),
                 values,
+                strict=True,
             )
         )
     )

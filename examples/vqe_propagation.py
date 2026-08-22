@@ -20,7 +20,7 @@ def main() -> None:
         result = circuit.value_and_grad(hamiltonian)
         parameters = [
             value - 0.15 * gradient
-            for value, gradient in zip(parameters, result.gradient)
+            for value, gradient in zip(parameters, result.gradient, strict=True)
         ]
 
     energy = circuit.expectation(hamiltonian)

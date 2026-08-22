@@ -94,7 +94,7 @@ def compare_plain_with_dict(
     largest_error = 0.0
     largest_support_difference = 0
     comparison_tolerance = 1.0e-13
-    for actual, reference in zip(actual_values, expected):
+    for actual, reference in zip(actual_values, expected, strict=True):
         reference_strings = {
             "".join("IXYZ"[code] for code in word): coefficient
             for word, coefficient in reference.items()

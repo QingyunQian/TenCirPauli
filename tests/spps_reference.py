@@ -83,7 +83,7 @@ def enumerate_paths(
     if len(parameter_slots) != len(operations):
         raise ValueError("parameter_slots must match operations")
     resolved = []
-    for operation, angle, slot in zip(operations, angles, parameter_slots):
+    for operation, angle, slot in zip(operations, angles, parameter_slots, strict=True):
         resolved.append((operation, float(angle), slot))
 
     paths = [Path(1.0, (), tuple(observable_word), 1.0)]

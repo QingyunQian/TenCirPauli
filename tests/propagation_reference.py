@@ -113,7 +113,7 @@ def propagate_dense(
     matrix = sum(
         (
             complex(coefficient) * codes_to_dense(structure)
-            for structure, coefficient in zip(structures, coefficients)
+            for structure, coefficient in zip(structures, coefficients, strict=True)
         ),
         np.zeros((1 << nqubits, 1 << nqubits), dtype=np.complex128),
     )

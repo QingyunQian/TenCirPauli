@@ -143,6 +143,7 @@ def test_wide_sector_wide_restriction_matches_big_int_sparse_reference(
         for column, value in zip(
             csr.indices[csr.indptr[row] : csr.indptr[row + 1]],
             csr.data[csr.indptr[row] : csr.indptr[row + 1]],
+            strict=True,
         )
     }
     assert actual.keys() == reference.keys()
@@ -188,6 +189,7 @@ def test_wide_sector_complex_directed_hopping_crosses_a_limb_boundary() -> None:
         for column, value in zip(
             csr.indices[csr.indptr[row] : csr.indptr[row + 1]],
             csr.data[csr.indptr[row] : csr.indptr[row + 1]],
+            strict=True,
         )
     }
     assert actual.keys() == reference.keys()

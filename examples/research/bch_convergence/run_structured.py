@@ -275,7 +275,7 @@ def run_family(args: argparse.Namespace, family: str) -> Dict[str, object]:
             ),
             default=0.0,
         )
-        for actual, expected in zip(native_plain, reference_truncations)
+        for actual, expected in zip(native_plain, reference_truncations, strict=True)
     ]
     if max(errors, default=0.0) > 1.0e-10:
         raise AssertionError(f"native and Python BCH values differ by {max(errors)}")

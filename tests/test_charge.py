@@ -44,7 +44,7 @@ def _independent_charge_value(
     charge: tcp.AdditiveCharge, occupations: tuple[int, ...]
 ) -> int:
     total = charge.offset
-    for (domain, index, _), value in zip(charge.space.axes, occupations):
+    for (domain, index, _), value in zip(charge.space.axes, occupations, strict=True):
         if domain == "fermion":
             total += charge.fermion_weights[index] * value
         elif domain == "boson":
@@ -78,7 +78,7 @@ def _independent_sector_basis(
 
 def _mixed_radix_index(values: tuple[int, ...], dimensions: tuple[int, ...]) -> int:
     result = 0
-    for value, dimension in zip(values, dimensions):
+    for value, dimension in zip(values, dimensions, strict=True):
         result = result * dimension + value
     return result
 

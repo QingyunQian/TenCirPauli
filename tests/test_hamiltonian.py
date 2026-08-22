@@ -135,7 +135,7 @@ def test_native_mvp_plan_random_complex_differential() -> None:
             for real, imaginary in rng.normal(size=(24, 2))
         )
         operator = PauliOperator.from_terms(
-            nqubits, tuple(zip(structures, coefficients))
+            nqubits, tuple(zip(structures, coefficients, strict=True))
         )
         state = rng.normal(size=1 << nqubits) + 1j * rng.normal(size=1 << nqubits)
         expected = operator.dense() @ state

@@ -33,7 +33,10 @@ def _kraus_expectation(code: str, kraus: list[np.ndarray], bloch: np.ndarray) ->
     }
     rho = (
         paulis["I"]
-        + sum(value * paulis[label] for value, label in zip(bloch, ("X", "Y", "Z")))
+        + sum(
+            value * paulis[label]
+            for value, label in zip(bloch, ("X", "Y", "Z"), strict=True)
+        )
     ) / 2.0
     transformed = sum(
         (operator.conj().T @ paulis[code] @ operator for operator in kraus)

@@ -151,7 +151,9 @@ def test_random_seeded_exact_and_projected_cases_match_dense_reference() -> None
             [int(value) for value in rng.integers(0, 4, size=nqubits)] for _ in range(4)
         ]
         coefficients = [float(value) for value in rng.uniform(-1.0, 1.0, size=4)]
-        observable = tcp.PauliOperator(nqubits, list(zip(structures, coefficients)))
+        observable = tcp.PauliOperator(
+            nqubits, list(zip(structures, coefficients, strict=True))
+        )
         for max_weight in (None, int(rng.integers(0, nqubits + 1))):
             result = advanced.PropagationEngine(
                 tape, observable, max_weight=max_weight

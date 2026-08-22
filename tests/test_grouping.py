@@ -16,7 +16,7 @@ from tencirpauli import (
 
 
 def qwc_compatible(left: tuple[int, ...], right: tuple[int, ...]) -> bool:
-    return all(a == 0 or b == 0 or a == b for a, b in zip(left, right))
+    return all(a == 0 or b == 0 or a == b for a, b in zip(left, right, strict=True))
 
 
 def test_qwc_groups_have_stable_membership_basis_and_metadata() -> None:
@@ -32,7 +32,7 @@ def test_qwc_groups_have_stable_membership_basis_and_metadata() -> None:
     assert result.groups == operator.group_commuting().groups
     assert sorted(index for group in result.groups for index in group) == list(range(5))
     structures = tuple(term.word.to_codes() for term in operator.terms)
-    for group, basis in zip(result.groups, result.bases):
+    for group, basis in zip(result.groups, result.bases, strict=True):
         for left_position, left in enumerate(group):
             for right in group[left_position + 1 :]:
                 assert qwc_compatible(structures[left], structures[right])

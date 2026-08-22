@@ -70,13 +70,13 @@ def test_z2_tapering_preserves_multigenerator_sector_signs() -> None:
     for sector in np.ndindex(*(2,) * analysis.rank):
         selected = tuple(1 if value == 0 else -1 for value in sector)
         projector = identity.copy()
-        for sign, generator_matrix in zip(selected, generator_matrices):
+        for sign, generator_matrix in zip(selected, generator_matrices, strict=True):
             projector = projector @ (identity + sign * generator_matrix) / 2
         expected = np.trace(projector @ full_matrix) / np.trace(projector)
         tapered = analysis.tapering_plan(selected).transform_operator(operator).dense()
         np.testing.assert_allclose(tapered, np.asarray([[expected]]))
 
-        for sign, word in zip(selected, analysis.generators):
+        for sign, word in zip(selected, analysis.generators, strict=True):
             transformed = (
                 analysis.tapering_plan(selected)
                 .transform_operator(
@@ -143,7 +143,7 @@ def test_z2_random_projector_reference_covers_y_generators() -> None:
         analysis = tcp.Z2SymmetryAnalysis(nqubits, tuple(selected), len(selected))
         for sector in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
             projector = identity.copy()
-            for sign, generator_matrix in zip(sector, generator_matrices):
+            for sign, generator_matrix in zip(sector, generator_matrices, strict=True):
                 projector = projector @ (identity + sign * generator_matrix) / 2
             eigenvalues, eigenvectors = np.linalg.eigh(projector)
             basis = eigenvectors[:, eigenvalues > 0.5]

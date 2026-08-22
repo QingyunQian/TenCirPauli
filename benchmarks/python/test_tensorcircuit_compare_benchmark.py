@@ -67,7 +67,7 @@ def _workload() -> dict[str, Any]:
         structures.append(codes)
         coefficients.append(float(coefficient))
     observable = tcp.PauliOperator.from_terms(
-        nqubits, list(zip(structures, coefficients))
+        nqubits, list(zip(structures, coefficients, strict=True))
     )
 
     native_deterministic = advanced.PropagationEngine(tape, observable, max_weight=3)

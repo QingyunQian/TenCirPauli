@@ -49,7 +49,7 @@ def multiply_words(left: Codes, right: Codes) -> Tuple[Codes, complex]:
         raise ValueError("Pauli words must have equal widths")
     result: List[int] = []
     phase = 1.0 + 0.0j
-    for left_code, right_code in zip(left, right):
+    for left_code, right_code in zip(left, right, strict=True):
         code, local_phase = _LOCAL_PRODUCTS[left_code][right_code]
         result.append(code)
         phase *= local_phase

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass
 from typing import (
@@ -321,7 +322,9 @@ class MajoranaOperator:
                     ),
                     complex(value),
                 )
-                for (start, stop), value in zip(zip(stops[:-1], stops[1:]), values)
+                for (start, stop), value in zip(
+                    itertools.pairwise(stops), values, strict=True
+                )
             )
             object.__setattr__(self, "_terms", cached)
         return cached
@@ -345,7 +348,9 @@ class MajoranaOperator:
         values = np.asarray(coefficients, dtype=np.complex128)
         return {
             tuple(int(index) for index in words[start:stop]): complex(value)
-            for (start, stop), value in zip(zip(stops[:-1], stops[1:]), values)
+            for (start, stop), value in zip(
+                itertools.pairwise(stops), values, strict=True
+            )
         }
 
     def __len__(self) -> int:

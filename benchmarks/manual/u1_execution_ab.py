@@ -111,7 +111,7 @@ def _projected_observable() -> dict[str, object]:
         codes[wire] = 3
         structures.append(codes)
         coefficients.append(0.01 * (wire - 1))
-    observable = tcp.PauliOperator(20, list(zip(structures, coefficients)))
+    observable = tcp.PauliOperator(20, list(zip(structures, coefficients, strict=True)))
     value = _measure(lambda: circuit.expectation(observable), 5)
     return {
         "median_ms": value,

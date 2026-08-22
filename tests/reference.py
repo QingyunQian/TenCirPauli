@@ -87,7 +87,7 @@ def multiply_codes(
         raise ValueError("Pauli words must have equal lengths")
     result = []
     phase = 1.0 + 0.0j
-    for left_code, right_code in zip(left_codes, right_codes):
+    for left_code, right_code in zip(left_codes, right_codes, strict=True):
         code, local_phase = product_single(left_code, right_code)
         result.append(code)
         phase *= local_phase
@@ -108,7 +108,9 @@ def dense_operator(
         raise ValueError("every structure must contain exactly nqubits codes")
     dimension = 1 << nqubits
     result = np.zeros((dimension, dimension), dtype=np.complex128)
-    for structure, coefficient in zip(structures_tuple, coefficients_array):
+    for structure, coefficient in zip(
+        structures_tuple, coefficients_array, strict=True
+    ):
         result += coefficient * codes_to_dense(structure)
     return result
 
@@ -125,7 +127,7 @@ def commutes(left: Sequence[int], right: Sequence[int]) -> bool:
     if len(left_codes) != len(right_codes):
         raise ValueError("Pauli words must have equal lengths")
     anticommutations = 0
-    for left_code, right_code in zip(left_codes, right_codes):
+    for left_code, right_code in zip(left_codes, right_codes, strict=True):
         if left_code and right_code and left_code != right_code:
             anticommutations += 1
     return anticommutations % 2 == 0

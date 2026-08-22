@@ -48,7 +48,9 @@ def python_code_tuple_canonicalization(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Canonicalize the same arrays through conventional Python tuple keys."""
     aggregate: dict[tuple[int, ...], list[tuple[int, complex]]] = {}
-    for index, (structure, coefficient) in enumerate(zip(structures, coefficients)):
+    for index, (structure, coefficient) in enumerate(
+        zip(structures, coefficients, strict=True)
+    ):
         key = tuple(int(code) for code in structure)
         aggregate.setdefault(key, []).append((index, complex(coefficient)))
     ordered = sorted(aggregate)

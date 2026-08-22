@@ -311,6 +311,7 @@ class StabilizerCode:
             for x_words, z_words in zip(
                 arrays.logical_x_x_words.reshape((self.nlogical, word_count)),
                 arrays.logical_x_z_words.reshape((self.nlogical, word_count)),
+                strict=True,
             )
         )
         logical_z = tuple(
@@ -322,6 +323,7 @@ class StabilizerCode:
             for x_words, z_words in zip(
                 arrays.logical_z_x_words.reshape((self.nlogical, word_count)),
                 arrays.logical_z_z_words.reshape((self.nlogical, word_count)),
+                strict=True,
             )
         )
         return logical_x, logical_z

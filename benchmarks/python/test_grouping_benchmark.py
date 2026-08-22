@@ -30,7 +30,7 @@ def python_qwc_largest_first(
         for right in range(left + 1, size):
             compatible = all(
                 a == 0 or b == 0 or a == b
-                for a, b in zip(structures[left], structures[right])
+                for a, b in zip(structures[left], structures[right], strict=True)
             )
             incompatible[left][right] = not compatible
             incompatible[right][left] = not compatible

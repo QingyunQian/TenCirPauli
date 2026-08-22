@@ -203,7 +203,7 @@ class MatchedJaxPropagation:
                 )
             transitions.append(tuple(gate_transitions))
         initial = np.zeros(len(basis), dtype=np.complex128)
-        for structure, coefficient in zip(structures, coefficients):
+        for structure, coefficient in zip(structures, coefficients, strict=True):
             initial[positions[tuple(structure)]] += coefficient
         expectation_mask = np.asarray(
             [all(code in (0, 3) for code in codes) for codes in basis], dtype=np.float64
@@ -221,7 +221,7 @@ class MatchedJaxPropagation:
         def run(parameters: object) -> object:
             values = jnp.asarray(initial)
             for operation, gate in zip(
-                reversed(operations), reversed(static_transitions)
+                reversed(operations), reversed(static_transitions), strict=True
             ):
                 next_values = jnp.zeros_like(values)
                 kind = str(operation[0])
@@ -232,7 +232,9 @@ class MatchedJaxPropagation:
                         else float(operation[-1])
                     )
                     cosine, sine = jnp.cos(theta), jnp.sin(theta)
-                    for transition, scale in zip(gate, (1.0, cosine, sine)):
+                    for transition, scale in zip(
+                        gate, (1.0, cosine, sine), strict=True
+                    ):
                         source, destination, coefficient = transition
                         next_values = next_values.at[destination].add(
                             scale * coefficient * values[source]

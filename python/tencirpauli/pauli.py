@@ -589,7 +589,10 @@ class PauliOperator:
             raise RuntimeError("PauliOperator must retain a native handle")
         strings, coefficients = handle.materialize_strings()
         values = np.asarray(coefficients, dtype=np.complex128)
-        return {string: complex(value) for string, value in zip(strings, values)}
+        return {
+            string: complex(value)
+            for string, value in zip(strings, values, strict=True)
+        }
 
     def add(
         self,
@@ -1303,7 +1306,9 @@ def _terms_from_packed_native(
             ),
             complex(value),
         )
-        for x, z, value in zip(canonical_x_words, canonical_z_words, values)
+        for x, z, value in zip(
+            canonical_x_words, canonical_z_words, values, strict=True
+        )
     )
 
 

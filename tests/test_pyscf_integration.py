@@ -118,7 +118,9 @@ def _independent_integral_reference(mean_field, spin_ordering: str):
                             value,
                         )
                     )
-    for left_spin, right_spin, eri in zip((0, 0, 1, 1), (0, 1, 0, 1), eri_blocks):
+    for left_spin, right_spin, eri in zip(
+        (0, 0, 1, 1), (0, 1, 0, 1), eri_blocks, strict=True
+    ):
         for p in range(n_spatial):
             for r in range(n_spatial):
                 for q in range(n_spatial):

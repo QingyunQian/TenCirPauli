@@ -49,10 +49,10 @@ def test_random_operator_algebra_matches_numpy_dense_reference() -> None:
         coefficients_left = rng.normal(size=6) + 1j * rng.normal(size=6)
         coefficients_right = rng.normal(size=5) + 1j * rng.normal(size=5)
         left = PauliOperator.from_terms(
-            nqubits, zip(structures_left, coefficients_left.tolist())
+            nqubits, zip(structures_left, coefficients_left.tolist(), strict=True)
         )
         right = PauliOperator.from_terms(
-            nqubits, zip(structures_right, coefficients_right.tolist())
+            nqubits, zip(structures_right, coefficients_right.tolist(), strict=True)
         )
         left_dense = dense_operator(nqubits, structures_left, coefficients_left)
         right_dense = dense_operator(nqubits, structures_right, coefficients_right)
@@ -182,7 +182,7 @@ def test_operator_arrays_are_cached_and_do_not_affect_public_value_semantics(
         raise AssertionError("cached arrays performed native code conversion")
 
     monkeypatch.setattr(pauli_module._native, "pauli_codes", reject_code_conversion)
-    for left, right in zip(operator._arrays(), first):
+    for left, right in zip(operator._arrays(), first, strict=True):
         np.testing.assert_array_equal(left, right)
 
 

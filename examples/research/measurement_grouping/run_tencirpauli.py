@@ -85,7 +85,7 @@ def _native_reconstruct(
 def _same_arrays(left: Sequence[np.ndarray], right: Sequence[np.ndarray]) -> bool:
     return len(left) == len(right) and all(
         np.array_equal(left_value, right_value)
-        for left_value, right_value in zip(left, right)
+        for left_value, right_value in zip(left, right, strict=True)
     )
 
 

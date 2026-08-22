@@ -27,7 +27,7 @@ def _build_operator(labels: Sequence[str], coefficients: np.ndarray) -> SparsePa
     return SparsePauliOp.from_list(
         [
             (label, complex(coefficient))
-            for label, coefficient in zip(labels, coefficients)
+            for label, coefficient in zip(labels, coefficients, strict=True)
         ]
     )
 
@@ -47,7 +47,7 @@ def _valid_groups(groups: Iterable[SparsePauliOp], labels: Sequence[str]) -> boo
             for right in group_labels[position + 1 :]:
                 if any(
                     left_code != "I" and right_code != "I" and left_code != right_code
-                    for left_code, right_code in zip(left, right)
+                    for left_code, right_code in zip(left, right, strict=True)
                 ):
                     return False
     return True

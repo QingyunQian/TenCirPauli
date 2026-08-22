@@ -62,7 +62,9 @@ def _transition_table(
     basis_index = {int(value): index for index, value in enumerate(basis)}
     terms = []
     nqubits = operator.nqubits
-    for structure, real, imaginary in zip(structures, coefficients_re, coefficients_im):
+    for structure, real, imaginary in zip(
+        structures, coefficients_re, coefficients_im, strict=True
+    ):
         x_mask = 0
         z_mask = 0
         y_count = 0
@@ -139,7 +141,9 @@ def make_jax_pauli_baseline(operator: PauliOperator) -> Callable[[Any], Any]:
     x_masks = []
     z_masks = []
     coefficients = []
-    for structure, real, imaginary in zip(structures, coefficients_re, coefficients_im):
+    for structure, real, imaginary in zip(
+        structures, coefficients_re, coefficients_im, strict=True
+    ):
         x_mask = 0
         z_mask = 0
         y_count = 0
@@ -162,7 +166,9 @@ def make_jax_pauli_baseline(operator: PauliOperator) -> Callable[[Any], Any]:
     def apply(state: Any) -> Any:
         columns = jnp.arange(dimension, dtype=jnp.uint32)
         output = jnp.zeros((dimension,), dtype=state.dtype)
-        for x_mask, z_mask, coefficient in zip(j_x_masks, j_z_masks, j_coefficients):
+        for x_mask, z_mask, coefficient in zip(
+            j_x_masks, j_z_masks, j_coefficients, strict=True
+        ):
             rows = jnp.bitwise_xor(columns, x_mask)
             parity = lax.population_count(jnp.bitwise_and(columns, z_mask)) & 1
             phase = jnp.where(parity == 0, 1.0, -1.0)

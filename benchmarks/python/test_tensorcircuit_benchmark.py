@@ -20,7 +20,9 @@ def make_workload(
         for index in range(count)
     )
     weights = tuple(1.0 + index / 100.0 for index in range(count))
-    operator = PauliOperator.from_terms(nqubits, tuple(zip(structures, weights)))
+    operator = PauliOperator.from_terms(
+        nqubits, tuple(zip(structures, weights, strict=True))
+    )
     state = np.random.default_rng(20260801 + nqubits).normal(
         size=1 << nqubits
     ) + 1j * np.random.default_rng(7 + nqubits).normal(size=1 << nqubits)

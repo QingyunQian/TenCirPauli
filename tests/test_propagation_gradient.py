@@ -113,7 +113,7 @@ def test_deterministic_gradient_concurrent_calls_are_isolated() -> None:
     with ThreadPoolExecutor(max_workers=4) as executor:
         actual = list(executor.map(run, (0, 1, 0, 1)))
     for result, reference in zip(
-        actual, (expected[0], expected[1], expected[0], expected[1])
+        actual, (expected[0], expected[1], expected[0], expected[1]), strict=True
     ):
         assert result.value == reference.value
         np.testing.assert_array_equal(result.gradient, reference.gradient)

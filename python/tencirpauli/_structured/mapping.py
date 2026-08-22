@@ -123,7 +123,7 @@ def _combine_nonexpanding_terms(
 ) -> _Term:
     coefficient = left.coefficient * right.coefficient
     qubit = []
-    for a, b in zip(left.qubit, right.qubit):
+    for a, b in zip(left.qubit, right.qubit, strict=True):
         code, phase = _PAULI_PRODUCT[a][b]
         qubit.append(code)
         coefficient *= phase
@@ -221,7 +221,7 @@ def _multiply_mapped(
         return ((left, 1.0 + 0j),)
     codes = []
     phase = 1.0 + 0j
-    for a, b in zip(left, right):
+    for a, b in zip(left, right, strict=True):
         code, local_phase = _PAULI_PRODUCT[a][b]
         codes.append(code)
         phase *= local_phase
@@ -314,7 +314,7 @@ def _jordan_wigner_word(
             for right, right_value in factor.items():
                 result = [0] * word.n_modes
                 phase = 1.0 + 0j
-                for index, (a, b) in enumerate(zip(left, right)):
+                for index, (a, b) in enumerate(zip(left, right, strict=True)):
                     result[index], local_phase = _PAULI_PRODUCT[a][b]
                     phase *= local_phase
                 key = tuple(result)

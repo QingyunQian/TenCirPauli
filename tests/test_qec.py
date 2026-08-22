@@ -40,7 +40,7 @@ def _dense_code_projector(
     dimension = 2**nqubits
     identity = np.eye(dimension, dtype=np.complex128)
     projector = identity.copy()
-    for check, sign in zip(checks, signs):
+    for check, sign in zip(checks, signs, strict=True):
         projector = projector @ (identity + sign * _dense_pauli(check)) / 2
     return projector
 
@@ -340,7 +340,7 @@ def test_dense_projector_oracle_binds_signed_code_space_and_logicals() -> None:
     assert np.isclose(np.trace(consistent), 1.0)
     assert np.isclose(np.trace(consistent @ consistent), 1.0)
     assert np.allclose(inconsistent, np.zeros_like(inconsistent), atol=1e-12)
-    for check, sign in zip(signed_checks, (1, 1, -1)):
+    for check, sign in zip(signed_checks, (1, 1, -1), strict=True):
         assert np.allclose(sign * _dense_pauli(check) @ consistent, consistent)
 
     code = _bit_flip_code()
@@ -442,7 +442,7 @@ def test_pauliword_batch_correction_differential_against_singular_operations() -
     expected_zero_indices = []
     expected_logical_x = []
     expected_logical_z = []
-    for index, (error, correction) in enumerate(zip(errors, corrections)):
+    for index, (error, correction) in enumerate(zip(errors, corrections, strict=True)):
         residual = correction.multiply(error).word
         singular = code.classify(residual)
         expected_syndromes.append(singular.syndrome)
@@ -496,7 +496,9 @@ def test_random_batch_and_correction_differential_against_singular_operations() 
             assert tuple(batch.syndromes[index]) == singular.syndrome
         corrections = rng.integers(0, 4, size=(48, code.nqubits), dtype=np.uint8)
         correction_result = code.analyze_corrections(values, corrections)
-        for index, (error, correction) in enumerate(zip(words, corrections)):
+        for index, (error, correction) in enumerate(
+            zip(words, corrections, strict=True)
+        ):
             correction_word = tcp.PauliWord.from_codes(correction.tolist())
             residual = correction_word.multiply(error).word
             singular = code.classify(residual)
@@ -608,7 +610,7 @@ def test_private_singular_native_abi_returns_flat_numpy_syndrome() -> None:
     assert classified[3] is None
 
     logical = code._native_handle.classify_one([7], [0])
-    for value, expected in zip(logical[2:], ([1], [0])):
+    for value, expected in zip(logical[2:], ([1], [0]), strict=True):
         assert isinstance(value, np.ndarray)
         assert value.dtype == np.dtype(np.uint8)
         assert value.ndim == 1
@@ -619,7 +621,7 @@ def test_private_singular_native_abi_returns_flat_numpy_syndrome() -> None:
     error_set = code._native_handle.error_set_codes(_codes(["III", "XXX"]), 2**63 - 1)
     assert error_set[0] is False
     assert error_set[1] == (0, 1)
-    for value, expected in zip(error_set[2:], ([1], [0])):
+    for value, expected in zip(error_set[2:], ([1], [0]), strict=True):
         assert isinstance(value, np.ndarray)
         assert value.dtype == np.dtype(np.uint8)
         assert value.ndim == 1

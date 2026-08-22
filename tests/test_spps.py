@@ -94,11 +94,12 @@ def test_adaptive_estimator_uses_divergent_term_budgets() -> None:
         for word, _ in terms
     ]
     expected_value = sum(
-        coefficient * value for (_, coefficient), (value, _) in zip(terms, expected)
+        coefficient * value
+        for (_, coefficient), (value, _) in zip(terms, expected, strict=True)
     )
     expected_gradient = sum(
         coefficient * gradient
-        for (_, coefficient), (_, gradient) in zip(terms, expected)
+        for (_, coefficient), (_, gradient) in zip(terms, expected, strict=True)
     )
     assert len(estimate.samples_per_replicate) == 2
     assert len(set(estimate.samples_per_replicate)) > 1
@@ -289,7 +290,7 @@ def test_spps_concurrent_calls_are_isolated_and_replayable() -> None:
     parameters = ([0.21, -0.17], [0.33, 0.14])
     expected = [
         engine.value_and_grad(values, samples_per_term=768, seed=seed)
-        for values, seed in zip(parameters, (7, 9))
+        for values, seed in zip(parameters, (7, 9), strict=True)
     ]
 
     def run(index: int):
@@ -300,7 +301,7 @@ def test_spps_concurrent_calls_are_isolated_and_replayable() -> None:
     with ThreadPoolExecutor(max_workers=4) as executor:
         actual = list(executor.map(run, (0, 1, 0, 1)))
     for result, reference in zip(
-        actual, (expected[0], expected[1], expected[0], expected[1])
+        actual, (expected[0], expected[1], expected[0], expected[1]), strict=True
     ):
         assert result.value == reference.value
         assert result.value_standard_error == reference.value_standard_error

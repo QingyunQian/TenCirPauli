@@ -81,7 +81,7 @@ def _measure_child(target_chunks: int, repeats: int) -> dict[str, Any]:
         actual_arrays = _arrays(eager)
         csr_equal = csr_equal and all(
             np.array_equal(actual, expected)
-            for actual, expected in zip(actual_arrays, reference_arrays)
+            for actual, expected in zip(actual_arrays, reference_arrays, strict=True)
         )
         output = np.empty_like(state)
         eager.apply_into(state, output, max_bytes=2**63 - 1)

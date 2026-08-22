@@ -176,7 +176,7 @@ def _operation_from_tape(
         return _PropagationOperation(
             name,
             (wire0,),
-            channel_parameters=tuple(zip(names, refs)),
+            channel_parameters=tuple(zip(names, refs, strict=True)),
         )
     gate_name = _KIND_TO_NAME.get(kind)
     if gate_name is None:
@@ -638,7 +638,7 @@ class _CircuitBuilder:
                         )
                     values.append(_concrete_channel_value(value, parameter_name))
                 getattr(result, inverse_name)(
-                    wires[0], **dict(zip(expected_names, values))
+                    wires[0], **dict(zip(expected_names, values, strict=True))
                 )
                 continue
             if name not in _FIXED_GATES | _ROTATION_GATES:

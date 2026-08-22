@@ -34,7 +34,9 @@ def test_full_state_and_probability_materialization_match_restricted_values() ->
     restricted_state = circuit.state()
     full_state = circuit.state_full()
     expected_full = np.zeros(8, dtype=np.complex128)
-    for value, occupation in zip(restricted_state, circuit.sector.basis_states()):
+    for value, occupation in zip(
+        restricted_state, circuit.sector.basis_states(), strict=True
+    ):
         basis_index = 0
         for bit in occupation:
             basis_index = (basis_index << 1) | int(bit)
