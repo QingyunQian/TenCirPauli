@@ -16,3 +16,4 @@ Each study has its own directory. Keep the first version small: one executable s
 - [`measurement_grouping/`](measurement_grouping/): measurement-ready QWC grouping and bitstring reconstruction against an independent NumPy/Python baseline, with an optional Qiskit comparison.
 - [`classical_shadows/`](classical_shadows/): default 20-qubit/8,192-shot JAX Pauli-shadow timing against TensorCircuit-ng plus dense non-Clifford global-Clifford sampling, stabilizer-target fidelity, and arbitrary dense-target fidelity.
 - [`fermion_timeevolution_2d/`](fermion_timeevolution_2d/): two-dimensional Fermi–Hubbard Krylov/Chebyshev evolution through raw Fermion native MVP and mapped TensorCircuit-NG/JAX backend MVP paths.
+- [`stabilizer_code_qldpc/`](stabilizer_code_qldpc/): static qubit stabilizer-code construction, logical-operator, syndrome, classification, and correction-residual comparison against qLDPC 0.3.3.

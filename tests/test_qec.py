@@ -101,6 +101,71 @@ def test_repetition_construction_order_statistics_and_classification() -> None:
     assert not checks.z_words.flags.writeable
 
 
+def test_css_constructor_matches_equivalent_symplectic_constructor() -> None:
+    h = np.asarray(
+        [
+            [1, 0, 0, 1, 0, 1, 1],
+            [0, 1, 0, 1, 1, 0, 1],
+            [0, 0, 1, 0, 1, 1, 1],
+        ],
+        dtype=np.uint8,
+    )
+    zeros = np.zeros_like(h)
+    css = StabilizerCode.from_css(h, h)
+    symplectic = StabilizerCode.from_symplectic(
+        np.vstack((h, zeros)),
+        np.vstack((zeros, h)),
+        signs=[1] * 6,
+    )
+
+    assert (css.rank, css.nlogical, css.nrelations) == (
+        symplectic.rank,
+        symplectic.nlogical,
+        symplectic.nrelations,
+    )
+    css_checks = css.check_arrays()
+    symplectic_checks = symplectic.check_arrays()
+    for left, right in (
+        (css_checks.x_words, symplectic_checks.x_words),
+        (css_checks.z_words, symplectic_checks.z_words),
+        (css_checks.signs, symplectic_checks.signs),
+    ):
+        assert np.array_equal(left, right)
+    assert np.array_equal(css.check_weights(), symplectic.check_weights())
+    assert np.array_equal(css.qubit_degrees(), symplectic.qubit_degrees())
+
+    css_logicals = css.logical_operator_arrays()
+    symplectic_logicals = symplectic.logical_operator_arrays()
+    for left, right in (
+        (css_logicals.logical_x_x_words, symplectic_logicals.logical_x_x_words),
+        (css_logicals.logical_x_z_words, symplectic_logicals.logical_x_z_words),
+        (css_logicals.logical_z_x_words, symplectic_logicals.logical_z_x_words),
+        (css_logicals.logical_z_z_words, symplectic_logicals.logical_z_z_words),
+    ):
+        assert np.array_equal(left, right)
+
+    errors = np.asarray(
+        [
+            [1, 0, 0, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0],
+            [3, 0, 0, 0, 0, 0, 0],
+        ],
+        dtype=np.uint8,
+    )
+    assert (
+        css.syndrome_many(errors).tolist() == symplectic.syndrome_many(errors).tolist()
+    )
+    for packed in (False, True):
+        left = css.classify_many(errors, packed_syndromes=packed)
+        right = symplectic.classify_many(errors, packed_syndromes=packed)
+        assert np.array_equal(left.syndromes, right.syndromes)
+        assert np.array_equal(left.kinds, right.kinds)
+        assert np.array_equal(left.zero_syndrome_indices, right.zero_syndrome_indices)
+        assert np.array_equal(left.logical_x, right.logical_x)
+        assert np.array_equal(left.logical_z, right.logical_z)
+
+
 def test_redundant_relations_signed_dependencies_and_public_syndrome_order() -> None:
     code = StabilizerCode.from_generators(
         3,

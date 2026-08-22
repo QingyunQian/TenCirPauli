@@ -74,27 +74,80 @@ fn echelon(mut rows: Vec<Vec<u64>>, variable_count: usize) -> RowEchelon {
 
 /// Return a deterministic null-space basis and the row rank.
 pub(crate) fn null_space(rows: &[Vec<u64>], variable_count: usize) -> (Vec<Vec<u64>>, usize) {
+    let (basis, rank) = null_space_basis(rows, variable_count);
+    (basis.collect(), rank)
+}
+
+/// A deterministic null-space basis that materializes one vector on demand.
+///
+/// The stabilizer logical-basis path only needs enough normalizer vectors to
+/// span the logical quotient. Keeping the echelon form and producing vectors
+/// lazily avoids constructing the rest of the normalizer basis.
+pub(crate) struct NullSpaceBasis {
+    echelon: RowEchelon,
+    pivot_flags: Vec<bool>,
+    next_free: usize,
+}
+
+impl Iterator for NullSpaceBasis {
+    type Item = Vec<u64>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.next_free < self.pivot_flags.len() {
+            let free = self.next_free;
+            self.next_free += 1;
+            if self.pivot_flags[free] {
+                continue;
+            }
+            return Some(self.vector_for_free_column(free));
+        }
+        None
+    }
+}
+
+impl NullSpaceBasis {
+    /// Return free columns in the same order used by the eager basis.
+    pub(crate) fn free_columns(&self) -> Vec<usize> {
+        self.pivot_flags
+            .iter()
+            .enumerate()
+            .filter_map(|(column, &is_pivot)| (!is_pivot).then_some(column))
+            .collect()
+    }
+
+    /// Materialize the basis vector associated with one free column.
+    pub(crate) fn vector_for_free_column(&self, free: usize) -> Vec<u64> {
+        debug_assert!(free < self.pivot_flags.len());
+        debug_assert!(!self.pivot_flags[free]);
+        let mut vector = vec![0_u64; packed_count(self.pivot_flags.len())];
+        set_bit(&mut vector, free, true);
+        for (row, &pivot) in self.echelon.pivots.iter().enumerate().rev() {
+            let value = parity_and(&self.echelon.rows[row], &vector);
+            set_bit(&mut vector, pivot, value);
+        }
+        vector
+    }
+}
+
+/// Return a deterministic lazy null-space basis and the row rank.
+pub(crate) fn null_space_basis(
+    rows: &[Vec<u64>],
+    variable_count: usize,
+) -> (NullSpaceBasis, usize) {
     let echelon = echelon(rows.to_vec(), variable_count);
     let rank = echelon.pivots.len();
     let mut pivot_flags = vec![false; variable_count];
     for &pivot in &echelon.pivots {
         pivot_flags[pivot] = true;
     }
-
-    let mut result = Vec::with_capacity(variable_count - rank);
-    for (free, &is_pivot) in pivot_flags.iter().enumerate() {
-        if is_pivot {
-            continue;
-        }
-        let mut vector = vec![0_u64; packed_count(variable_count)];
-        set_bit(&mut vector, free, true);
-        for (row, &pivot) in echelon.pivots.iter().enumerate().rev() {
-            let value = parity_and(&echelon.rows[row], &vector);
-            set_bit(&mut vector, pivot, value);
-        }
-        result.push(vector);
-    }
-    (result, rank)
+    (
+        NullSpaceBasis {
+            echelon,
+            pivot_flags,
+            next_free: 0,
+        },
+        rank,
+    )
 }
 
 pub(crate) fn rank(rows: &[Vec<u64>], variable_count: usize) -> usize {
@@ -143,5 +196,26 @@ impl RrefBasis {
         self.pivots.insert(insertion, pivot);
         self.rows.insert(insertion, residual);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{null_space, null_space_basis, parity_and};
+
+    #[test]
+    fn lazy_null_space_matches_eager_numeric_basis() {
+        let rows = vec![vec![0b0011_u64], vec![0b0110_u64]];
+        let (eager, eager_rank) = null_space(&rows, 4);
+        let (lazy, lazy_rank) = null_space_basis(&rows, 4);
+        let materialized = lazy.collect::<Vec<_>>();
+
+        assert_eq!(eager_rank, 2);
+        assert_eq!(lazy_rank, eager_rank);
+        assert_eq!(materialized, vec![vec![0b0111_u64], vec![0b1000_u64]]);
+        assert_eq!(materialized, eager);
+        assert!(materialized
+            .iter()
+            .all(|vector| { rows.iter().all(|row| !parity_and(row, vector)) }));
     }
 }

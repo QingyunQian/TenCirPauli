@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 
 use crate::error::PauliError;
-use crate::gf2::{get_bit, is_zero, null_space, packed_count, set_bit};
+use crate::gf2::{get_bit, is_zero, null_space, null_space_basis, packed_count, set_bit};
 use crate::gf2::{xor_assign, RrefBasis};
 use crate::word::{packed_product_phase_exponent, packed_word_count, PauliWord};
 
@@ -300,7 +300,6 @@ impl StabilizerCode {
                 sign: signs[index],
             });
         }
-        let mut pivots = Vec::new();
         let mut rank = 0;
         for column in 0..variable_count {
             let Some(pivot) = (rank..rows.len()).find(|&row| get_bit(&rows[row].bits, column))
@@ -322,7 +321,6 @@ impl StabilizerCode {
                     )?;
                 }
             }
-            pivots.push(column);
             rank += 1;
             if rank == rows.len() {
                 break;
@@ -368,7 +366,7 @@ impl StabilizerCode {
         )?;
         enforce_limit(retained_estimate.bytes, max_bytes)?;
         let (logical_x_words, logical_z_words) =
-            build_logical_basis(&canonical_bits, &pivots, nqubits, rank)?;
+            build_logical_basis(&canonical_bits, nqubits, rank)?;
 
         Ok(Self {
             nqubits,
@@ -433,21 +431,6 @@ impl StabilizerCode {
         }
         validate_binary_values(x_bits)?;
         validate_binary_values(z_bits)?;
-        for x_row in 0..x_rows {
-            for z_row in 0..z_rows {
-                let mut parity = false;
-                for qubit in 0..nqubits {
-                    parity ^= x_bits[x_row * nqubits + qubit] != 0
-                        && z_bits[z_row * nqubits + qubit] != 0;
-                }
-                if parity {
-                    return Err(PauliError::NoncommutingStabilizers {
-                        left: x_row,
-                        right: x_rows + z_row,
-                    });
-                }
-            }
-        }
 
         let word_count = packed_word_count(nqubits);
         let total_rows = x_rows.checked_add(z_rows).ok_or(PauliError::Overflow {
@@ -482,6 +465,7 @@ impl StabilizerCode {
         let mut signs = Vec::with_capacity(total_rows);
         signs.extend_from_slice(x_signs);
         signs.extend_from_slice(z_signs);
+        validate_css_commutation(&packed_x, &packed_z, x_rows, z_rows, word_count)?;
         Self::from_packed_inner(nqubits, &packed_x, &packed_z, &signs, max_bytes, false)
     }
 
@@ -1180,7 +1164,6 @@ pub fn pack_code_batch(
 
 fn build_logical_basis(
     canonical_bits: &[Vec<u64>],
-    canonical_pivots: &[usize],
     nqubits: usize,
     rank: usize,
 ) -> Result<LogicalWordPair, PauliError> {
@@ -1191,7 +1174,7 @@ fn build_logical_basis(
         .iter()
         .map(|row| symplectic_constraint(row, nqubits))
         .collect::<Vec<_>>();
-    let (normalizer_basis, constraint_rank) = null_space(&constraints, variable_count);
+    let (normalizer_basis, constraint_rank) = null_space_basis(&constraints, variable_count);
     if constraint_rank != rank {
         return Err(PauliError::InvalidStabilizer {
             context: "normalizer constraints have an inconsistent rank",
@@ -1205,12 +1188,36 @@ fn build_logical_basis(
         return Ok((Vec::new(), Vec::new()));
     }
 
-    let mut quotient_span =
-        RrefBasis::from_reduced_rows(canonical_bits.to_vec(), canonical_pivots.to_vec());
+    let free_columns = normalizer_basis.free_columns();
+    let mut projected_stabilizers = Vec::with_capacity(canonical_bits.len());
+    for row in canonical_bits {
+        let mut projected = vec![0_u64; packed_count(free_columns.len())];
+        for (free_index, &column) in free_columns.iter().enumerate() {
+            if get_bit(row, column) {
+                set_bit(&mut projected, free_index, true);
+            }
+        }
+        projected_stabilizers.push(projected);
+    }
+    let (dual_basis, projected_rank) = null_space(&projected_stabilizers, free_columns.len());
+    if projected_rank != rank || dual_basis.len() != target {
+        return Err(PauliError::InvalidStabilizer {
+            context: "stabilizer projection has an inconsistent rank",
+        });
+    }
+
+    let mut dual_span = RrefBasis::from_reduced_rows(Vec::new(), Vec::new());
+    let dual_word_count = packed_count(dual_basis.len());
     let mut quotient = Vec::with_capacity(target);
-    for vector in normalizer_basis {
-        if quotient_span.insert(&vector) {
-            quotient.push(vector);
+    for (free_index, &free_column) in free_columns.iter().enumerate() {
+        let mut coordinate = vec![0_u64; dual_word_count];
+        for (dual_index, row) in dual_basis.iter().enumerate() {
+            if get_bit(row, free_index) {
+                set_bit(&mut coordinate, dual_index, true);
+            }
+        }
+        if dual_span.insert(&coordinate) {
+            quotient.push(normalizer_basis.vector_for_free_column(free_column));
             if quotient.len() == target {
                 break;
             }
@@ -1404,6 +1411,35 @@ fn symplectic_words(left_x: &[u64], left_z: &[u64], right_x: &[u64], right_z: &[
     )
 }
 
+fn validate_css_commutation(
+    packed_x: &[u64],
+    packed_z: &[u64],
+    x_rows: usize,
+    z_rows: usize,
+    word_count: usize,
+) -> Result<(), PauliError> {
+    for x_row in 0..x_rows {
+        let x_words = &packed_x[x_row * word_count..(x_row + 1) * word_count];
+        for z_row in 0..z_rows {
+            let check_row = x_rows + z_row;
+            let z_words = &packed_z[check_row * word_count..(check_row + 1) * word_count];
+            let anticommutes = x_words
+                .iter()
+                .zip(z_words)
+                .fold(false, |parity, (&x_word, &z_word)| {
+                    parity ^ ((x_word & z_word).count_ones() & 1 != 0)
+                });
+            if anticommutes {
+                return Err(PauliError::NoncommutingStabilizers {
+                    left: x_row,
+                    right: check_row,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 fn commuting_product_sign(left: &[u64], right: &[u64], nqubits: usize) -> Result<i8, PauliError> {
     let word_count = packed_word_count(nqubits);
     let mask = tail_mask(nqubits).unwrap_or(u64::MAX);
@@ -1493,6 +1529,7 @@ fn enforce_limit(requested: u128, limit: u128) -> Result<(), PauliError> {
 #[cfg(test)]
 mod tests {
     use super::{packed_product_phase_exponent, StabilizerCode, StabilizerErrorKind};
+    use crate::error::PauliError;
     use crate::word::PauliWord;
 
     fn repetition() -> StabilizerCode {
@@ -1513,6 +1550,62 @@ mod tests {
         assert_eq!(result.kind, StabilizerErrorKind::Logical);
         assert_eq!(result.logical_x, Some(vec![1]));
         assert_eq!(result.logical_z, Some(vec![0]));
+    }
+
+    #[test]
+    fn css_constructor_matches_equivalent_binary_constructor() {
+        let h = [
+            1_u8, 0, 0, 1, 0, 1, 1, // Hamming check row 0
+            0, 1, 0, 1, 1, 0, 1, // Hamming check row 1
+            0, 0, 1, 0, 1, 1, 1, // Hamming check row 2
+        ];
+        let zeros = vec![0_u8; h.len()];
+        let css = StabilizerCode::from_css_binary(7, &h, &h, &[1, 1, 1], &[1, 1, 1], u128::MAX)
+            .expect("CSS constructor");
+
+        let mut x_bits = h.to_vec();
+        x_bits.extend_from_slice(&zeros);
+        let mut z_bits = zeros;
+        z_bits.extend_from_slice(&h);
+        let binary = StabilizerCode::from_binary(7, &x_bits, &z_bits, &[1; 6], u128::MAX)
+            .expect("equivalent binary constructor");
+
+        assert_eq!(css.rank(), binary.rank());
+        assert_eq!(css.nlogical(), binary.nlogical());
+        assert_eq!(css.nrelations(), binary.nrelations());
+        assert_eq!(css.check_x_words(), binary.check_x_words());
+        assert_eq!(css.check_z_words(), binary.check_z_words());
+        assert_eq!(css.check_signs(), binary.check_signs());
+        assert_eq!(css.check_weights(), binary.check_weights());
+        assert_eq!(css.qubit_degrees(), binary.qubit_degrees());
+        assert_eq!(css.relation_words(), binary.relation_words());
+        assert_eq!(
+            css.logical_operator_words(),
+            binary.logical_operator_words()
+        );
+
+        let error = super::pack_code_batch(7, &[1, 0, 0, 0, 0, 0, 0], 1).expect("pack error");
+        assert_eq!(
+            css.syndrome_one(&error.0, &error.1),
+            Ok(vec![0, 0, 0, 1, 0, 0])
+        );
+        assert_eq!(
+            css.syndrome_one(&error.0, &error.1),
+            binary.syndrome_one(&error.0, &error.1)
+        );
+        assert_eq!(
+            css.classify_one(&error.0, &error.1),
+            binary.classify_one(&error.0, &error.1)
+        );
+    }
+
+    #[test]
+    fn css_constructor_still_rejects_noncommuting_checks() {
+        let result = StabilizerCode::from_css_binary(1, &[1], &[1], &[1], &[1], u128::MAX);
+        assert!(matches!(
+            result,
+            Err(PauliError::NoncommutingStabilizers { left: 0, right: 1 })
+        ));
     }
 
     #[test]

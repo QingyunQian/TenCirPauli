@@ -67,6 +67,108 @@ fn general_finite_rate_code(nqubits: usize) -> StabilizerCode {
         .expect("general finite-rate code")
 }
 
+struct HgpCssInput {
+    nqubits: usize,
+    x_bits: Vec<u8>,
+    z_bits: Vec<u8>,
+    x_signs: Vec<i8>,
+    z_signs: Vec<i8>,
+}
+
+struct HgpSymplecticInput {
+    nqubits: usize,
+    x_bits: Vec<u8>,
+    z_bits: Vec<u8>,
+    signs: Vec<i8>,
+}
+
+fn hgp_repetition_input(length: usize) -> HgpCssInput {
+    let checks_per_sector = length * (length - 1);
+    let nqubits = length * length + (length - 1) * (length - 1);
+    let mut x_bits = vec![0_u8; checks_per_sector * nqubits];
+    let mut z_bits = vec![0_u8; checks_per_sector * nqubits];
+    let square = length * length;
+    let m_square = (length - 1) * (length - 1);
+
+    // H_X = [H tensor I, I tensor H^T], with rows indexed by (a, b).
+    for a in 0..length - 1 {
+        for b in 0..length {
+            let row = a * length + b;
+            for c in [a, a + 1] {
+                x_bits[row * nqubits + c * length + b] = 1;
+            }
+            for d in 0..length - 1 {
+                if b == d || b == d + 1 {
+                    x_bits[row * nqubits + square + a * (length - 1) + d] = 1;
+                }
+            }
+        }
+    }
+
+    // H_Z = [I tensor H, H^T tensor I], with rows indexed by (b, a).
+    for b in 0..length {
+        for a in 0..length - 1 {
+            let row = b * (length - 1) + a;
+            for c in [a, a + 1] {
+                z_bits[row * nqubits + b * length + c] = 1;
+            }
+            for d in 0..length - 1 {
+                if b == d || b == d + 1 {
+                    z_bits[row * nqubits + square + d * (length - 1) + a] = 1;
+                }
+            }
+        }
+    }
+
+    debug_assert_eq!(square + m_square, nqubits);
+    HgpCssInput {
+        nqubits,
+        x_bits,
+        z_bits,
+        x_signs: vec![1_i8; checks_per_sector],
+        z_signs: vec![1_i8; checks_per_sector],
+    }
+}
+
+fn hgp_repetition_symplectic_input(input: &HgpCssInput) -> HgpSymplecticInput {
+    let x_rows = input.x_signs.len();
+    let z_rows = input.z_signs.len();
+    let row_width = input.nqubits;
+    let mut x_bits = vec![0_u8; (x_rows + z_rows) * row_width];
+    let mut z_bits = vec![0_u8; (x_rows + z_rows) * row_width];
+    x_bits[..x_rows * row_width].copy_from_slice(&input.x_bits);
+    z_bits[z_rows * row_width..].copy_from_slice(&input.z_bits);
+    HgpSymplecticInput {
+        nqubits: input.nqubits,
+        x_bits,
+        z_bits,
+        signs: vec![1_i8; x_rows + z_rows],
+    }
+}
+
+fn hgp_repetition_code(input: &HgpCssInput) -> StabilizerCode {
+    StabilizerCode::from_css_binary(
+        input.nqubits,
+        &input.x_bits,
+        &input.z_bits,
+        &input.x_signs,
+        &input.z_signs,
+        u128::MAX,
+    )
+    .expect("HGP repetition CSS code")
+}
+
+fn hgp_repetition_general_code(input: &HgpSymplecticInput) -> StabilizerCode {
+    StabilizerCode::from_binary(
+        input.nqubits,
+        &input.x_bits,
+        &input.z_bits,
+        &input.signs,
+        u128::MAX,
+    )
+    .expect("HGP repetition symplectic code")
+}
+
 fn pack_codes(codes: Vec<u8>, nqubits: usize, batch: usize) -> (Vec<u64>, Vec<u64>) {
     pack_code_batch(nqubits, &codes, batch).expect("code batch")
 }
@@ -197,6 +299,26 @@ fn benchmark_stabilizer_code(criterion: &mut Criterion) {
             BenchmarkId::new(format!("{family}/construction"), nqubits),
             &nqubits,
             |bencher, &n| bencher.iter(|| black_box(builder(n))),
+        );
+    }
+
+    // These are the HGP-like workloads used by the QLDPC comparison. The
+    // general-symplectic path is diagnostic only; both measurements include
+    // binary-to-packed conversion, validation, elimination, and logical-basis
+    // construction.
+    for length in [8_usize, 16, 24] {
+        let css_input = hgp_repetition_input(length);
+        let symplectic_input = hgp_repetition_symplectic_input(&css_input);
+        let nqubits = css_input.nqubits;
+        group.bench_with_input(
+            BenchmarkId::new("hgp_repetition/construction_css", nqubits),
+            &css_input,
+            |bencher, input| bencher.iter(|| black_box(hgp_repetition_code(input))),
+        );
+        group.bench_with_input(
+            BenchmarkId::new("hgp_repetition/construction_general_symplectic", nqubits),
+            &symplectic_input,
+            |bencher, input| bencher.iter(|| black_box(hgp_repetition_general_code(input))),
         );
     }
 
