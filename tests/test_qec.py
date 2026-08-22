@@ -496,6 +496,14 @@ def test_resource_limits_cover_logical_storage_and_packed_batch_outputs() -> Non
             max_bytes=0,
         )
 
+    # Both packed check arrays are retained. A budget between the old
+    # one-array estimate and the corrected two-array estimate must reject.
+    full_rank_checks = np.eye(64, dtype=np.uint8)
+    with pytest.raises(MemoryError, match="memory limit"):
+        StabilizerCode.from_css(
+            np.empty((0, 64), dtype=np.uint8), full_rank_checks, max_bytes=1800
+        )
+
     z_checks = np.zeros((128, 64), dtype=np.uint8)
     z_checks[:64] = np.eye(64, dtype=np.uint8)
     z_checks[64:] = z_checks[:64]

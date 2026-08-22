@@ -37,6 +37,8 @@ Phase 13 classical shadows 已实现 owner-approved specification 的 public/cor
 
 The Phase 14 implementation is present in the Rust core, PyO3 private module, and public Python facade. The two-round review remediation matrix, source-tree release benchmark comparison, and complete local quality gate are complete. The owner-selected eager logical-basis design is accepted and the eager-versus-lazy A/B is waived for the intended workload. The source-tree native path is rebuilt with `maturin develop --release --locked` before every Rust-backed test or benchmark run.
 
+A follow-up guard review corrected the retained-input estimate to count both long-lived packed check arrays (`check_x_words` and `check_z_words`). The focused boundary test confirms that a budget accepted by the former one-array estimate is now rejected; this tightens only the advisory guard and does not reopen acceptance.
+
 The shared GF(2) migration initially exposed a real Z2 regression: full RREF in the shared null-space path made Rust `symmetry/z2/analysis_8q` approximately 18–30% slower than the same-machine baseline in two comparisons. The implementation now uses forward echelon elimination for null-space/rank while retaining full RREF for span-basis construction; two dedicated release repetitions measured approximately 0.976–0.988x baseline for Z2 analysis and 0.980–0.986x for taper transformation. The broader Python comparison showed changing low-round Hamiltonian and FFI medians rather than a stable Phase 14 regression; three higher-round targeted repetitions varied materially within the same current tree, and those paths do not call the migrated GF(2) primitive.
 
 历史 benchmark 条目中保留的 4 GiB 仅表示当时的记录条件；当前实现和 public API 的 `DEFAULT_MAX_BYTES` 已统一为 16 GiB。

@@ -93,7 +93,11 @@ impl ConstructionEstimate {
         check_count: usize,
         word_count: usize,
     ) -> Result<Self, PauliError> {
-        let packed_check_words = checked_product(check_count, word_count, "estimating checks")?;
+        let packed_check_words = checked_product(
+            checked_product(check_count, word_count, "estimating one packed check array")?,
+            2,
+            "estimating packed X/Z check arrays",
+        )?;
         let bytes = checked_sum(&[
             checked_bytes(
                 packed_check_words,

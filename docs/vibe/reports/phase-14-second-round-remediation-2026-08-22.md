@@ -43,3 +43,7 @@ Singular logical coordinates and error-set logical coordinates now use flat `uin
 - Rust formatting, targeted Ruff/Black checks, and `git diff --check` passed during this remediation slice.
 
 The benchmark result files remain ignored under `.benchmarks/`; the repository retains the workload definitions, runner, and this evidence report rather than machine-specific measurements. The compact record supersedes the earlier exploratory expanded matrix as the QEC development and acceptance protocol.
+
+## Follow-up review — paired retained check arrays
+
+A post-closure review identified that the retained-input estimate counted `check_x_words` and `check_z_words` as one packed check array. The advisory estimate now explicitly multiplies that term by two. A 64-qubit full-rank CSS boundary test uses a budget of 1,800 bytes: the former estimate would have allowed it, while the corrected estimate rejects it. This is a narrow guard-tightening fix; it does not change numerical semantics, default behavior, or the phase acceptance status, and transient peak memory remains intentionally outside the exact guarantee.
