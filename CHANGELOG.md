@@ -76,7 +76,7 @@ This release intentionally changes the public circuit boundary while the project
 
 - CPU-native MVP plans default to lazy storage, while explicit eager storage and `apply_into()` provide reusable execution with best-effort memory guards.
 - Structured fermion, boson, qudit, hybrid, Majorana, mapping, additive-charge, and restricted-sector workflows now follow the same native-backed operator and finite-target contracts.
-- Required runtime dependency and supported integration boundary remain `tensorcircuit-ng>=1.8,<2`; the public package still targets CPython 3.9+ and the existing wheel platforms.
+- Required runtime dependency and supported integration boundary remain `tensorcircuit-ng>=1.8,<2`; the public package now targets CPython 3.10+ and the existing wheel platforms.
 
 ## 0.2.0 - 2026-08-04
 

@@ -7,7 +7,7 @@ name = "tencirpauli"
 version = "0.5.0"
 description = "Rust-native Pauli algebra, Hamiltonian, symmetry, classical-shadow, and quantum-circuit primitives for TensorCircuit"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "refraction-ray", email = "znfesnpbh@gmail.com" }]
 classifiers = [
@@ -50,11 +50,11 @@ markers = ["performance_large: release-mode workloads that allocate large statev
 
 [tool.black]
 line-length = 88
-target-version = ["py39"]
+target-version = ["py310"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py310"
 src = ["python"]
 exclude = [".benchmarks", ".conda", "dist", "target"]
 
@@ -65,7 +65,7 @@ select = ["E4", "E7", "E9", "F", "I", "B", "RUF"]
 lines-after-imports = 2
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 strict = true
 files = ["python/tencirpauli"]
 warn_unreachable = true

@@ -20,9 +20,8 @@ SyndromeOrder = Literal["input_checks"]
 PauliBatchInput = Union[Sequence[PauliWord], np.ndarray[Any, Any]]
 
 
-# The project targets Python 3.9 at type-check time; its stdlib stubs do not
-# expose the Python 3.10 ``slots`` keyword even though the runtime does.
-@dataclass(frozen=True, slots=True)  # type: ignore[call-overload]
+# The public result records use slots to avoid per-instance dictionaries.
+@dataclass(frozen=True, slots=True)
 class StabilizerCheckArrays:
     """Owned packed signed checks in the caller's original order."""
 
@@ -33,7 +32,7 @@ class StabilizerCheckArrays:
     qubit_order: QubitOrder
 
 
-@dataclass(frozen=True, slots=True)  # type: ignore[call-overload]
+@dataclass(frozen=True, slots=True)
 class LogicalOperatorArrays:
     """Owned packed physical representatives of logical X/Z operators."""
 
@@ -45,7 +44,7 @@ class LogicalOperatorArrays:
     qubit_order: QubitOrder
 
 
-@dataclass(frozen=True, slots=True)  # type: ignore[call-overload]
+@dataclass(frozen=True, slots=True)
 class ErrorClassification:
     """Classification of one phase-free physical Pauli error."""
 
@@ -55,7 +54,7 @@ class ErrorClassification:
     logical_z: Optional[Tuple[int, ...]]
 
 
-@dataclass(frozen=True, slots=True)  # type: ignore[call-overload]
+@dataclass(frozen=True, slots=True)
 class ErrorClassificationBatch:
     """Flat deterministic classification arrays for a batch of errors."""
 
@@ -67,7 +66,7 @@ class ErrorClassificationBatch:
     syndromes_packed: bool
 
 
-@dataclass(frozen=True, slots=True)  # type: ignore[call-overload]
+@dataclass(frozen=True, slots=True)
 class ErrorSetAnalysis:
     """Correctability result for a supplied finite error set."""
 
@@ -77,7 +76,7 @@ class ErrorSetAnalysis:
     logical_z: Optional[Tuple[int, ...]]
 
 
-@dataclass(frozen=True, slots=True)  # type: ignore[call-overload]
+@dataclass(frozen=True, slots=True)
 class CorrectionAnalysis:
     """Classification of residual correction-times-error Paulis."""
 
@@ -617,8 +616,8 @@ def _call_error_set(
 ) -> Tuple[
     bool,
     Optional[Tuple[int, int]],
-    Optional[Sequence[int]],
-    Optional[Sequence[int]],
+    Optional[Iterable[int]],
+    Optional[Iterable[int]],
 ]:
     if batch.kind == "codes":
         assert batch.codes is not None
@@ -674,11 +673,11 @@ def _call_corrections(
     return tuple(cast(np.ndarray[Any, Any], value) for value in result)
 
 
-def _optional_bits(value: Optional[Sequence[int]]) -> Optional[Tuple[int, ...]]:
+def _optional_bits(value: Optional[Iterable[int]]) -> Optional[Tuple[int, ...]]:
     return None if value is None else tuple(int(bit) for bit in value)
 
 
-def _readonly_copy(value: object, dtype: object) -> np.ndarray[Any, Any]:
+def _readonly_copy(value: object, dtype: Any) -> np.ndarray[Any, Any]:
     array = np.array(value, dtype=dtype, order="C", copy=True)
     array.flags.writeable = False
     return cast(np.ndarray[Any, Any], array)

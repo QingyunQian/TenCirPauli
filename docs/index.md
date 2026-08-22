@@ -8,7 +8,7 @@ hide:
   <div class="tp-hero-copy">
     <p class="tp-kicker">RUST-NATIVE · PYTHON-FIRST · TENSORCIRCUIT</p>
     <h1>Pauli structure,<br><em>made practical.</em></h1>
-    <p class="tp-hero-lede">TenCirPauli brings fast Pauli algebra, Hamiltonian plans, symmetry tools, native observable propagation, and classical-shadow estimators to the TensorCircuit ecosystem.</p>
+    <p class="tp-hero-lede">TenCirPauli turns structured quantum objects into practical computation and evidence: Pauli algebra, Hamiltonians, symmetry and code analysis, observable execution, and classical-shadow estimation for the TensorCircuit ecosystem.</p>
     <div class="tp-actions">
       <a class="tp-button tp-button-primary" href="quickstart/">Start with Python</a>
       <a class="tp-button tp-button-secondary" href="api/">Browse the API</a>
@@ -20,42 +20,42 @@ hide:
   </div>
 </div>
 
-<div class="tp-note"><strong>One package, two useful paths.</strong> Use native Rust execution for compact CPU workloads, or compile a stable plan for NumPy, TensorCircuit, and JAX.</div>
+<div class="tp-note"><strong>One package, one workflow.</strong> Describe the structure, organize it for the task, compute in the right runtime, then inspect the result as a value, estimate, or diagnosis.</div>
 
-## A small map of the library
+## The library in four verbs
 
 <div class="tp-flow" markdown>
-  <div class="tp-flow-item"><span>01</span><strong>Represent</strong><small>Pauli words, operators, and structured algebra.</small></div>
+  <div class="tp-flow-item"><span>01</span><strong>Describe</strong><small>Operators, circuits, Hamiltonians, and code spaces.</small></div>
   <div class="tp-flow-arrow">→</div>
-  <div class="tp-flow-item"><span>02</span><strong>Compile</strong><small>Dense, sparse, matrix-free, and backend plans.</small></div>
+  <div class="tp-flow-item"><span>02</span><strong>Organize</strong><small>Canonicalize, map, group, reduce, and choose a plan.</small></div>
   <div class="tp-flow-arrow">→</div>
-  <div class="tp-flow-item"><span>03</span><strong>Analyze</strong><small>Grouping, shadows, symmetries, sectors, and mappings.</small></div>
+  <div class="tp-flow-item"><span>03</span><strong>Compute</strong><small>Build, apply, propagate, differentiate, or sample.</small></div>
   <div class="tp-flow-arrow">→</div>
-  <div class="tp-flow-item"><span>04</span><strong>Execute</strong><small>Propagation, shadow sampling, gradients, and TensorCircuit interop.</small></div>
+  <div class="tp-flow-item"><span>04</span><strong>Inspect</strong><small>Read out values, estimates, syndromes, and logical errors.</small></div>
 </div>
 
 ## What it covers
 
 <div class="tp-card-grid" markdown>
   <div class="tp-card">
-    <p class="tp-card-index">01 / ALGEBRA</p>
-    <h3>Canonical Pauli operators</h3>
-    <p>Products, phases, commutation, deterministic aggregation, and direct Hamiltonian construction.</p>
+    <p class="tp-card-index">01 / DESCRIBE</p>
+    <h3>Build quantum structure</h3>
+    <p>Pauli and structured operators, Hamiltonians, circuits, stabilizer codes, and measurement states.</p>
   </div>
   <div class="tp-card">
-    <p class="tp-card-index">02 / PLANS</p>
-    <h3>Choose the target</h3>
-    <p>Compile to dense, COO, CSR, native matrix-vector products, or a TensorCircuit backend plan.</p>
+    <p class="tp-card-index">02 / ORGANIZE</p>
+    <h3>Exploit the structure</h3>
+    <p>Canonicalize, map, group, taper, restrict to sectors, and prepare execution or measurement plans.</p>
   </div>
   <div class="tp-card">
-    <p class="tp-card-index">03 / STRUCTURE</p>
-    <h3>Measure and reduce</h3>
-    <p>Group measurements, estimate with classical shadows, analyze Z₂ and U(1) structure, and work in restricted sectors.</p>
+    <p class="tp-card-index">03 / COMPUTE</p>
+    <h3>Run the workload</h3>
+    <p>Use dense, sparse, matrix-free, native, TensorCircuit, or JAX execution with values and gradients.</p>
   </div>
   <div class="tp-card">
-    <p class="tp-card-index">04 / CIRCUITS</p>
-    <h3>Propagate observables</h3>
-    <p>Run deterministic or stochastic Pauli propagation, native shadow sampling, and gradients through familiar Python facades.</p>
+    <p class="tp-card-index">04 / INSPECT</p>
+    <h3>Turn computation into evidence</h3>
+    <p>Estimate observables with classical shadows, reconstruct grouped measurements, and diagnose syndromes and logical errors.</p>
   </div>
 </div>
 

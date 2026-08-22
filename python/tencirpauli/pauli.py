@@ -444,7 +444,10 @@ class PauliOperator:
             ) + 1j * np.asarray(coefficients_im, dtype=np.float64)
         else:
             code_array, coefficient_array = array_input
-        return cls.canonicalize_code_arrays(code_array, coefficient_array)
+        return cls.canonicalize_code_arrays(
+            cast(Sequence[Sequence[int]], code_array),
+            cast(Sequence[complex], coefficient_array),
+        )
 
     @classmethod
     def canonicalize_code_arrays(

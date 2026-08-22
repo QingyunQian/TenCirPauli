@@ -1,47 +1,54 @@
 # Concepts
 
-TenCirPauli is a Python-first interface over a compact Rust implementation for structured Pauli workloads. The useful distinction is not between “Python features” and “Rust features”; it is between the public objects you compose and the execution plan chosen for the workload.
+TenCirPauli is a Python-first interface over a compact Rust implementation for structured quantum workloads. Its main idea is simple: describe a quantum structure, organize it for the task, compute in the right runtime, and inspect the result as a value, an estimate, or a diagnosis.
 
-## The four verbs
+## One workflow: Describe → Organize → Compute → Inspect
 
-### Represent
+The four verbs are a memory aid, not four separate products. A Hamiltonian may use all four stages; a classical-shadow workflow may begin with a supplied state and go straight to sampling and estimation; a stabilizer-code workflow may focus on organizing checks and inspecting syndromes. The package keeps the same structure-first viewpoint across these routes.
 
-`PauliWord` and `PauliOperator` provide canonical, deterministic objects for Pauli algebra. Duplicate terms are combined, phases are explicit, and the same representation can feed Hamiltonian construction, grouping, symmetry analysis, and propagation.
+### 1. Describe the structure
 
-Structured operators extend the same idea to fermions, bosons, qudits, Majorana words, and hybrid spaces when the workflow needs more than qubit Pauli strings.
+Use `PauliWord` and `PauliOperator` for canonical qubit-Pauli objects and Hamiltonians. Products, phases, duplicate terms, and ordering are explicit and deterministic, so the same operator can feed matrix construction, measurement grouping, symmetry reduction, or observable execution.
 
-### Compile
+Structured operators extend the model to fermions, bosons, qudits, Majorana words, and hybrid spaces. Circuit facades describe numerical gate workloads, while `StabilizerCode` describes a qubit code space and its checks. `StabilizerState` is a pure stabilizer-state representation; it is distinct from a code-space analysis.
 
-An operator can be compiled for the result you actually need:
+### 2. Organize the structure for the task
 
-| Target | Use it when |
-| --- | --- |
-| Dense | The system is small and you want a direct matrix. |
-| COO / CSR | A sparse matrix is the interface to the next tool. |
-| Native MVP | The system is too large for a matrix and should stay on CPU. |
-| Backend plan | NumPy, JAX, TensorCircuit, JIT, or backend autodiff must remain active. |
+This is where TenCirPauli turns a mathematical object into a useful computational or measurement problem. It can canonicalize and aggregate operators, map fermions to qubits, group terms for measurements, find and taper Z₂ symmetries, restrict Hamiltonians to U(1) or additive-charge sectors, and build packed stabilizer-check, logical-operator, and syndrome structures.
 
-The compilation boundary is coarse-grained: Python validates friendly inputs, then one batched native call builds the structure or plan.
+Organization also chooses the shape of the computation. Small systems can use dense matrices, sparse consumers can use COO or CSR, large CPU workloads can use native matrix-vector products, and TensorCircuit-NG or JAX workflows can keep numerical execution in a backend-owned plan.
 
-### Analyze
+The contracts remain explicit. A qubit-wise commuting group carries local measurement bases; a general commuting group is not silently presented as measurement-ready. A restricted sector checks for leakage instead of assuming conservation, and stabilizer-code analysis reports syndrome and logical structure instead of pretending to be a full decoder.
 
-The analysis layer turns structure into a useful execution choice. It includes qubit-wise and general commuting groups, Z₂ tapering, explicit U(1) sectors, additive charge sectors, and fermion-to-qubit mappings.
+### 3. Compute in the right runtime
 
-These tools are deliberately explicit about their contracts. A qubit-wise commuting group exposes local measurement bases; a general commuting group is not silently presented as the same thing. A restricted sector validates leakage instead of assuming conservation.
+The operator layer supports dense, sparse, native matrix-free, TensorCircuit, and JAX-oriented execution. The circuit facades cover fixed-particle-number circuits, deterministic Pauli propagation, and stochastic Pauli-path estimation. They share a Python-level style while keeping their native numerical contracts separate.
 
-### Execute
+Native CPU plans keep discrete, scalable work in compact Rust data and release the GIL around coarse-grained computation. Backend plans keep NumPy, TensorCircuit-NG, JAX, JIT, or backend autodiff in control of numerical execution. Circuit terminals expose concrete-angle `expectation(observable)`, `value_and_grad(observable)`, and `expectation_jax(observable)` paths; public symbolic circuit parameters and circuit-plan compilation are not part of this interface.
 
-The circuit facades cover three different numerical contracts: fixed-particle-number native circuits, deterministic Pauli propagation, and stochastic Pauli-path estimation. They share a Python-level shape while keeping their native executors separate. Classical-shadow snapshots form a separate randomized-measurement path for state sampling and observable post-processing.
+### 4. Inspect the result
 
-These facades store concrete gate angles and expose `expectation(observable)`, `value_and_grad(observable)`, and `expectation_jax(observable)`. The direct gradient has one entry per supported gate occurrence. There is no public circuit compilation or symbolic parameter object; compile targets remain an operator API.
+The output is not always one deterministic matrix element. Measurement grouping reconstructs Pauli terms from basis-aware bitstring data. Classical shadows turn randomized snapshots into estimates of Pauli expectations, Hamiltonian energy, reduced density matrices, Rényi-2 quantities, variance, and fidelity.
 
-### Estimate with classical shadows
+`Snapshots.sample()` accepts either a complete normalized statevector or an immutable `StabilizerState`. `protocol="pauli"` samples independent local X/Y/Z bases, while `protocol="clifford"` samples packed global-Clifford frames. The same snapshot handle can serve many estimators, and external measurements can enter through `from_pauli_measurements()` or `from_clifford_measurements()`.
 
-`Snapshots.sample()` accepts either a complete normalized statevector or an immutable `StabilizerState` and records randomized settings plus outcomes in a native-owned immutable handle. `protocol="pauli"` samples independent local X/Y/Z bases; `protocol="clifford"` samples packed global-Clifford frames. `nsettings` is the number of independent randomized settings, while `repeats` keeps multiple outcomes under each setting; for linear estimators, `repeats=1` is normally the useful default.
+Error-correction workflows use the same inspection idea in a different form. A `StabilizerCode` can return syndromes, classify errors as visible, stabilizer, or logical, expose deterministic logical representatives, and verify correction-times-error behavior. This is static code analysis and error diagnosis; it is not a fault-tolerant decoder, a noise simulator, or an active correction runtime.
 
-Use `expectation()` or `estimate_many()` for Hermitian Pauli observables and `energy()` for a Hermitian `PauliOperator`. The same snapshots can produce an `rdm()`, a Rényi-2 estimate, an energy variance, or fidelity to either a `StabilizerState` or an arbitrary pure dense target. External experiment data can enter through `from_pauli_measurements()` or `from_clifford_measurements()`, and `to_arrays()` returns owned read-only arrays with explicit `q0_first` ordering.
+## Common routes through the workflow
 
-## Two execution paths
+| Goal | Describe | Organize | Compute or inspect |
+| --- | --- | --- | --- |
+| Build and apply a Hamiltonian | `PauliOperator` | Canonicalize, restrict, or choose a target | Dense, sparse, native MVP, or backend execution |
+| Run a circuit observable | `PropagationCircuit`, `U1Circuit`, or `SPPSCircuit` | Store concrete gates and observable structure | Expectation, value and gradient, or JAX terminal |
+| Estimate from randomized measurements | Statevector or `StabilizerState` | Choose Pauli or Clifford snapshots | Classical-shadow expectation, energy, RDM, or fidelity |
+| Analyze an error-correcting code | `StabilizerCode` | Pack checks, logical representatives, and syndrome structure | Classify errors and verify corrections |
+| Prepare structured chemistry work | Fermion, Majorana, or other structured operators | Map, group, and restrict sectors | Hamiltonian plans or TensorCircuit-NG integration |
+
+The useful question is therefore not “which feature do I use?” Start with the structure you already have, identify the structure that can be exploited, choose the runtime that owns the computation, and then choose the kind of evidence you need from the result.
+
+## Two runtime lanes after organization
+
+Once the structure is ready, choose the runtime lane that matches the next operation. Both lanes use the same public objects and can appear in the same workflow; the difference is who owns the numerical execution.
 
 <div class="tp-path-grid">
   <div class="tp-path tp-path-native">
@@ -60,7 +67,7 @@ Use `expectation()` or `estimate_many()` for Hermitian Pauli observables and `en
 
 ## What it is not
 
-TenCirPauli is not a general-purpose statevector simulator, tensor-network engine, or replacement for TensorCircuit backends. Its dense shadow sampler accepts a supplied statevector for randomized measurement, but does not turn the package into a general state-preparation or circuit-simulation frontend. It prepares and executes the structured Pauli work around those systems, and it fails explicitly when a target would require an unbounded or unsupported expansion.
+TenCirPauli is not a general-purpose statevector simulator, tensor-network engine, fault-tolerant decoder, or replacement for TensorCircuit backends. Its dense shadow sampler accepts a supplied statevector for randomized measurement, but does not turn the package into a general state-preparation or circuit-simulation frontend. It prepares, executes, and inspects the structured Pauli work around those systems, and it fails explicitly when a target would require an unbounded or unsupported expansion.
 
 ## Where to go next
 

@@ -481,10 +481,7 @@ class U1RestrictedOperator:
         dimension, values = self._ensure_eager_for_target(max_bytes, "dense").dense(
             _effective_max_bytes(max_bytes)
         )
-        return cast(
-            np.ndarray[Any, Any],
-            np.asarray(values, dtype=np.complex128).reshape((dimension, dimension)),
-        )
+        return np.asarray(values, dtype=np.complex128).reshape((dimension, dimension))
 
     def coo(self, *, max_bytes: Optional[int] = DEFAULT_MAX_BYTES) -> COOMatrix:
         """Materialize deterministic COO arrays in restricted-space ordering."""

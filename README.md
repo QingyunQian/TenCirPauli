@@ -75,7 +75,7 @@ The [research index](examples/research/README.md) links to reproducible, manual 
 python -m pip install tencirpauli
 ```
 
-Released wheels cover common CPython 3.9+ platforms. Source builds require Rust, Cargo, and maturin; chemistry interop is optional via `python -m pip install 'tencirpauli[chemistry]'`.
+Released wheels cover common CPython 3.10+ platforms. Source builds require Rust, Cargo, and maturin; chemistry interop is optional via `python -m pip install 'tencirpauli[chemistry]'`.
 
 ## Documentation and development
 
