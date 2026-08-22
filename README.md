@@ -19,6 +19,7 @@ TenCirPauli moves Pauli-heavy quantum workflows from Python object graphs into c
 | Pauli algebra and Hamiltonians | `PauliWord`, `PauliOperator`, products, commutators, dense/COO/CSR targets, matrix-free MVP |
 | Measurement planning | `group_commuting(mode="qubit_wise")`, `QWCGroupingResult`, basis-aware bitstring reconstruction |
 | Classical-shadow snapshots | `Snapshots.sample()`, Pauli/global-Clifford protocols, native estimators, RDM, Rényi-2 entropy, and fidelity |
+| Static stabilizer-code analysis | `StabilizerCode`, ordered syndromes, logical representatives, error classification, and decoder-correction verification; distinct from `StabilizerState` |
 | Symmetry reduction | `find_z2_symmetries()`, `taper_z2()`, `restrict_charge()` with `U1Sector` or `ChargeSector` |
 | Native circuit execution | `U1Circuit`, `PropagationCircuit`, `SPPSCircuit`, value/gradient and expectation terminals |
 | Structured quantum operators | `FermionOperator`, `BosonOperator`, `QuditWeylOperator`, `HybridOperator`, `MajoranaOperator` |
@@ -50,6 +51,7 @@ These are representative runs from the linked research studies, not universal ma
 | Build or transform Pauli operators | `PauliOperator.from_terms()` and `PauliWord.from_string()` |
 | Group terms for measurements | `operator.group_commuting()`; use QWC mode for measurement-ready bases |
 | Estimate observables from randomized measurements | `Snapshots.sample()` followed by `expectation()`, `estimate_many()`, or `energy()` |
+| Analyze a static qubit stabilizer code | `StabilizerCode.from_css()` / `from_generators()`; the code space has dimension `2**nlogical`, while `StabilizerState` is a pure-state tableau |
 | Apply a large Hamiltonian without a matrix | `operator.native_mvp_plan()` or `operator.mvp()` |
 | Keep TensorCircuit-NG/JAX active | `operator.backend_mvp_plan()` and `tencirpauli.backend_mvp()` |
 | Reduce a symmetry sector | `operator.find_z2_symmetries()` / `operator.taper_z2()` |

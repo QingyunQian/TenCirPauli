@@ -259,6 +259,34 @@ impl PartialOrd for PauliWord {
     }
 }
 
+/// Return the Hermitian-product phase exponent for packed symplectic rows.
+///
+/// The result is the exponent `e` in `i**e * (left XOR right)` and is reduced
+/// modulo four. Inputs are assumed to have the same packed width and to use
+/// the phase-free `(x, z)` convention owned by `PauliWord`.
+pub(crate) fn packed_product_phase_exponent(
+    left_x: &[u64],
+    left_z: &[u64],
+    right_x: &[u64],
+    right_z: &[u64],
+) -> u8 {
+    debug_assert_eq!(left_x.len(), left_z.len());
+    debug_assert_eq!(left_x.len(), right_x.len());
+    debug_assert_eq!(left_x.len(), right_z.len());
+    let mut exponent = 0_u8;
+    for (((&left_x, &left_z), &right_x), &right_z) in
+        left_x.iter().zip(left_z).zip(right_x).zip(right_z)
+    {
+        let left_y = (left_x & left_z).count_ones() % 4;
+        let right_y = (right_x & right_z).count_ones() % 4;
+        let crossed = 2 * ((left_z & right_x).count_ones() % 2);
+        let result_y = ((left_x ^ right_x) & (left_z ^ right_z)).count_ones() % 4;
+        exponent =
+            (exponent + left_y as u8 + right_y as u8 + crossed as u8 + 4 - result_y as u8) % 4;
+    }
+    exponent
+}
+
 /// Convert a qubit count to a packed word count without integer overflow.
 pub fn packed_word_count(nqubits: usize) -> usize {
     nqubits / 64 + usize::from(nqubits % 64 != 0)

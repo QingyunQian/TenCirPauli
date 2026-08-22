@@ -9,6 +9,7 @@ mod majorana;
 mod mapping;
 mod operator;
 mod propagation;
+mod qec;
 mod shadows;
 mod spps;
 mod structured;
@@ -40,6 +41,10 @@ use operator::{
 use propagation::{
     pauli_gate_tape, pauli_propagation_batch_handles_tape, pauli_propagation_engine_tape,
     NativeGateTape, NativePropagationBatch, NativePropagationEngine,
+};
+use qec::{
+    stabilizer_code_from_css, stabilizer_code_from_packed, stabilizer_code_from_symplectic,
+    NativeStabilizerCodeHandle,
 };
 use shadows::{
     shadows_from_clifford_measurements, shadows_from_pauli_measurements, shadows_sample_stabilizer,
@@ -89,6 +94,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativePropagationEngine>()?;
     module.add_class::<NativeGateTape>()?;
     module.add_class::<NativePropagationBatch>()?;
+    module.add_class::<NativeStabilizerCodeHandle>()?;
     module.add_class::<NativeSPPSEngine>()?;
     module.add_class::<NativeSnapshotsHandle>()?;
     module.add_class::<NativeStabilizerStateHandle>()?;
@@ -135,6 +141,9 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(pauli_spps_engine_tape, module)?)?;
+    module.add_function(wrap_pyfunction!(stabilizer_code_from_packed, module)?)?;
+    module.add_function(wrap_pyfunction!(stabilizer_code_from_symplectic, module)?)?;
+    module.add_function(wrap_pyfunction!(stabilizer_code_from_css, module)?)?;
     module.add_function(wrap_pyfunction!(shadows_from_pauli_measurements, module)?)?;
     module.add_function(wrap_pyfunction!(
         shadows_from_clifford_measurements,

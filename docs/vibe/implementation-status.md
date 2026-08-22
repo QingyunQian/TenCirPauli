@@ -1,6 +1,6 @@
 # Implementation Status
 
-状态日期：2026-08-21。该文件是长时间 Agent 工作的持久状态，不替代 Git history 或规范。
+状态日期：2026-08-22。该文件是长时间 Agent 工作的持久状态，不替代 Git history 或规范。
 
 ## Current objective
 
@@ -17,6 +17,8 @@ Phase 13 classical shadows 已实现 owner-approved specification 的 public/cor
 | Phase 11 factorized additive-charge MVP | implemented; acceptance closed 2026-08-13 | Exact native factor analysis, compact component indexers, public-order rank/unrank, shared lazy/eager execution, General fallback, and mixed-domain differential tests are complete. See the Phase 11 checkpoint below and `phase-11-factorized-additive-charge-mvp-spec.md`. |
 | Phase 12 common noise channel gradients | implemented; focused remediation complete | Direct channel kernels, matched static-PTM performance evidence, frozen-support and public-gradient numerical coverage, shared-slot/checkpoint tests, batch/concurrency checks, and JAX numerical oracles are complete. The project environment passed the full quality gate and release benchmark record `20260813T052717Z_c42a754cca87-dirty`; closure evidence is recorded in `reports/phase-12-review-2026-08-13.md`. |
 | Phase 13 classical shadow snapshots | functionally implemented; acceptance remediation open | Exact global-Clifford frame sampling, dense sequential commuting-Pauli measurement with fused Pauli action/expectation, local-Pauli sampling, packed imports/read-back, immutable stabilizer tableaux, per-snapshot span reuse, direct RDM accumulation, packed frame construction, in-place stabilizer row updates, memory-bounded deterministic setting-level workers for dense and stabilizer inputs, setting-level block estimators, both Rényi-2 methods, energy variance, stabilizer-target and arbitrary dense-target fidelity, TensorCircuit-compatible Pauli interchange, and `shadow_bound()` are implemented. Main numerical paths, TensorCircuit interchange, concurrency, and Rényi-2 workspace guards are retained; the complete benchmark matrix remains open. |
+| Phase 14 stabilizer-code analysis | functionally implemented; second-round remediation complete 2026-08-22 | `StabilizerCode` has signed-check and CSS constructors, original-order syndromes, deterministic relations/logical pairs, singular and batched classification, error-set correctability, decoder-correction residual analysis, flat packed read-back, focused Rust/Python tests, an example, and a compact bounded release benchmark matrix. The owner-selected eager logical construction is accepted and the eager-versus-lazy A/B is waived for the intended workload. `phase14-qec-compact-20260822-r1` completed the 21-row Rust/22-row Python QEC record in approximately 20.9 seconds including build/setup; the quick profile completed in approximately 12.4 seconds. Evidence is recorded in `reports/phase-14-second-round-remediation-2026-08-22.md`; distance search, decoder selection, circuit semantics, and subsystem/gauge codes remain out of scope. |
+| Phase 14.5 qLDPC Research Example | specified; not implemented | The owner-approved comparator is qLDPC alone. The manual study will compare matched qubit stabilizer-code construction/metadata, logical-basis materialization, batch syndrome, classification, and correction residuals on identical CSS, HGP, general non-CSS finite-rate, and redundant-check inputs. qLDPC distance, decoder, logical-error, circuit, qudit, subsystem, and external-tool workflows are documented but excluded from matched timings; QuantumClifford.jl and Stim are not benchmark anchors. |
 | Phase Alpha Python facade | implemented | `phase-alpha-spec.md`、`phase-alpha-review-2026-08-03.md` 和本次 remediation tests；本 checkpoint 的 FIX_NOW 项已完成。 |
 | Phase 6 U1 circuit | implemented; historical acceptance closed | Rust/PyO3/Python implementation and local correctness/A-B evidence are archived；machine-specific benchmark handoff is informational, not a release gate. |
 | Phase 6.5 time evolution | deferred | Inactive proposal；requires a new owner decision, representative workload and accuracy/dependency spike. |
@@ -31,7 +33,19 @@ Phase 13 classical shadows 已实现 owner-approved specification 的 public/cor
 
 性能入口说明：`scripts/check.py --benchmark smoke` 只验证 release checks、测试和 benchmark harness 能运行，不产生可比较的 steady-runtime 记录，也不代表性能验收。可比较的性能证据必须使用 `benchmarks/run.py record` 或对应的 release benchmark manifest，并记录 commit、输入规模、准确性和运行边界；本文件的 benchmark 条目是 informational，不构成 wall-time CI gate。
 
+## Phase 14 implementation and validation checkpoint
+
+The Phase 14 implementation is present in the Rust core, PyO3 private module, and public Python facade. The two-round review remediation matrix, source-tree release benchmark comparison, and complete local quality gate are complete. The owner-selected eager logical-basis design is accepted and the eager-versus-lazy A/B is waived for the intended workload. The source-tree native path is rebuilt with `maturin develop --release --locked` before every Rust-backed test or benchmark run.
+
+The shared GF(2) migration initially exposed a real Z2 regression: full RREF in the shared null-space path made Rust `symmetry/z2/analysis_8q` approximately 18–30% slower than the same-machine baseline in two comparisons. The implementation now uses forward echelon elimination for null-space/rank while retaining full RREF for span-basis construction; two dedicated release repetitions measured approximately 0.976–0.988x baseline for Z2 analysis and 0.980–0.986x for taper transformation. The broader Python comparison showed changing low-round Hamiltonian and FFI medians rather than a stable Phase 14 regression; three higher-round targeted repetitions varied materially within the same current tree, and those paths do not call the migrated GF(2) primitive.
+
 历史 benchmark 条目中保留的 4 GiB 仅表示当时的记录条件；当前实现和 public API 的 `DEFAULT_MAX_BYTES` 已统一为 16 GiB。
+
+## Phase 14.5 qLDPC comparison checkpoint
+
+Phase 14.5 is specified as a manual product-level Research Example against qLDPC 0.3.3. Within the Phase 14 static qubit-code layer, qLDPC's principal additional analysis is exact/bounded distance and decoder-assisted logical reduction; many advertised decoder, Stim/Sinter, GAP, MAGMA, and QDistRnd capabilities are integrations or broader workflows rather than additional implementations of the matched static algebra. qLDPC also has substantive built-in code-family, composition, subsystem/qudit, chain-complex, and circuit-construction capabilities, but these are outside the timed intersection.
+
+The accepted comparison excludes distance, decoders, logical-error estimation, circuit workflows, subsystem/qudit semantics, and external tools. It uses qLDPC as the sole external comparator and measures identical check matrices through fresh construction/metadata, complete logical materialization, batch syndrome, classification, and correction residual analysis. QuantumClifford.jl and Stim are explicitly not secondary performance anchors. Final publication waits for the relevant Phase 14 correctness and hot-path remediation; an earlier run may be retained only as an internal profiling baseline.
 
 ## Phase 11 factorized additive-charge checkpoint
 

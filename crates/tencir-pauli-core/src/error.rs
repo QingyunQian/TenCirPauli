@@ -65,6 +65,12 @@ pub enum PauliError {
     InvalidCircuit { context: &'static str },
     /// A circuit gate is outside the implemented schema.
     UnsupportedCircuitGate { context: &'static str },
+    /// A stabilizer-code input violates its signed-check contract.
+    InvalidStabilizer { context: &'static str },
+    /// Two supplied stabilizer checks do not commute.
+    NoncommutingStabilizers { left: usize, right: usize },
+    /// A supplied stabilizer sign is not a Hermitian eigenvalue sign.
+    InvalidStabilizerSign { index: usize, sign: i8 },
 }
 
 impl fmt::Display for PauliError {
@@ -175,6 +181,17 @@ impl fmt::Display for PauliError {
             Self::UnsupportedCircuitGate { context } => {
                 write!(formatter, "unsupported circuit gate: {context}")
             }
+            Self::InvalidStabilizer { context } => {
+                write!(formatter, "invalid stabilizer code: {context}")
+            }
+            Self::NoncommutingStabilizers { left, right } => write!(
+                formatter,
+                "stabilizer checks at indices {left} and {right} do not commute"
+            ),
+            Self::InvalidStabilizerSign { index, sign } => write!(
+                formatter,
+                "stabilizer sign at index {index} must be +1 or -1, got {sign}"
+            ),
         }
     }
 }

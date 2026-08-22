@@ -42,6 +42,7 @@ from .propagation_circuit import (
     PropagationCircuit,
     PropagationCircuitValueAndGradient,
 )
+from .qec import StabilizerCode, StabilizerErrorKind
 from .shadows import (
     CliffordSnapshotArrays,
     PauliSnapshotArrays,
@@ -123,6 +124,8 @@ __all__ = [
     "SPPSEstimate",
     "SPPSValueEstimate",
     "Snapshots",
+    "StabilizerCode",
+    "StabilizerErrorKind",
     "StabilizerState",
     "U1Circuit",
     "U1CircuitValueAndGradient",

@@ -158,6 +158,10 @@ The public estimator layer supports single and batched Hermitian Pauli observabl
 
 This subsystem does not claim to be a general-purpose statevector or Clifford simulator. The dense path consumes a caller-supplied statevector and performs the required conditional measurements; the stabilizer path uses tableau kernels and exposes only the snapshot/state contracts needed by the estimators.
 
+### 8.6 Static stabilizer-code analysis
+
+`StabilizerCode` is a separate immutable Rust-native algebra object for a qubit code space, not a mode of `StabilizerState`. It retains the caller's ordered signed checks for syndrome coordinates and keeps canonical packed GF(2) bases, redundant-check relations, deterministic logical representatives, error classification, error-set analysis, and external decoder-correction verification in the code core. The public boundary remains flat NumPy arrays and one coarse native call per construction or batch operation; distance search, decoder selection, circuit measurement semantics, and subsystem/gauge codes remain separate scopes.
+
 ## 9. 两种执行模式
 
 ### 9.1 Rust-native 模式

@@ -68,6 +68,8 @@ def test_top_level_and_advanced_manifests_are_separated() -> None:
         "SPPSEstimate",
         "SPPSValueEstimate",
         "Snapshots",
+        "StabilizerCode",
+        "StabilizerErrorKind",
         "StabilizerState",
         "U1Circuit",
         "U1CircuitValueAndGradient",

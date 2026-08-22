@@ -24,6 +24,8 @@
 - [Phase 11 factorized additive-charge MVP](phase-11-factorized-additive-charge-mvp-spec.md)
 - [Phase 12 common noise channels and native scalar gradients](phase-12-common-noise-channel-gradients-spec.md)
 - [Phase 13 classical shadow snapshots](phase-13-classical-shadow-snapshots-spec.md)（implemented；focused numerical and native integration checks complete）
+- [Phase 14 stabilizer-code analysis and decoder-output verification](phase-14-stabilizer-code-analysis-spec.md)（core/native/Python remediation已完成；owner已选择 eager logical construction 并 waiver eager-versus-lazy A/B；compact QEC benchmark acceptance evidence已记录）
+- [Phase 14.5 qLDPC static stabilizer-code Research Example](phase-14.5-qldpc-research-example-spec.md)（specified；not implemented；qLDPC is the sole external comparator）
 
 ## Experimental proposals
 

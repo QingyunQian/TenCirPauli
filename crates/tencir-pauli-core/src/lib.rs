@@ -7,6 +7,7 @@ mod csr;
 mod error;
 mod fermion_mask;
 mod gate;
+mod gf2;
 mod grouping;
 mod hamiltonian;
 mod majorana;
@@ -19,6 +20,7 @@ mod scalar;
 mod sector;
 mod shadows;
 mod spps;
+mod stabilizer_code;
 mod structured;
 mod symmetry;
 mod u1_circuit;
@@ -129,6 +131,11 @@ pub use sector::{
 };
 pub use shadows::{SnapshotProtocol, Snapshots, StabilizerState};
 pub use spps::{SPPSEngine, SPPSEstimate, SPPSValueEstimate};
+pub use stabilizer_code::{
+    pack_code_batch, BatchClassification, CorrectionAnalysis, ErrorClassification,
+    ErrorSetAnalysis, PackedBatchClassification, PackedCorrectionAnalysis, StabilizerCode,
+    StabilizerErrorKind,
+};
 pub use structured::{
     analyze_hybrid_charge, binary_boson_terms, binary_fermion_terms, binary_hybrid_terms,
     canonicalize_boson_terms, canonicalize_fermion_integrals, canonicalize_fermion_terms,

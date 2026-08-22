@@ -37,3 +37,7 @@ harness = false
 [[bench]]
 name = "shadows"
 harness = false
+
+[[bench]]
+name = "stabilizer_code"
+harness = false

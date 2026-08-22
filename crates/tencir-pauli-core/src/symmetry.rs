@@ -3,6 +3,7 @@
 use std::mem::size_of;
 
 use crate::error::PauliError;
+use crate::gf2;
 use crate::operator::{PauliOperator, PauliTerm};
 use crate::word::{PauliPhase, PauliWord};
 
@@ -616,12 +617,6 @@ fn xor_assign(left: &mut [u64], right: &[u64]) {
     }
 }
 
-fn parity_and(left: &[u64], right: &[u64]) -> bool {
-    left.iter().zip(right).fold(false, |parity, (&lhs, &rhs)| {
-        parity ^ ((lhs & rhs).count_ones() & 1 != 0)
-    })
-}
-
 fn word_bits(word: &PauliWord, nqubits: usize) -> Vec<u64> {
     let variables = nqubits * 2;
     let mut result = vec![0_u64; packed_bits(variables)];
@@ -667,41 +662,7 @@ fn constraint_for_term(term: &PauliTerm, nqubits: usize, packed_count: usize) ->
 }
 
 fn nullspace(rows: &mut [Vec<u64>], variable_count: usize) -> (Vec<Vec<u64>>, usize) {
-    let mut pivot_columns = Vec::new();
-    let mut rank = 0;
-    for column in 0..variable_count {
-        let Some(pivot) = (rank..rows.len()).find(|&row| get_bit(&rows[row], column)) else {
-            continue;
-        };
-        rows.swap(rank, pivot);
-        let (prefix, suffix) = rows.split_at_mut(rank + 1);
-        let pivot_row = &prefix[rank];
-        for row in suffix {
-            if get_bit(row, column) {
-                xor_assign(row, pivot_row);
-            }
-        }
-        pivot_columns.push(column);
-        rank += 1;
-    }
-    let pivot_set = pivot_columns
-        .iter()
-        .copied()
-        .collect::<std::collections::HashSet<_>>();
-    let mut result = Vec::new();
-    for free in 0..variable_count {
-        if pivot_set.contains(&free) {
-            continue;
-        }
-        let mut vector = vec![0_u64; packed_bits(variable_count)];
-        set_bit(&mut vector, free, true);
-        for (row, &pivot) in pivot_columns.iter().enumerate().rev() {
-            let value = parity_and(&rows[row], &vector);
-            set_bit(&mut vector, pivot, value);
-        }
-        result.push(vector);
-    }
-    (result, rank)
+    gf2::null_space(rows, variable_count)
 }
 
 fn symplectic(left: &[u64], right: &[u64], nqubits: usize) -> bool {
@@ -714,23 +675,7 @@ fn symplectic(left: &[u64], right: &[u64], nqubits: usize) -> bool {
 }
 
 fn is_independent(vectors: &[Vec<u64>], variable_count: usize) -> bool {
-    let mut rows = vectors.to_vec();
-    let mut rank = 0;
-    for column in 0..variable_count {
-        let Some(pivot) = (rank..rows.len()).find(|&row| get_bit(&rows[row], column)) else {
-            continue;
-        };
-        rows.swap(rank, pivot);
-        let (prefix, suffix) = rows.split_at_mut(rank + 1);
-        let pivot_row = &prefix[rank];
-        for row in suffix {
-            if get_bit(row, column) {
-                xor_assign(row, pivot_row);
-            }
-        }
-        rank += 1;
-    }
-    rank == vectors.len()
+    gf2::rank(vectors, variable_count) == vectors.len()
 }
 
 fn select_isotropic_basis(vectors: Vec<Vec<u64>>, variable_count: usize) -> Vec<Vec<u64>> {

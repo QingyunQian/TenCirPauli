@@ -27,6 +27,7 @@ SUITES = (
     "structured",
     "majorana_charge",
     "charge_factorization",
+    "stabilizer_code",
 )
 
 # Benchmark names are normally immutable. These three entries were renamed
@@ -111,9 +112,11 @@ def tool_version(command: List[str]) -> str:
     return capture(command).splitlines()[0]
 
 
-def metadata(label: str, suite: str) -> Dict[str, object]:
+def metadata(
+    label: str, suite: str, benchmark_profile: Optional[str] = None
+) -> Dict[str, object]:
     """Collect reproducibility metadata without usernames, paths, or hostnames."""
-    return {
+    data: Dict[str, object] = {
         "schema_version": 1,
         "label": label,
         "suite": suite,
@@ -138,6 +141,9 @@ def metadata(label: str, suite: str) -> Dict[str, object]:
         },
         "status": "running",
     }
+    if benchmark_profile is not None:
+        data["benchmark_profile"] = benchmark_profile
+    return data
 
 
 def write_manifest(data: Dict[str, object]) -> None:
@@ -156,7 +162,7 @@ def rust_environment() -> Dict[str, str]:
 
 def record_rust(label: str) -> None:
     """Record a named Criterion baseline."""
-    for bench in ("pauli_word", "symmetry", "propagation"):
+    for bench in ("pauli_word", "symmetry", "propagation", "stabilizer_code"):
         run(
             [
                 "cargo",
@@ -174,6 +180,35 @@ def record_rust(label: str) -> None:
         )
 
 
+def stabilizer_rust_environment(quick: bool) -> Dict[str, str]:
+    """Select the bounded Criterion profile for the QEC suite."""
+    environment = rust_environment()
+    if quick:
+        environment["TENCIRPAULI_BENCH_QUICK"] = "1"
+    else:
+        environment.pop("TENCIRPAULI_BENCH_QUICK", None)
+    return environment
+
+
+def record_stabilizer_rust(label: str, quick: bool = False) -> None:
+    """Record only the static stabilizer-code Criterion matrix."""
+    run(
+        [
+            "cargo",
+            "bench",
+            "--locked",
+            "-p",
+            "tencir-pauli-core",
+            "--bench",
+            "stabilizer_code",
+            "--",
+            "--save-baseline",
+            label,
+        ],
+        env=stabilizer_rust_environment(quick),
+    )
+
+
 def python_storage_uri() -> str:
     """Return pytest-benchmark's local file-storage URI."""
     PYTHON_STORAGE.mkdir(parents=True, exist_ok=True)
@@ -185,7 +220,11 @@ def build_python_extension() -> None:
     run(["maturin", "develop", "--release", "--locked"])
 
 
-def record_python(label: str, paths: Optional[List[str]] = None) -> None:
+def record_python(
+    label: str,
+    paths: Optional[List[str]] = None,
+    benchmark_options: Optional[List[str]] = None,
+) -> None:
     """Record a named pytest-benchmark run for the selected paths."""
     build_python_extension()
     run(
@@ -194,6 +233,7 @@ def record_python(label: str, paths: Optional[List[str]] = None) -> None:
             "-m",
             "pytest",
             *(paths or ["benchmarks/python"]),
+            *(benchmark_options or []),
             "--benchmark-only",
             "--benchmark-quiet",
             f"--benchmark-storage={python_storage_uri()}",
@@ -203,19 +243,49 @@ def record_python(label: str, paths: Optional[List[str]] = None) -> None:
     )
 
 
-def record(label: str, suite: str) -> None:
+def stabilizer_python_options(quick: bool) -> List[str]:
+    """Return bounded pytest-benchmark settings for the QEC suite."""
+    if quick:
+        max_time, min_rounds = "0.10", "2"
+    else:
+        max_time, min_rounds = "0.25", "3"
+    return [
+        f"--benchmark-max-time={max_time}",
+        f"--benchmark-min-rounds={min_rounds}",
+        "--benchmark-warmup=off",
+    ]
+
+
+def record_stabilizer_python(label: str, quick: bool = False) -> None:
+    """Record the compact public static stabilizer-code matrix."""
+    record_python(
+        label,
+        ["benchmarks/python/test_stabilizer_code_benchmark.py"],
+        stabilizer_python_options(quick),
+    )
+
+
+def record(label: str, suite: str, quick: bool = False) -> None:
     """Record selected suites and their reproducibility metadata."""
     manifest_path = RUNS_ROOT / f"{label}.json"
     if manifest_path.exists():
         raise ValueError(f"benchmark label already exists: {label}")
 
-    data = metadata(label, suite)
+    if quick and suite != "stabilizer_code":
+        raise ValueError("--quick is currently supported only for stabilizer_code")
+    profile = None
+    if suite == "stabilizer_code":
+        profile = "quick" if quick else "acceptance"
+    data = metadata(label, suite, profile)
     write_manifest(data)
     try:
         if suite in ("all", "rust"):
             record_rust(label)
         if suite in ("all", "python"):
             record_python(label)
+        if suite == "stabilizer_code":
+            record_stabilizer_rust(label, quick)
+            record_stabilizer_python(label, quick)
         if suite == "structured":
             record_python(
                 label, ["benchmarks/python/test_structured_algebra_benchmark.py"]
@@ -448,7 +518,7 @@ def write_python_comparison(
 
 def compare_rust(label: str) -> None:
     """Run Criterion and compare current measurements with a named baseline."""
-    for bench in ("pauli_word", "symmetry", "propagation"):
+    for bench in ("pauli_word", "symmetry", "propagation", "stabilizer_code"):
         run(
             [
                 "cargo",
@@ -466,6 +536,25 @@ def compare_rust(label: str) -> None:
         )
 
 
+def compare_stabilizer_rust(label: str, quick: bool = False) -> None:
+    """Compare only the static stabilizer-code Criterion baseline."""
+    run(
+        [
+            "cargo",
+            "bench",
+            "--locked",
+            "-p",
+            "tencir-pauli-core",
+            "--bench",
+            "stabilizer_code",
+            "--",
+            "--baseline",
+            label,
+        ],
+        env=stabilizer_rust_environment(quick),
+    )
+
+
 def rust_baseline_exists(label: str) -> bool:
     """Return whether the local Criterion storage contains a named baseline."""
     criterion_root = RUST_TARGET / "criterion"
@@ -480,6 +569,7 @@ def compare_python(
     minimum_delta_seconds: float,
     paths: Optional[List[str]] = None,
     current_label: Optional[str] = None,
+    benchmark_options: Optional[List[str]] = None,
 ) -> bool:
     """Compare a saved baseline with either fresh or saved current medians."""
     baseline_path = find_python_result_path(label)
@@ -494,6 +584,7 @@ def compare_python(
                 "-m",
                 "pytest",
                 *(paths or ["benchmarks/python"]),
+                *(benchmark_options or []),
                 "--benchmark-only",
                 "--benchmark-quiet",
                 f"--benchmark-storage={python_storage_uri()}",
@@ -522,6 +613,7 @@ def compare(
     small_regression_threshold: float,
     minimum_delta_seconds: float,
     current_label: Optional[str],
+    quick: bool = False,
 ) -> None:
     """Compare current code with a previously recorded local run."""
     manifest_path = RUNS_ROOT / f"{label}.json"
@@ -539,6 +631,8 @@ def compare(
             "pytest-benchmark result without a manifest"
         )
     blocked = False
+    if quick and selected_suite != "stabilizer_code":
+        raise ValueError("--quick is currently supported only for stabilizer_code")
     if selected_suite in ("all", "rust"):
         if current_label is not None:
             raise ValueError(
@@ -551,6 +645,29 @@ def compare(
                 "Python/FFI result with --suite python"
             )
         compare_rust(label)
+    if selected_suite == "stabilizer_code":
+        if current_label is not None:
+            raise ValueError(
+                "--current may only be used with a Python-only benchmark suite"
+            )
+        if not rust_baseline_exists(label):
+            raise ValueError(
+                f"Rust Criterion baseline {label!r} is not present locally"
+            )
+        compare_stabilizer_rust(label, quick)
+        blocked = (
+            compare_python(
+                label,
+                selected_suite,
+                threshold,
+                small_regression_threshold,
+                minimum_delta_seconds,
+                ["benchmarks/python/test_stabilizer_code_benchmark.py"],
+                current_label=current_label,
+                benchmark_options=stabilizer_python_options(quick),
+            )
+            or blocked
+        )
     if selected_suite in ("all", "python"):
         blocked = (
             compare_python(
@@ -644,6 +761,11 @@ def parse_args() -> argparse.Namespace:
     record_parser = subparsers.add_parser("record", help="record a new local run")
     record_parser.add_argument("--label", help="optional unique result label")
     record_parser.add_argument("--suite", choices=SUITES, default="all")
+    record_parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="use the shorter bounded profile (currently only stabilizer_code)",
+    )
 
     compare_parser = subparsers.add_parser(
         "compare", help="compare current code with a saved run"
@@ -674,6 +796,11 @@ def parse_args() -> argparse.Namespace:
         "--current",
         help="saved current pytest-benchmark label; skips fresh measurement for Python-only comparison",
     )
+    compare_parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="use the shorter bounded profile (currently only stabilizer_code)",
+    )
 
     import_parser = subparsers.add_parser(
         "import-baseline", help="register an existing pytest-benchmark result"
@@ -691,7 +818,7 @@ def main() -> int:
     try:
         if arguments.command == "record":
             label = validate_label(arguments.label or default_label())
-            record(label, arguments.suite)
+            record(label, arguments.suite, arguments.quick)
         elif arguments.command == "compare":
             if (
                 arguments.threshold <= 0
@@ -712,6 +839,7 @@ def main() -> int:
                     if arguments.current is None
                     else validate_label(arguments.current)
                 ),
+                arguments.quick,
             )
         elif arguments.command == "import-baseline":
             import_baseline(validate_label(arguments.label), arguments.suite)

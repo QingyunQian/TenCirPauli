@@ -12,6 +12,12 @@ Rust core 使用 Criterion 进行统计微基准，当前覆盖 bit-packed `Paul
 
 `python benchmarks/run.py record` 为每次运行生成唯一 label，并保存 Git commit、dirty 状态、UTC 时间、平台与工具版本。Criterion baseline、pytest-benchmark JSON 和 manifest 使用同一 label；`python benchmarks/run.py compare <label>` 在当前代码上重新测量并分别输出 Rust 与 Python 的历史对比。
 
+## Static stabilizer-code budget
+
+静态 stabilizer-code 是一个有明确总墙钟预算的专项 suite，不展开 family × size × operation 的全笛卡尔积。默认 `python benchmarks/run.py record --suite stabilizer_code` 只保留 21 个 Rust Criterion row 和 22 个 Python/FFI row，使用 64、256、1024 三个代表性宽度；覆盖小规模 construction/syndrome、中等 redundant/CSS classification/correction，以及一个大规模 generic construction/classification/error-set endpoint。矩阵同时保留 packed/unpacked、visible/stabilizer/logical 三类 correction residual、unique/repeated/conflicting 三类 error-set grouping、source-tree provenance 和 exact-output accuracy metadata。
+
+QEC acceptance profile 的单 row 采样上限为 Rust 250 ms measurement + 75 ms warmup、10 samples，Python 250 ms maximum + 3 minimum rounds，整个 suite 的设计预算为 10 分钟以内；同机实测记录约 20.9 秒（含 release build/setup）。日常回归使用 `python benchmarks/run.py record --suite stabilizer_code --quick`，将两层窗口缩短到约 100 ms，仍运行同一覆盖矩阵；同机实测约 12.4 秒。性能回退判断应比较同一 profile 和同一 row，先看绝对时间与统计区间，再对疑似回退重复同一 compact suite；只有独立算法分支无法由现有代表性 workload 触及时才新增 benchmark。
+
 Phase 7 的完整 focused release handoff 使用 `python benchmarks/run.py record --suite phase7 --label <label>`，只运行 `benchmarks/python/test_structured_algebra_benchmark.py`，并保留统一 manifest/pytest-benchmark schema；`all`/`python` suite 仍用于全仓库历史测量。这样可避免与未参与 Phase 7 的 optional large benchmark skip 共同触发 pytest-benchmark 的空样本序列化问题。
 
 提交 hook 默认调用 `python scripts/check.py --benchmark smoke`：Rust benchmark 只执行 `cargo bench -- --test` 的 harness/build 检查，Python benchmark 排除 `performance_large` 标记，因此不会在每次 commit 中重复完整 release measurement。完整 release record 是显式的性能检查，使用 `python scripts/check.py --benchmark record`；若希望某一次 commit 同时执行，可使用 `TENCIRPAULI_PRE_COMMIT_BENCHMARK=record git commit ...`。`TENCIRPAULI_PRE_COMMIT_BENCHMARK=skip` 或 `scripts/check.py --benchmark skip` 仅跳过 benchmark，不跳过格式、lint、typing、Rust/Python tests 和 release extension build；hook 只接受 `smoke`、`record`、`skip` 三种值。
