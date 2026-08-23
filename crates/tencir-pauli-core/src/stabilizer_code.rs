@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::mem::size_of;
+use std::sync::{Arc, OnceLock};
 
 use crate::error::PauliError;
 use crate::gf2::{get_bit, is_zero, null_space, null_space_basis, packed_count, set_bit};
@@ -148,6 +149,15 @@ impl ConstructionEstimate {
         )?;
         let additional = checked_sum(&[
             checked_bytes(
+                checked_product(
+                    checked_product(rank, 2, "estimating canonical stabilizer words")?,
+                    word_count,
+                    "estimating canonical stabilizer words",
+                )?,
+                size_of::<u64>(),
+                "estimating canonical stabilizer words",
+            )?,
+            checked_bytes(
                 relation_words,
                 size_of::<u64>(),
                 "estimating retained stabilizer relations",
@@ -182,8 +192,13 @@ pub struct StabilizerCode {
     qubit_degrees: Vec<usize>,
     rank: usize,
     relations: Vec<Vec<u64>>,
+    canonical_stabilizer_words: Vec<Vec<u64>>,
     logical_x_words: Vec<Vec<u64>>,
     logical_z_words: Vec<Vec<u64>>,
+    general_search_cache: Arc<OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>>>,
+    css_analysis_cache: Arc<OnceLock<Result<crate::logical_search::CssAnalysis, PauliError>>>,
+    css_x_search_cache: Arc<OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>>>,
+    css_z_search_cache: Arc<OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>>>,
 }
 
 impl StabilizerCode {
@@ -367,6 +382,10 @@ impl StabilizerCode {
         enforce_limit(retained_estimate.bytes, max_bytes)?;
         let (logical_x_words, logical_z_words) =
             build_logical_basis(&canonical_bits, nqubits, rank)?;
+        let canonical_stabilizer_words = canonical_bits
+            .iter()
+            .map(|row| flat_words_from_bits(row, nqubits))
+            .collect::<Vec<_>>();
 
         Ok(Self {
             nqubits,
@@ -379,8 +398,13 @@ impl StabilizerCode {
             qubit_degrees,
             rank,
             relations,
+            canonical_stabilizer_words,
             logical_x_words,
             logical_z_words,
+            general_search_cache: Arc::new(OnceLock::new()),
+            css_analysis_cache: Arc::new(OnceLock::new()),
+            css_x_search_cache: Arc::new(OnceLock::new()),
+            css_z_search_cache: Arc::new(OnceLock::new()),
         })
     }
 
@@ -521,6 +545,34 @@ impl StabilizerCode {
         &self.relations
     }
 
+    pub(crate) fn canonical_stabilizer_word_rows(&self) -> &[Vec<u64>] {
+        &self.canonical_stabilizer_words
+    }
+
+    pub(crate) fn general_search_cache(
+        &self,
+    ) -> &OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>> {
+        self.general_search_cache.as_ref()
+    }
+
+    pub(crate) fn css_analysis_cache(
+        &self,
+    ) -> &OnceLock<Result<crate::logical_search::CssAnalysis, PauliError>> {
+        self.css_analysis_cache.as_ref()
+    }
+
+    pub(crate) fn css_x_search_cache(
+        &self,
+    ) -> &OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>> {
+        self.css_x_search_cache.as_ref()
+    }
+
+    pub(crate) fn css_z_search_cache(
+        &self,
+    ) -> &OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>> {
+        self.css_z_search_cache.as_ref()
+    }
+
     pub fn logical_operator_words(&self) -> (Vec<u64>, Vec<u64>, Vec<u64>, Vec<u64>) {
         let mut logical_x_x = Vec::new();
         let mut logical_x_z = Vec::new();
@@ -561,6 +613,74 @@ impl StabilizerCode {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok((x, z))
+    }
+
+    pub(crate) fn logical_x_word_rows(&self) -> &[Vec<u64>] {
+        &self.logical_x_words
+    }
+
+    pub(crate) fn logical_z_word_rows(&self) -> &[Vec<u64>] {
+        &self.logical_z_words
+    }
+
+    pub(crate) fn is_in_normalizer_words(&self, x_words: &[u64], z_words: &[u64]) -> bool {
+        self.check_x_words
+            .chunks_exact(self.word_count)
+            .zip(self.check_z_words.chunks_exact(self.word_count))
+            .all(|(check_x, check_z)| !symplectic_words(check_x, check_z, x_words, z_words))
+    }
+
+    pub(crate) fn logical_coordinates_packed_words(
+        &self,
+        x_words: &[u64],
+        z_words: &[u64],
+        logical_x: &mut [u64],
+        logical_z: &mut [u64],
+    ) {
+        debug_assert_eq!(logical_x.len(), packed_count(self.nlogical()));
+        debug_assert_eq!(logical_z.len(), packed_count(self.nlogical()));
+        logical_x.fill(0);
+        logical_z.fill(0);
+        for (index, logical_z_row) in self.logical_z_words.iter().enumerate() {
+            if symplectic_words(
+                x_words,
+                z_words,
+                &logical_z_row[..self.word_count],
+                &logical_z_row[self.word_count..],
+            ) {
+                set_bit(logical_x, index, true);
+            }
+        }
+        for (index, logical_x_row) in self.logical_x_words.iter().enumerate() {
+            if symplectic_words(
+                x_words,
+                z_words,
+                &logical_x_row[..self.word_count],
+                &logical_x_row[self.word_count..],
+            ) {
+                set_bit(logical_z, index, true);
+            }
+        }
+    }
+
+    pub fn search_logical_witness(
+        &self,
+        sector: crate::logical_search::LogicalSearchSector,
+        max_trials: usize,
+        sketch_rows: usize,
+        stop_below_weight: Option<usize>,
+        seed: u64,
+        max_bytes: u128,
+    ) -> Result<crate::logical_search::LogicalWitnessSearchResult, PauliError> {
+        crate::logical_search::search_logical_witness(
+            self,
+            sector,
+            max_trials,
+            sketch_rows,
+            stop_below_weight,
+            seed,
+            max_bytes,
+        )
     }
 
     pub fn syndrome_one(&self, x_words: &[u64], z_words: &[u64]) -> Result<Vec<u8>, PauliError> {

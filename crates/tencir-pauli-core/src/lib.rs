@@ -10,6 +10,7 @@ mod gate;
 mod gf2;
 mod grouping;
 mod hamiltonian;
+mod logical_search;
 mod majorana;
 mod mapping;
 mod operator;
@@ -114,6 +115,10 @@ pub use grouping::{
     GroupingAlgorithm, GroupingMode, DEFAULT_MAX_GROUPING_ENTRIES,
 };
 pub use hamiltonian::{BackendMvpPlan, CooMatrix, CsrMatrix, MvpPlan, MvpStrategy};
+pub use logical_search::{
+    search_logical_witness, LogicalSearchSector, LogicalWitness, LogicalWitnessSearchResult,
+    WitnessSector, LOGICAL_SEARCH_ALGORITHM,
+};
 pub use majorana::{
     binary_majorana_terms, canonicalize_majorana_terms, fermion_to_majorana_terms,
     majorana_to_fermion_terms, multiply_majorana_terms, MajoranaBatch, MajoranaCanonicalResult,

@@ -4,7 +4,7 @@ This manual Research Example compares TenCirPauli with qLDPC 0.3.3 on their shar
 
 The example does not add qLDPC to TenCirPauli's runtime dependencies and intentionally has no `requirements.txt`. `run_tencirpauli.py` uses the public `StabilizerCode` API. `run_qldpc.py` imports qLDPC directly and uses its documented `CSSCode`/`QuditCode`, `rank`, `dimension`, and `get_logical_ops()` interfaces; the visible adapter performs only the shared GF(2) syndrome, classification, and residual products.
 
-The workload owner is [`workloads.py`](workloads.py). It creates identical ordered X/Z symplectic matrices, deterministic error and correction batches, reference logical fixtures, and content hashes without importing either package. The matrix set includes repetition codes, independent five-qubit-code direct sums with a fixed qubit permutation, Steane's code, and binary hypergraph products of open-boundary repetition checks. Redundant-check variants are included for the medium repetition and finite-rate families.
+The workload owner is [`workloads.py`](workloads.py). It creates identical ordered X/Z symplectic matrices, deterministic error and correction batches, reference logical fixtures, and content hashes without importing either package. The matrix set includes repetition codes, independent five-qubit-code direct sums with a fixed qubit permutation, Steane's code, binary hypergraph products of open-boundary repetition checks, a reproducible sparse random HGP workload `random_hgp_14400`, and a fixed dense general stabilizer search-quality workload `random_general_256`. Redundant-check variants are included for the medium repetition and finite-rate families.
 
 Both implementations use q0-first qubit order and phase-free I/X/Y/Z codes `0/1/2/3`. General checks are represented as `[x | z]`. CSS checks are represented as X-only rows followed by Z-only rows, matching TenCirPauli's public syndrome order; qLDPC's internal field arrays are not used as a substitute for the original ordered input matrix.
 
@@ -13,6 +13,53 @@ Correctness runs before timed runs. It checks matrix hashes and metadata, logica
 Each timed child reports import-independent warmup, fresh construction-to-logicals, first and steady syndrome/classification/correction timings, round statistics, input/output payload sizes, source paths, thread variables, and process high-water RSS. Metadata is retained for correctness and workload identification but is not a performance comparison. The primary comparison fixes Rayon/OpenMP/OpenBLAS/MKL worker settings to one thread. Peak RSS is a process-level observation, not an exact operation allocation measurement.
 
 The timed operations have distinct meanings. Construction-to-logicals builds a fresh code and materializes the physical logical operators; this is the construction boundary used for comparison because it includes the code-space basis needed by the shared workflow. Syndrome computes which ordered stabilizer checks anticommute with every batch error. Classification computes the syndrome and, for zero-syndrome rows, distinguishes stabilizers from non-trivial logical errors and returns logical coordinates. Correction forms the residual `correction * error` for each pair and classifies that residual; it does not search for a decoder correction.
+
+The independent logical-witness quality benchmark is [`search_benchmark.py`](search_benchmark.py). It is not part of the bounded qLDPC comparison or the repository regression benchmark suite. It builds deterministic HGP and general-code workloads through the public TenCirPauli API, sweeps selected `sketch_rows` and `max_trials`, validates every returned witness, and reports the deterministic incumbent, best weight, improvement amount, first/steady end-to-end time, trials per second, native setup and initialization counters, resolved sketch rows, RSS, and source-tree native provenance. CSS workloads measure `auto`, explicit `x`, explicit `z`, and `general` separately by default, while `--sectors general` restricts a run to the general path. The default profile is capped at 180 seconds and uses HGP-8/16/24/32 with `sketch_rows=32,64` and `max_trials=16,64`; larger HGP-48, `random_hgp_14400`, `random_general_256`, or wider sweeps are opt-in.
+
+The `random_hgp_14400` workload uses a fixed simple `(4,3)`-regular `72×96` binary matrix with full row rank as both classical HGP factors. Its HGP has 14,400 physical qubits and 576 logical qubits; the generated matrix hash is reported in every search record. The distance is not assumed known, so search results are witnessed upper bounds only.
+
+The `random_general_256` workload is the algorithm-quality fixture. It starts from a deterministic random CSS code with parameters `[[256,64,3]]`, deliberately plants a weight-3 logical, and then applies a fixed independent single-qubit Clifford scramble so that the 192 checks are genuinely mixed X/Y/Z general stabilizer rows. Its matrix hash is `ec2129628227ff44f1c161c4bb4d3cc099231f476bf45b4a36280163fff2f827`. An exhaustive check of all 294,528 nonidentity weight-1/2 Paulis found no logical operator, while the search returns a weight-3 logical, so this fixture has exact distance 3. It is intentionally search-only: it demonstrates randomized quality at a moderate width and is not presented as an unbiased code ensemble or a sparse QLDPC family.
+
+Run a bounded research profile with:
+
+```bash
+PYTHONPATH="$PWD/python:$PWD/examples/research/stabilizer_code_qldpc" .conda/bin/python examples/research/stabilizer_code_qldpc/search_benchmark.py \
+  --workloads hgp_16,hgp_32 --sketch-rows 16,32,64 --trials 16,64,256 \
+  --time-budget 180 --output .benchmarks/logical-search.json
+```
+
+The resulting JSON is machine-local and should remain under the ignored `.benchmarks/` directory. Use the known HGP repetition distance as a fixture-quality reference only; larger or unfamiliar constructions report witnessed upper bounds, not exact distance claims.
+
+The large `random_hgp_14400` and `random_general_256` workloads are search-only and are intentionally excluded from `compare.py --workloads all`; request them explicitly through `search_benchmark.py`.
+
+For the large random HGP, keep the first scan general-only and bounded:
+
+```bash
+PYTHONPATH="$PWD/python:$PWD/examples/research/stabilizer_code_qldpc" .conda/bin/python examples/research/stabilizer_code_qldpc/search_benchmark.py \
+  --workloads random_hgp_14400 --sectors general --sketch-rows 16,32,64,128,256 \
+  --trials 64,256,1024 --time-budget 180 --output .benchmarks/random-hgp-14400.json
+```
+
+Run the quality fixture with a bounded curve and require an actual improvement:
+
+```bash
+PYTHONPATH="$PWD/python:$PWD/examples/research/stabilizer_code_qldpc" .conda/bin/python examples/research/stabilizer_code_qldpc/search_benchmark.py \
+  --workloads random_general_256 --sectors general --sketch-rows 64,256,320 \
+  --trials 1,4,16,64 --time-budget 60 --require-improvement \
+  --output .benchmarks/random-general-256.json
+```
+
+With matrix seed `20260823`, search seed `11400714819309886402`, and the current release build, the quality curve includes the following deterministic records:
+
+| sketch rows | max trials | initial incumbent | best weight |
+| ---: | ---: | ---: | ---: |
+| 64 | 64 | 80 | 80 |
+| 256 | 64 | 80 | 80 |
+| 320 | 1 | 80 | 69 |
+| 320 | 4 | 80 | 63 |
+| 320 | 16 | 80 | 3 |
+
+Thus the fixture directly distinguishes deterministic initialization from randomized search: the returned weight-3 witness is an upper bound `d ≤ 3`, and the separate exhaustive check establishes that the example's exact distance is 3.
 
 TenCirPauli's logical-basis construction selects the required quotient directions in free-coordinate space and materializes only the `2k` logical quotient vectors; it does not materialize the full normalizer basis. This optimization preserves the deterministic logical representatives and all shared-workflow correctness checks.
 

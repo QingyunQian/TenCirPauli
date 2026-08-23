@@ -326,6 +326,215 @@ def test_phase_flip_five_qubit_and_steane_numeric_contracts() -> None:
     assert arrays.logical_z_z_words.shape == (1, 1)
 
 
+def _witness_word(result: tcp.LogicalWitnessSearchResult) -> tcp.PauliWord:
+    return tcp.PauliWord(
+        result.best.nqubits,
+        tuple(int(value) for value in result.best.x_words),
+        tuple(int(value) for value in result.best.z_words),
+    )
+
+
+def _assert_logical_witness(
+    code: StabilizerCode, result: tcp.LogicalWitnessSearchResult
+) -> None:
+    word = _witness_word(result)
+    classification = code.classify(word)
+    assert classification.kind is StabilizerErrorKind.LOGICAL
+    assert classification.syndrome == (0,) * code.nchecks
+    assert result.best_weight == result.best.weight == word.weight
+    assert result.initial_incumbent_weight >= result.best_weight
+    assert int(result.best.logical_x_words[0] & 1) == classification.logical_x[0]
+    assert int(result.best.logical_z_words[0] & 1) == classification.logical_z[0]
+    for array in (
+        result.best.x_words,
+        result.best.z_words,
+        result.best.logical_x_words,
+        result.best.logical_z_words,
+    ):
+        assert array.dtype == np.dtype(np.uint64)
+        assert array.ndim == 1
+        assert array.flags.c_contiguous
+        assert array.flags.owndata
+        assert not array.flags.writeable
+
+
+def test_logical_witness_search_validates_known_css_and_threshold_contracts() -> None:
+    code = _bit_flip_code()
+    auto = code.search_logical_witness(max_trials=4, sketch_rows=4, seed=7)
+    x_sector = code.search_logical_witness(
+        sector="x", max_trials=2, sketch_rows=2, seed=7
+    )
+    z_sector = code.search_logical_witness(
+        sector="z", max_trials=2, sketch_rows=2, seed=7
+    )
+    assert auto.best_weight == 1
+    assert auto.best.sector == "z"
+    assert x_sector.best_weight == 3
+    assert x_sector.best.sector == "x"
+    assert z_sector.best_weight == 1
+    assert z_sector.best.sector == "z"
+    assert x_sector.resolved_sketch_rows == 1
+    assert z_sector.resolved_sketch_rows == 2
+    assert auto.resolved_sketch_rows == 3
+    assert (
+        code.search_logical_witness(
+            sector="general", max_trials=1, sketch_rows=64, seed=7
+        ).resolved_sketch_rows
+        == 4
+    )
+    for result in (auto, x_sector, z_sector):
+        _assert_logical_witness(code, result)
+
+    initialization_hit = code.search_logical_witness(
+        max_trials=8, sketch_rows=8, stop_below_weight=2, seed=7
+    )
+    assert initialization_hit.trials_run == 0
+    assert initialization_hit.early_stopped
+    assert initialization_hit.initial_incumbent_weight == 1
+    assert initialization_hit.initialization_candidates == 3
+    exact_threshold = code.search_logical_witness(
+        max_trials=1, sketch_rows=1, stop_below_weight=1, seed=7
+    )
+    assert exact_threshold.best_weight == 1
+    assert exact_threshold.trials_run == 1
+    assert not exact_threshold.early_stopped
+
+
+def test_logical_witness_search_replays_and_has_prefix_monotonicity() -> None:
+    code = StabilizerCode.from_generators(
+        5,
+        [_word("XZZXI"), _word("IXZZX"), _word("XIXZZ"), _word("ZXIXZ")],
+    )
+    short = code.search_logical_witness(max_trials=8, sketch_rows=4, seed=19)
+    replay = code.search_logical_witness(max_trials=8, sketch_rows=4, seed=19)
+    extended = code.search_logical_witness(max_trials=32, sketch_rows=4, seed=19)
+    assert short.best_weight == 3
+    assert short.best.sector == "mixed"
+    _assert_logical_witness(code, short)
+    assert replay.best_weight == short.best_weight
+    assert replay.best.sector == short.best.sector
+    assert np.array_equal(replay.best.x_words, short.best.x_words)
+    assert np.array_equal(replay.best.z_words, short.best.z_words)
+    assert np.array_equal(replay.best.logical_x_words, short.best.logical_x_words)
+    assert np.array_equal(replay.best.logical_z_words, short.best.logical_z_words)
+    assert extended.best_weight <= short.best_weight
+    _assert_logical_witness(code, extended)
+
+
+def test_logical_witness_initialization_stops_before_large_logical_product_scan() -> (
+    None
+):
+    nqubits = 1024
+    z_checks = np.zeros((1014, nqubits), dtype=np.uint8)
+    indices = np.arange(1014)
+    z_checks[indices, indices] = 1
+    code = StabilizerCode.from_css(np.empty((0, nqubits), dtype=np.uint8), z_checks)
+    result = code.search_logical_witness(
+        sector="general",
+        max_trials=64,
+        sketch_rows=64,
+        stop_below_weight=2,
+        seed=9,
+    )
+    assert result.best_weight == 1
+    assert result.trials_run == 0
+    assert result.early_stopped
+    assert result.initialization_candidates == 1
+
+
+def test_logical_witness_search_is_presentation_invariant_for_css_codes() -> None:
+    h = np.asarray(
+        [
+            [1, 0, 0, 1, 0, 1, 1],
+            [0, 1, 0, 1, 1, 0, 1],
+            [0, 0, 1, 0, 1, 1, 1],
+        ],
+        dtype=np.uint8,
+    )
+    css = StabilizerCode.from_css(h, h)
+    zeros = np.zeros_like(h)
+    equivalent = StabilizerCode.from_symplectic(
+        np.vstack((h, zeros)), np.vstack((zeros, h))
+    )
+    css_result = css.search_logical_witness(max_trials=8, sketch_rows=8, seed=19)
+    equivalent_result = equivalent.search_logical_witness(
+        max_trials=8, sketch_rows=8, seed=19
+    )
+    assert css_result.best_weight == equivalent_result.best_weight == 3
+    assert css_result.best.sector == equivalent_result.best.sector
+    assert np.array_equal(css_result.best.x_words, equivalent_result.best.x_words)
+    assert np.array_equal(css_result.best.z_words, equivalent_result.best.z_words)
+    assert np.array_equal(
+        css_result.best.logical_x_words, equivalent_result.best.logical_x_words
+    )
+    assert np.array_equal(
+        css_result.best.logical_z_words, equivalent_result.best.logical_z_words
+    )
+    _assert_logical_witness(css, css_result)
+    _assert_logical_witness(equivalent, equivalent_result)
+
+
+def test_logical_witness_search_covers_shor_and_wide_packed_css() -> None:
+    shor_x = np.asarray(
+        [[1, 1, 1, 1, 1, 1, 0, 0, 0], [0, 0, 0, 1, 1, 1, 1, 1, 1]],
+        dtype=np.uint8,
+    )
+    shor_z = np.asarray(
+        [
+            [1, 1, 0, 0, 0, 0, 0, 0, 0],
+            [0, 1, 1, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 1, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1, 1],
+        ],
+        dtype=np.uint8,
+    )
+    shor = StabilizerCode.from_css(shor_x, shor_z)
+    shor_result = shor.search_logical_witness(max_trials=32, sketch_rows=16, seed=11)
+    assert shor_result.best_weight == 3
+    _assert_logical_witness(shor, shor_result)
+
+    wide_z = np.zeros((64, 65), dtype=np.uint8)
+    wide_z[np.arange(64), np.arange(64)] = 1
+    wide_z[np.arange(64), np.arange(64) + 1] = 1
+    wide = StabilizerCode.from_css(np.empty((0, 65), dtype=np.uint8), wide_z)
+    wide_result = wide.search_logical_witness(
+        sector="z", max_trials=8, sketch_rows=8, seed=11
+    )
+    assert wide_result.best_weight == 1
+    assert wide_result.best.x_words.shape == (2,)
+    assert wide_result.best.x_words[1] == 0
+    assert wide_result.best.z_words[1] == 0
+    _assert_logical_witness(wide, wide_result)
+
+
+def test_logical_witness_search_rejects_invalid_scope_and_budget() -> None:
+    code = _bit_flip_code()
+    with pytest.raises(ValueError, match="positive"):
+        code.search_logical_witness(max_trials=0)
+    with pytest.raises(ValueError, match="positive"):
+        code.search_logical_witness(max_trials=1, sketch_rows=0)
+    with pytest.raises(ValueError, match="positive"):
+        code.search_logical_witness(max_trials=1, stop_below_weight=0)
+    with pytest.raises(MemoryError, match="memory limit"):
+        code.search_logical_witness(max_trials=1, max_bytes=0)
+
+    full = StabilizerCode.from_css(
+        np.empty((0, 2), dtype=np.uint8),
+        np.asarray([[1, 0], [0, 1]], dtype=np.uint8),
+    )
+    with pytest.raises(ValueError, match="at least one logical"):
+        full.search_logical_witness(max_trials=1)
+
+    non_css = StabilizerCode.from_generators(
+        5,
+        [_word("XZZXI"), _word("IXZZX"), _word("XIXZZ"), _word("ZXIXZ")],
+    )
+    with pytest.raises(ValueError, match="non-CSS"):
+        non_css.search_logical_witness(sector="x", max_trials=1)
+
+
 def test_dense_projector_oracle_binds_signed_code_space_and_logicals() -> None:
     checks = (_word("ZZI"), _word("IZZ"))
     projector = _dense_code_projector(3, checks, (1, 1))
@@ -575,7 +784,7 @@ def test_resource_limits_cover_logical_storage_and_packed_batch_outputs() -> Non
     z_checks[:64] = np.eye(64, dtype=np.uint8)
     z_checks[64:] = z_checks[:64]
     dependent_advisory = StabilizerCode.from_css(
-        np.empty((0, 64), dtype=np.uint8), z_checks, max_bytes=5000
+        np.empty((0, 64), dtype=np.uint8), z_checks, max_bytes=6000
     )
     assert (dependent_advisory.rank, dependent_advisory.nrelations) == (64, 64)
     code = StabilizerCode.from_css(np.empty((0, 64), dtype=np.uint8), z_checks)

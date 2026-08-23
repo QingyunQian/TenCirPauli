@@ -56,6 +56,18 @@ def _general_finite_rate_code(nqubits: int) -> tcp.StabilizerCode:
     return tcp.StabilizerCode.from_symplectic(x, z)
 
 
+def _five_qubit_code(nqubits: int) -> tcp.StabilizerCode:
+    if nqubits != 5:
+        raise AssertionError("the five-qubit search workload has fixed width 5")
+    return tcp.StabilizerCode.from_generators(
+        5,
+        tuple(
+            tcp.PauliWord.from_string(value)
+            for value in ("XZZXI", "IXZZX", "XIXZZ", "ZXIXZ")
+        ),
+    )
+
+
 CONSTRUCTION_CASES: Tuple[Tuple[str, FamilyBuilder, int], ...] = (
     ("repetition", _repetition_code, 64),
     ("repetition_redundant", _redundant_repetition_code, 256),
@@ -67,6 +79,37 @@ CLASSIFICATION_CASES: Tuple[Tuple[str, FamilyBuilder, int], ...] = (
     ("repetition", _repetition_code, 256),
     ("balanced_css", _balanced_css_code, 256),
     ("finite_rate_general", _general_finite_rate_code, 1024),
+)
+
+SEARCH_CASES: Tuple[Tuple[str, FamilyBuilder, int, str, int, int, int], ...] = (
+    ("five_qubit_general", _five_qubit_code, 5, "general", 8, 4, 3),
+    (
+        "steane_css",
+        lambda _: tcp.StabilizerCode.from_css(
+            np.asarray(
+                [
+                    [1, 0, 0, 1, 0, 1, 1],
+                    [0, 1, 0, 1, 1, 0, 1],
+                    [0, 0, 1, 0, 1, 1, 1],
+                ],
+                dtype=np.uint8,
+            ),
+            np.asarray(
+                [
+                    [1, 0, 0, 1, 0, 1, 1],
+                    [0, 1, 0, 1, 1, 0, 1],
+                    [0, 0, 1, 0, 1, 1, 1],
+                ],
+                dtype=np.uint8,
+            ),
+        ),
+        7,
+        "auto",
+        32,
+        8,
+        3,
+    ),
+    ("finite_rate_css_90", _finite_rate_code, 90, "auto", 256, 64, 1),
 )
 
 
@@ -374,3 +417,56 @@ def test_stabilizer_code_error_set_grouping_regimes(
         max_abs_error=0.0,
         accuracy_reference="fixed_grouping_expectation",
     )
+
+
+@pytest.mark.parametrize(
+    ("family", "builder", "nqubits", "sector", "max_trials", "sketch_rows", "expected"),
+    SEARCH_CASES,
+    ids=[case[0] for case in SEARCH_CASES],
+)
+def test_logical_witness_search_workloads(
+    benchmark: BenchmarkFixture,
+    family: str,
+    builder: FamilyBuilder,
+    nqubits: int,
+    sector: str,
+    max_trials: int,
+    sketch_rows: int,
+    expected: int,
+) -> None:
+    code = builder(nqubits)
+    _assert_source_tree_imports(benchmark)
+    result = benchmark(
+        code.search_logical_witness,
+        sector=sector,
+        max_trials=max_trials,
+        sketch_rows=sketch_rows,
+        seed=20260822,
+    )
+    word = tcp.PauliWord(
+        nqubits,
+        tuple(int(value) for value in result.best.x_words),
+        tuple(int(value) for value in result.best.z_words),
+    )
+    assert result.best_weight == result.best.weight == word.weight
+    assert result.trials_run == max_trials
+    assert code.classify(word).kind is tcp.StabilizerErrorKind.LOGICAL
+    assert result.best_weight == expected
+    extra_info = dict(
+        family=family,
+        sector=sector,
+        max_trials=max_trials,
+        sketch_rows=sketch_rows,
+        resolved_sketch_rows=result.resolved_sketch_rows,
+        initial_incumbent_weight=result.initial_incumbent_weight,
+        initialization_candidates=result.initialization_candidates,
+        setup_nanos=result.setup_nanos,
+        initialization_nanos=result.initialization_nanos,
+        trials_run=result.trials_run,
+        best_weight=result.best_weight,
+        witness_sector=result.best.sector,
+        quality_reference="known_fixture_weight",
+    )
+    if benchmark.stats is not None:
+        extra_info["trials_per_second"] = max_trials / benchmark.stats["mean"]
+    benchmark.extra_info.update(extra_info)

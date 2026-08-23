@@ -5,7 +5,8 @@ use pyo3::exceptions::{PyOverflowError, PyValueError};
 use pyo3::prelude::*;
 use std::sync::Arc;
 use tencir_pauli_core::{
-    pack_code_batch, BatchClassification, ErrorSetAnalysis, PackedBatchClassification,
+    pack_code_batch, search_logical_witness as run_logical_witness_search, BatchClassification,
+    ErrorSetAnalysis, LogicalSearchSector, LogicalWitnessSearchResult, PackedBatchClassification,
     StabilizerCode,
 };
 
@@ -42,6 +43,30 @@ type SingularClassificationOutput<'py> = (
     u8,
     OptionalBits<'py>,
     OptionalBits<'py>,
+);
+#[allow(clippy::type_complexity)]
+type LogicalWitnessSearchOutput<'py> = (
+    (
+        Bound<'py, PyArray1<u64>>,
+        Bound<'py, PyArray1<u64>>,
+        Bound<'py, PyArray1<u64>>,
+        Bound<'py, PyArray1<u64>>,
+    ),
+    (
+        (
+            usize,
+            u8,
+            u8,
+            String,
+            usize,
+            usize,
+            usize,
+            Option<usize>,
+            u64,
+            bool,
+        ),
+        (usize, usize, usize, u64, u64),
+    ),
 );
 
 #[pyclass(module = "tencirpauli._native")]
@@ -171,6 +196,45 @@ impl NativeStabilizerCodeHandle {
             array2_u64(py, z_x, self.nlogical(), self.word_count(), "logical Z X")?,
             array2_u64(py, z_z, self.nlogical(), self.word_count(), "logical Z Z")?,
         ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (sector, max_trials, sketch_rows, stop_below_weight, seed, max_bytes))]
+    fn search_logical_witness<'py>(
+        &self,
+        py: Python<'py>,
+        sector: u8,
+        max_trials: usize,
+        sketch_rows: usize,
+        stop_below_weight: Option<usize>,
+        seed: u64,
+        max_bytes: usize,
+    ) -> PyResult<LogicalWitnessSearchOutput<'py>> {
+        let requested_sector = match sector {
+            0 => LogicalSearchSector::Auto,
+            1 => LogicalSearchSector::X,
+            2 => LogicalSearchSector::Z,
+            3 => LogicalSearchSector::General,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "sector must be one of auto, x, z, general",
+                ))
+            }
+        };
+        let result = py
+            .allow_threads(|| {
+                run_logical_witness_search(
+                    self.code(),
+                    requested_sector,
+                    max_trials,
+                    sketch_rows,
+                    stop_below_weight,
+                    seed,
+                    max_bytes as u128,
+                )
+            })
+            .map_err(map_error)?;
+        Ok(logical_witness_search_output(py, result))
     }
 
     fn syndrome_one<'py>(
@@ -568,6 +632,42 @@ fn error_set_output<'py>(py: Python<'py>, result: ErrorSetAnalysis) -> ErrorSetO
 
 fn optional_bits<'py>(py: Python<'py>, values: Option<Vec<u8>>) -> OptionalBits<'py> {
     values.map(|values| PyArray1::from_vec(py, values))
+}
+
+fn logical_witness_search_output<'py>(
+    py: Python<'py>,
+    result: LogicalWitnessSearchResult,
+) -> LogicalWitnessSearchOutput<'py> {
+    let best = result.best;
+    (
+        (
+            PyArray1::from_vec(py, best.x_words),
+            PyArray1::from_vec(py, best.z_words),
+            PyArray1::from_vec(py, best.logical_x_words),
+            PyArray1::from_vec(py, best.logical_z_words),
+        ),
+        (
+            (
+                best.weight,
+                best.sector as u8,
+                result.sector as u8,
+                result.algorithm.to_owned(),
+                result.sketch_rows,
+                result.max_trials,
+                result.trials_run,
+                result.stop_below_weight,
+                result.seed,
+                result.early_stopped,
+            ),
+            (
+                result.initial_incumbent_weight,
+                result.initialization_candidates,
+                result.resolved_sketch_rows,
+                result.setup_nanos,
+                result.initialization_nanos,
+            ),
+        ),
+    )
 }
 
 fn classification_output<'py>(

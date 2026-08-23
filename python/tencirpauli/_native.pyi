@@ -1019,6 +1019,21 @@ class NativeStabilizerCodeHandle:
     def logical_operator_arrays(
         self,
     ) -> tuple[UInt64Array, UInt64Array, UInt64Array, UInt64Array]: ...
+    def search_logical_witness(
+        self,
+        sector: int,
+        max_trials: int,
+        sketch_rows: int,
+        stop_below_weight: int | None,
+        seed: int,
+        max_bytes: int,
+    ) -> tuple[
+        tuple[UInt64Array, UInt64Array, UInt64Array, UInt64Array],
+        tuple[
+            tuple[int, int, int, str, int, int, int, int | None, int, bool],
+            tuple[int, int, int, int, int],
+        ],
+    ]: ...
     def syndrome_one(
         self, x_words: Sequence[int], z_words: Sequence[int]
     ) -> UInt8Array: ...

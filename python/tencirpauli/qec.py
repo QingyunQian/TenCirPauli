@@ -13,10 +13,13 @@ from . import _native
 from ._validation import validate_nonnegative_int
 from .hamiltonian import DEFAULT_MAX_BYTES, _validate_max_bytes
 from .pauli import PauliWord
+from .shadows import _normalize_seed
 
 
 QubitOrder = Literal["q0_first"]
 SyndromeOrder = Literal["input_checks"]
+WitnessSector = Literal["x", "z", "mixed"]
+LogicalSearchSector = Literal["auto", "x", "z", "general"]
 PauliBatchInput = Union[Sequence[PauliWord], np.ndarray[Any, Any]]
 
 
@@ -42,6 +45,41 @@ class LogicalOperatorArrays:
     logical_z_z_words: np.ndarray[Any, Any]
     nqubits: int
     qubit_order: QubitOrder
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalWitness:
+    """A validated physical Pauli witness with upper-bound semantics."""
+
+    x_words: np.ndarray[Any, Any]
+    z_words: np.ndarray[Any, Any]
+    logical_x_words: np.ndarray[Any, Any]
+    logical_z_words: np.ndarray[Any, Any]
+    weight: int
+    sector: WitnessSector
+    nqubits: int
+    qubit_order: QubitOrder
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalWitnessSearchResult:
+    """An anytime result certifying only ``distance <= best_weight``."""
+
+    best: LogicalWitness
+    best_weight: int
+    sector: LogicalSearchSector
+    algorithm: Literal["randomized_information_set_v2"]
+    sketch_rows: int
+    max_trials: int
+    trials_run: int
+    stop_below_weight: Optional[int]
+    seed: int
+    early_stopped: bool
+    initial_incumbent_weight: int
+    initialization_candidates: int
+    resolved_sketch_rows: int
+    setup_nanos: int
+    initialization_nanos: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,6 +366,99 @@ class StabilizerCode:
         )
         return logical_x, logical_z
 
+    def search_logical_witness(
+        self,
+        *,
+        sector: LogicalSearchSector = "auto",
+        max_trials: int,
+        sketch_rows: int = 64,
+        stop_below_weight: Optional[int] = None,
+        seed: Optional[int] = None,
+        max_bytes: Optional[int] = DEFAULT_MAX_BYTES,
+    ) -> LogicalWitnessSearchResult:
+        """Search for a non-trivial logical Pauli and an upper bound on distance.
+
+        The returned witness proves only ``d <= best_weight``. The operation is
+        randomized after deterministic logical initialization and never claims
+        an exact distance or a certified lower bound.
+        """
+        if not isinstance(sector, str) or sector not in {"auto", "x", "z", "general"}:
+            raise ValueError("sector must be one of 'auto', 'x', 'z', or 'general'")
+        normalized_trials = _positive_search_int(max_trials, "max_trials")
+        normalized_sketch = _positive_search_int(sketch_rows, "sketch_rows")
+        if stop_below_weight is None:
+            normalized_stop = None
+        else:
+            normalized_stop = _positive_search_int(
+                stop_below_weight, "stop_below_weight"
+            )
+        _validate_max_bytes(max_bytes)
+        normalized_seed = _normalize_seed(seed)
+        sector_code = {"auto": 0, "x": 1, "z": 2, "general": 3}[sector]
+        arrays, metadata = self._native_handle.search_logical_witness(
+            sector_code,
+            normalized_trials,
+            normalized_sketch,
+            normalized_stop,
+            normalized_seed,
+            _qec_max_bytes(max_bytes),
+        )
+        x_words, z_words, logical_x_words, logical_z_words = arrays
+        (core_metadata, extended_metadata) = metadata
+        (
+            weight,
+            witness_sector_code,
+            result_sector_code,
+            algorithm,
+            result_sketch_rows,
+            result_max_trials,
+            trials_run,
+            result_stop,
+            result_seed,
+            early_stopped,
+        ) = core_metadata
+        (
+            initial_incumbent_weight,
+            initialization_candidates,
+            resolved_sketch_rows,
+            setup_nanos,
+            initialization_nanos,
+        ) = extended_metadata
+        witness_sectors: Tuple[WitnessSector, ...] = ("x", "z", "mixed")
+        result_sectors: Tuple[LogicalSearchSector, ...] = (
+            "auto",
+            "x",
+            "z",
+            "general",
+        )
+        witness = LogicalWitness(
+            _readonly_copy(x_words, np.uint64),
+            _readonly_copy(z_words, np.uint64),
+            _readonly_copy(logical_x_words, np.uint64),
+            _readonly_copy(logical_z_words, np.uint64),
+            int(weight),
+            witness_sectors[int(witness_sector_code)],
+            self.nqubits,
+            "q0_first",
+        )
+        return LogicalWitnessSearchResult(
+            witness,
+            int(weight),
+            result_sectors[int(result_sector_code)],
+            cast(Literal["randomized_information_set_v2"], str(algorithm)),
+            int(result_sketch_rows),
+            int(result_max_trials),
+            int(trials_run),
+            None if result_stop is None else int(result_stop),
+            int(result_seed),
+            bool(early_stopped),
+            int(initial_incumbent_weight),
+            int(initialization_candidates),
+            int(resolved_sketch_rows),
+            int(setup_nanos),
+            int(initialization_nanos),
+        )
+
     def syndrome(self, error: PauliWord) -> Tuple[int, ...]:
         """Return the syndrome in the original supplied-check order."""
         word = _validate_word(error, self.nqubits, "error")
@@ -454,6 +585,12 @@ def _validate_word(value: object, nqubits: int, name: str) -> PauliWord:
     if value.nqubits != nqubits:
         raise ValueError(f"{name} has width {value.nqubits}, expected {nqubits}")
     return value
+
+
+def _positive_search_int(value: object, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return int(value)
 
 
 def _qec_max_bytes(max_bytes: Optional[int]) -> int:
@@ -691,6 +828,8 @@ __all__ = [
     "ErrorClassificationBatch",
     "ErrorSetAnalysis",
     "LogicalOperatorArrays",
+    "LogicalWitness",
+    "LogicalWitnessSearchResult",
     "StabilizerCheckArrays",
     "StabilizerCode",
     "StabilizerErrorKind",

@@ -89,6 +89,202 @@ def _hgp_repetition(length: int) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, 
     return matrix_x, matrix_z
 
 
+def _gf2_rank(matrix: np.ndarray[Any, Any]) -> int:
+    """Return the binary row rank of a small classical check matrix."""
+    basis: dict[int, int] = {}
+    for row in np.asarray(matrix, dtype=np.uint8):
+        value = int.from_bytes(
+            np.packbits(row, bitorder="little").tobytes(), byteorder="little"
+        )
+        while value:
+            pivot = value.bit_length() - 1
+            previous = basis.get(pivot)
+            if previous is None:
+                basis[pivot] = value
+                break
+            value ^= previous
+    return len(basis)
+
+
+def _random_regular_check_matrix(
+    seed: int,
+    checks: int = 72,
+    bits: int = 96,
+    row_weight: int = 4,
+    column_weight: int = 3,
+) -> np.ndarray[Any, Any]:
+    """Build a reproducible simple regular binary check matrix with full row rank."""
+    if checks * row_weight != bits * column_weight:
+        raise ValueError("regular check degrees do not have matching edge counts")
+    row_stubs = np.repeat(np.arange(checks), row_weight)
+    column_stubs = np.repeat(np.arange(bits), column_weight)
+    for attempt in range(10_000):
+        rng = np.random.default_rng(seed + attempt)
+        shuffled_rows = row_stubs.copy()
+        shuffled_columns = column_stubs.copy()
+        rng.shuffle(shuffled_rows)
+        rng.shuffle(shuffled_columns)
+        pairs = shuffled_rows * bits + shuffled_columns
+        if np.unique(pairs).size != pairs.size:
+            continue
+        matrix = np.zeros((checks, bits), dtype=np.uint8)
+        matrix[shuffled_rows, shuffled_columns] = 1
+        if _gf2_rank(matrix) != checks:
+            continue
+        return matrix
+    raise RuntimeError("failed to generate a simple full-rank regular check matrix")
+
+
+def _random_hgp_14400(
+    matrix_seed: int = 20260823,
+) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    """Return a sparse random HGP with parameters ``[[14400, 576, d]]``."""
+    h = _random_regular_check_matrix(matrix_seed)
+    m, n = h.shape
+    matrix_x = np.hstack(
+        (np.kron(h, np.eye(n, dtype=np.uint8)), np.kron(np.eye(m, dtype=np.uint8), h.T))
+    )
+    matrix_z = np.hstack(
+        (np.kron(np.eye(n, dtype=np.uint8), h), np.kron(h.T, np.eye(m, dtype=np.uint8)))
+    )
+    return np.ascontiguousarray(matrix_x), np.ascontiguousarray(matrix_z)
+
+
+def _row_integer(row: np.ndarray[Any, Any]) -> int:
+    """Pack one little-endian binary row into a Python integer."""
+    return int.from_bytes(
+        np.packbits(row, bitorder="little").tobytes(), byteorder="little"
+    )
+
+
+def _rref_integer_rows(
+    matrix: np.ndarray[Any, Any], ncolumns: int
+) -> tuple[list[int], list[int]]:
+    """Return reduced binary rows and pivot columns for a small fixture."""
+    rows = [_row_integer(row) for row in matrix]
+    pivots: list[int] = []
+    pivot_row = 0
+    for column in range(ncolumns):
+        bit = 1 << column
+        selected = next(
+            (index for index in range(pivot_row, len(rows)) if rows[index] & bit),
+            None,
+        )
+        if selected is None:
+            continue
+        rows[pivot_row], rows[selected] = rows[selected], rows[pivot_row]
+        for index in range(len(rows)):
+            if index != pivot_row and rows[index] & bit:
+                rows[index] ^= rows[pivot_row]
+        pivots.append(column)
+        pivot_row += 1
+        if pivot_row == len(rows):
+            break
+    return rows[:pivot_row], pivots
+
+
+def _binary_nullspace(matrix: np.ndarray[Any, Any]) -> list[int]:
+    """Return a deterministic integer basis of a binary matrix nullspace."""
+    ncolumns = int(matrix.shape[1])
+    rows, pivots = _rref_integer_rows(matrix, ncolumns)
+    pivot_set = set(pivots)
+    result = []
+    for free in range(ncolumns):
+        if free in pivot_set:
+            continue
+        value = 1 << free
+        for row, pivot in zip(rows, pivots, strict=True):
+            if row & (1 << free):
+                value |= 1 << pivot
+        result.append(value)
+    return result
+
+
+def _binary_vectors_independent(values: list[int]) -> bool:
+    """Return whether integer-encoded binary vectors are independent."""
+    if not values:
+        return True
+    ncolumns = max(value.bit_length() for value in values)
+    matrix = np.asarray(
+        [[(value >> column) & 1 for column in range(ncolumns)] for value in values],
+        dtype=np.uint8,
+    )
+    return len(_rref_integer_rows(matrix, ncolumns)[1]) == len(values)
+
+
+def _random_css_search_checks(
+    matrix_seed: int = 20260823,
+    nqubits: int = 256,
+    x_rank: int = 96,
+    z_rank: int = 96,
+) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    """Create the reproducible CSS seed for the general search-quality fixture."""
+    rng = np.random.default_rng(matrix_seed)
+    while True:
+        x_checks = rng.integers(0, 2, size=(x_rank, nqubits), dtype=np.uint8)
+        x_checks[:, 2] = x_checks[:, 0] ^ x_checks[:, 1]
+        if len(_rref_integer_rows(x_checks, nqubits)[1]) == x_rank:
+            break
+
+    nullspace = _binary_nullspace(x_checks)
+    target = (1 << 0) | (1 << 1) | (1 << 2)
+    while True:
+        selected: list[int] = []
+        while len(selected) < z_rank:
+            candidate = 0
+            for vector in nullspace:
+                if rng.integers(0, 2):
+                    candidate ^= vector
+            if candidate and _binary_vectors_independent([*selected, candidate]):
+                selected.append(candidate)
+        z_checks = np.asarray(
+            [
+                [(value >> column) & 1 for column in range(nqubits)]
+                for value in selected
+            ],
+            dtype=np.uint8,
+        )
+        if (
+            len(
+                _rref_integer_rows(
+                    np.vstack((z_checks, _integer_to_row(target, nqubits))), nqubits
+                )[1]
+            )
+            == z_rank + 1
+        ):
+            break
+
+    permutation = rng.permutation(nqubits)
+    return x_checks[:, permutation], z_checks[:, permutation]
+
+
+def _integer_to_row(value: int, nqubits: int) -> np.ndarray[Any, Any]:
+    """Expand a little-endian binary integer into one fixture row."""
+    return np.asarray(
+        [(value >> column) & 1 for column in range(nqubits)], dtype=np.uint8
+    )
+
+
+def _random_general_256(
+    matrix_seed: int = 20260823,
+) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    """Return a fixed dense ``[[256, 64, 3]]`` general stabilizer fixture."""
+    css_x, css_z = _random_css_search_checks(matrix_seed)
+    x_checks = np.vstack((css_x, np.zeros_like(css_x)))
+    z_checks = np.vstack((np.zeros_like(css_z), css_z))
+    scramble_rng = np.random.default_rng(matrix_seed ^ 0xA5A5)
+    operations = scramble_rng.integers(0, 3, size=x_checks.shape[1])
+    for column, operation in enumerate(operations):
+        if operation == 1:
+            x_checks[:, column], z_checks[:, column] = (
+                z_checks[:, column].copy(),
+                x_checks[:, column].copy(),
+            )
+        elif operation == 2:
+            z_checks[:, column] ^= x_checks[:, column]
+    return np.ascontiguousarray(x_checks), np.ascontiguousarray(z_checks)
+
+
 def _direct_sum_five(
     blocks: int,
 ) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any], np.ndarray[Any, Any]]:
@@ -200,6 +396,8 @@ def available_workloads() -> tuple[str, ...]:
         "hgp_24",
         "hgp_32",
         "hgp_48",
+        "random_hgp_14400",
+        "random_general_256",
         "five_qubit_16",
         "five_qubit_64",
         "five_qubit_256",
@@ -226,6 +424,12 @@ def get_workload(name: str) -> Workload:
         length = int(name.removeprefix("hgp_"))
         x_checks, z_checks = _hgp_repetition(length)
         family = "hgp_repetition"
+    elif name == "random_hgp_14400":
+        x_checks, z_checks = _random_hgp_14400()
+        family = "random_hgp"
+    elif name == "random_general_256":
+        x_checks, z_checks = _random_general_256()
+        family = "random_general"
     elif name.startswith("five_qubit_"):
         suffix = name.removeprefix("five_qubit_")
         if suffix.endswith("_redundant"):
@@ -256,12 +460,22 @@ def get_workload(name: str) -> Workload:
         name=name,
         family=family,
         kind=(
-            "css" if family in {"repetition", "steane", "hgp_repetition"} else "general"
+            "css"
+            if family in {"repetition", "steane", "hgp_repetition", "random_hgp"}
+            else "general"
         ),
         x_checks=np.ascontiguousarray(x_checks, dtype=np.uint8),
         z_checks=np.ascontiguousarray(z_checks, dtype=np.uint8),
         reference_logicals=np.ascontiguousarray(reference, dtype=np.uint8),
-        seed=20260822 + sum(ord(character) for character in name),
+        seed=(
+            20260824
+            if name == "random_hgp_14400"
+            else (
+                20260823 ^ 0x9E3779B97F4A7C15
+                if name == "random_general_256"
+                else 20260822 + sum(ord(character) for character in name)
+            )
+        ),
     )
 
 

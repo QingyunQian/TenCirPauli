@@ -38,6 +38,8 @@ def test_top_level_and_advanced_manifests_are_separated() -> None:
         "GeneralCommutingGroupingResult",
         "HybridOperator",
         "HybridTerm",
+        "LogicalWitness",
+        "LogicalWitnessSearchResult",
         "MVPPlan",
         "MajoranaOperator",
         "MajoranaProduct",

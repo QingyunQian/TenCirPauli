@@ -42,7 +42,12 @@ from .propagation_circuit import (
     PropagationCircuit,
     PropagationCircuitValueAndGradient,
 )
-from .qec import StabilizerCode, StabilizerErrorKind
+from .qec import (
+    LogicalWitness,
+    LogicalWitnessSearchResult,
+    StabilizerCode,
+    StabilizerErrorKind,
+)
 from .shadows import (
     CliffordSnapshotArrays,
     PauliSnapshotArrays,
@@ -94,6 +99,8 @@ __all__ = [
     "GeneralCommutingGroupingResult",
     "HybridOperator",
     "HybridTerm",
+    "LogicalWitness",
+    "LogicalWitnessSearchResult",
     "MVPPlan",
     "MajoranaOperator",
     "MajoranaProduct",

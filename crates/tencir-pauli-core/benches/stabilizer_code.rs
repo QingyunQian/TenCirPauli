@@ -1,7 +1,7 @@
 use std::{env, time::Duration};
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use tencir_pauli_core::{pack_code_batch, StabilizerCode};
+use tencir_pauli_core::{pack_code_batch, LogicalSearchSector, StabilizerCode};
 
 const BATCH: usize = 256;
 const CLASSIFICATION_COMPONENT_BATCH: usize = 64;
@@ -65,6 +65,21 @@ fn general_finite_rate_code(nqubits: usize) -> StabilizerCode {
     }
     StabilizerCode::from_binary(nqubits, &x_bits, &z_bits, &vec![1_i8; rank], u128::MAX)
         .expect("general finite-rate code")
+}
+
+fn five_qubit_code() -> StabilizerCode {
+    let codes = [
+        1_u8, 3, 3, 1, 0, 0, 1, 3, 3, 1, 1, 0, 1, 3, 3, 3, 1, 0, 1, 3,
+    ];
+    let (x_words, z_words) = pack_code_batch(5, &codes, 4).expect("five-qubit rows");
+    StabilizerCode::from_packed(5, &x_words, &z_words, &[1; 4], u128::MAX).expect("five-qubit code")
+}
+
+fn steane_code() -> StabilizerCode {
+    let h = [
+        1_u8, 0, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 1,
+    ];
+    StabilizerCode::from_css_binary(7, &h, &h, &[1; 3], &[1; 3], u128::MAX).expect("Steane code")
 }
 
 struct HgpCssInput {
@@ -432,6 +447,61 @@ fn benchmark_stabilizer_code(criterion: &mut Criterion) {
             |bencher| {
                 bencher.iter(|| {
                     black_box(code.analyze_error_set(&x_words, &z_words, BATCH, u128::MAX))
+                })
+            },
+        );
+    }
+
+    for (name, code, sector, ntrials, sketch_rows, expected_weight) in [
+        (
+            "five_qubit_general",
+            five_qubit_code(),
+            LogicalSearchSector::General,
+            8_usize,
+            4_usize,
+            3_usize,
+        ),
+        (
+            "steane_css",
+            steane_code(),
+            LogicalSearchSector::Auto,
+            32_usize,
+            8_usize,
+            3_usize,
+        ),
+        (
+            "finite_rate_css_90",
+            {
+                let mut z_bits = vec![0_u8; 45 * 90];
+                for row in 0..45 {
+                    z_bits[row * 90 + row] = 1;
+                }
+                StabilizerCode::from_css_binary(90, &[], &z_bits, &[], &[1; 45], u128::MAX)
+                    .expect("90-qubit CSS code")
+            },
+            LogicalSearchSector::Auto,
+            256_usize,
+            64_usize,
+            1_usize,
+        ),
+    ] {
+        group.throughput(Throughput::Elements(ntrials as u64));
+        group.bench_function(
+            BenchmarkId::new("logical_witness_search", name),
+            |bencher| {
+                bencher.iter(|| {
+                    let result = code
+                        .search_logical_witness(
+                            sector,
+                            ntrials,
+                            sketch_rows,
+                            None,
+                            20260822,
+                            u128::MAX,
+                        )
+                        .expect("logical witness search");
+                    assert_eq!(result.best_weight, expected_weight);
+                    black_box(result)
                 })
             },
         );

@@ -22,6 +22,7 @@ from workloads import (
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+SEARCH_ONLY_WORKLOADS = frozenset({"random_hgp_14400", "random_general_256"})
 
 
 def _record(stdout: str) -> dict[str, Any]:
@@ -320,7 +321,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     workload_names = (
-        available_workloads()
+        tuple(
+            name for name in available_workloads() if name not in SEARCH_ONLY_WORKLOADS
+        )
         if args.workloads == "all"
         else tuple(item.strip() for item in args.workloads.split(",") if item.strip())
     )

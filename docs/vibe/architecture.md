@@ -160,7 +160,7 @@ This subsystem does not claim to be a general-purpose statevector or Clifford si
 
 ### 8.6 Static stabilizer-code analysis
 
-`StabilizerCode` is a separate immutable Rust-native algebra object for a qubit code space, not a mode of `StabilizerState`. It retains the caller's ordered signed checks for syndrome coordinates and keeps canonical packed GF(2) bases, redundant-check relations, deterministic logical representatives, error classification, error-set analysis, and external decoder-correction verification in the code core. The public boundary remains flat NumPy arrays and one coarse native call per construction or batch operation; distance search, decoder selection, circuit measurement semantics, and subsystem/gauge codes remain separate scopes.
+`StabilizerCode` is a separate immutable Rust-native algebra object for a qubit code space, not a mode of `StabilizerState`. It retains the caller's ordered signed checks for syndrome coordinates and keeps canonical packed GF(2) bases, redundant-check relations, deterministic logical representatives, error classification, error-set analysis, external decoder-correction verification, and validated anytime logical-witness upper-bound search in the code core. The public boundary remains flat NumPy arrays and one coarse native call per construction or batch operation; exact distance search, decoder selection, circuit measurement semantics, and subsystem/gauge codes remain separate scopes.
 
 ## 9. 两种执行模式
 

@@ -26,6 +26,7 @@
 - [Phase 13 classical shadow snapshots](phase-13-classical-shadow-snapshots-spec.md)（implemented；focused numerical and native integration checks complete）
 - [Phase 14 stabilizer-code analysis and decoder-output verification](phase-14-stabilizer-code-analysis-spec.md)（core/native/Python remediation已完成；owner已选择 eager logical construction 并 waiver eager-versus-lazy A/B；compact QEC benchmark acceptance evidence已记录）
 - [Phase 14.5 qLDPC static stabilizer-code Research Example](phase-14.5-qldpc-research-example-spec.md)（specified；not implemented；qLDPC is the sole external comparator）
+- [Phase 15 logical-witness search and distance upper bounds](phase-15-logical-witness-distance-search-spec.md)（implemented；randomized upper-bound search only；acceptance evidence recorded 2026-08-22）
 
 ## Experimental proposals
 
