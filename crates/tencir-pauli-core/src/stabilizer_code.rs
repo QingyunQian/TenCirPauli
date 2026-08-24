@@ -147,15 +147,19 @@ impl ConstructionEstimate {
             word_count,
             "estimating retained logical representatives",
         )?;
+        let canonical_bit_words =
+            packed_count(nqubits.checked_mul(2).ok_or(PauliError::Overflow {
+                context: "estimating canonical stabilizer bit rows",
+            })?);
         let additional = checked_sum(&[
             checked_bytes(
                 checked_product(
-                    checked_product(rank, 2, "estimating canonical stabilizer words")?,
-                    word_count,
-                    "estimating canonical stabilizer words",
+                    rank,
+                    canonical_bit_words,
+                    "estimating canonical stabilizer bit rows",
                 )?,
                 size_of::<u64>(),
-                "estimating canonical stabilizer words",
+                "estimating canonical stabilizer bit rows",
             )?,
             checked_bytes(
                 relation_words,
@@ -192,13 +196,10 @@ pub struct StabilizerCode {
     qubit_degrees: Vec<usize>,
     rank: usize,
     relations: Vec<Vec<u64>>,
-    canonical_stabilizer_words: Vec<Vec<u64>>,
+    canonical_stabilizer_bits: Vec<Vec<u64>>,
     logical_x_words: Vec<Vec<u64>>,
     logical_z_words: Vec<Vec<u64>>,
-    general_search_cache: Arc<OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>>>,
-    css_analysis_cache: Arc<OnceLock<Result<crate::logical_search::CssAnalysis, PauliError>>>,
-    css_x_search_cache: Arc<OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>>>,
-    css_z_search_cache: Arc<OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>>>,
+    logical_search_caches: Arc<OnceLock<crate::logical_search::LogicalSearchCaches>>,
 }
 
 impl StabilizerCode {
@@ -382,10 +383,7 @@ impl StabilizerCode {
         enforce_limit(retained_estimate.bytes, max_bytes)?;
         let (logical_x_words, logical_z_words) =
             build_logical_basis(&canonical_bits, nqubits, rank)?;
-        let canonical_stabilizer_words = canonical_bits
-            .iter()
-            .map(|row| flat_words_from_bits(row, nqubits))
-            .collect::<Vec<_>>();
+        let canonical_stabilizer_bits = canonical_bits;
 
         Ok(Self {
             nqubits,
@@ -398,13 +396,10 @@ impl StabilizerCode {
             qubit_degrees,
             rank,
             relations,
-            canonical_stabilizer_words,
+            canonical_stabilizer_bits,
             logical_x_words,
             logical_z_words,
-            general_search_cache: Arc::new(OnceLock::new()),
-            css_analysis_cache: Arc::new(OnceLock::new()),
-            css_x_search_cache: Arc::new(OnceLock::new()),
-            css_z_search_cache: Arc::new(OnceLock::new()),
+            logical_search_caches: Arc::new(OnceLock::new()),
         })
     }
 
@@ -545,32 +540,37 @@ impl StabilizerCode {
         &self.relations
     }
 
-    pub(crate) fn canonical_stabilizer_word_rows(&self) -> &[Vec<u64>] {
-        &self.canonical_stabilizer_words
+    pub(crate) fn canonical_stabilizer_bit_rows(&self) -> &[Vec<u64>] {
+        &self.canonical_stabilizer_bits
     }
 
     pub(crate) fn general_search_cache(
         &self,
     ) -> &OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>> {
-        self.general_search_cache.as_ref()
+        self.logical_search_caches().general()
     }
 
     pub(crate) fn css_analysis_cache(
         &self,
     ) -> &OnceLock<Result<crate::logical_search::CssAnalysis, PauliError>> {
-        self.css_analysis_cache.as_ref()
+        self.logical_search_caches().css_analysis()
     }
 
     pub(crate) fn css_x_search_cache(
         &self,
     ) -> &OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>> {
-        self.css_x_search_cache.as_ref()
+        self.logical_search_caches().css_x()
     }
 
     pub(crate) fn css_z_search_cache(
         &self,
     ) -> &OnceLock<Result<crate::logical_search::PreparedSearch, PauliError>> {
-        self.css_z_search_cache.as_ref()
+        self.logical_search_caches().css_z()
+    }
+
+    fn logical_search_caches(&self) -> &crate::logical_search::LogicalSearchCaches {
+        self.logical_search_caches
+            .get_or_init(crate::logical_search::LogicalSearchCaches::new)
     }
 
     pub fn logical_operator_words(&self) -> (Vec<u64>, Vec<u64>, Vec<u64>, Vec<u64>) {
@@ -1471,7 +1471,7 @@ fn bits_from_words_into(x_words: &[u64], z_words: &[u64], nqubits: usize, bits: 
     }
 }
 
-fn words_from_bits(bits: &[u64], nqubits: usize) -> (Vec<u64>, Vec<u64>) {
+pub(crate) fn words_from_bits(bits: &[u64], nqubits: usize) -> (Vec<u64>, Vec<u64>) {
     let word_count = packed_word_count(nqubits);
     let mut x_words = vec![0_u64; word_count];
     let mut z_words = vec![0_u64; word_count];

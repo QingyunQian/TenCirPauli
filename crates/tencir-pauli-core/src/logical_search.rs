@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 use std::mem::size_of;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -9,7 +10,7 @@ use rayon::prelude::*;
 use crate::error::PauliError;
 use crate::gf2::{get_bit, null_space, packed_count, rank, set_bit, xor_assign, RrefBasis};
 use crate::random::RandomStream;
-use crate::stabilizer_code::StabilizerCode;
+use crate::stabilizer_code::{words_from_bits, StabilizerCode};
 
 /// The seeded algorithm identifier for the first logical-witness search path.
 pub const LOGICAL_SEARCH_ALGORITHM: &str = "randomized_information_set_v2";
@@ -225,6 +226,41 @@ pub(crate) struct CssAnalysis {
     canonical: Vec<PhysicalRow>,
     pure_x_rank: usize,
     pure_z_rank: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct LogicalSearchCaches {
+    general: OnceLock<Result<PreparedSearch, PauliError>>,
+    css_analysis: OnceLock<Result<CssAnalysis, PauliError>>,
+    css_x: OnceLock<Result<PreparedSearch, PauliError>>,
+    css_z: OnceLock<Result<PreparedSearch, PauliError>>,
+}
+
+impl LogicalSearchCaches {
+    pub(crate) fn new() -> Self {
+        Self {
+            general: OnceLock::new(),
+            css_analysis: OnceLock::new(),
+            css_x: OnceLock::new(),
+            css_z: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn general(&self) -> &OnceLock<Result<PreparedSearch, PauliError>> {
+        &self.general
+    }
+
+    pub(crate) fn css_analysis(&self) -> &OnceLock<Result<CssAnalysis, PauliError>> {
+        &self.css_analysis
+    }
+
+    pub(crate) fn css_x(&self) -> &OnceLock<Result<PreparedSearch, PauliError>> {
+        &self.css_x
+    }
+
+    pub(crate) fn css_z(&self) -> &OnceLock<Result<PreparedSearch, PauliError>> {
+        &self.css_z
+    }
 }
 
 impl CssAnalysis {
@@ -1119,7 +1155,7 @@ fn cached_css_direction(
 }
 
 fn prepare_general(code: &StabilizerCode) -> Result<PreparedSearch, PauliError> {
-    let stabilizers = canonical_stabilizer_rows(code)?;
+    let stabilizers = build_canonical_stabilizer_rows(code)?;
     let mut logical_rows =
         Vec::with_capacity(code.nlogical().checked_mul(2).ok_or(PauliError::Overflow {
             context: "building general logical-search quotient",
@@ -1137,6 +1173,7 @@ fn prepare_general(code: &StabilizerCode) -> Result<PreparedSearch, PauliError> 
         });
     }
     let basis = TaggedBasis::from_rows(code.nqubits(), &stabilizers, &logical_rows)?;
+    drop(stabilizers);
     Ok(PreparedSearch {
         sector: WitnessSector::Mixed,
         direction: GENERAL_DIRECTION,
@@ -1156,7 +1193,7 @@ fn prepare_css_pair(code: &StabilizerCode) -> Result<(PreparedSearch, PreparedSe
 }
 
 fn prepare_css_analysis(code: &StabilizerCode) -> Result<CssAnalysis, PauliError> {
-    let canonical = canonical_stabilizer_rows(code)?;
+    let canonical = build_canonical_stabilizer_rows(code)?;
     let pure_x_rank = pure_stabilizer_rank(&canonical, code.nqubits(), true)?;
     let pure_z_rank = pure_stabilizer_rank(&canonical, code.nqubits(), false)?;
     if pure_x_rank.checked_add(pure_z_rank) != Some(canonical.len()) {
@@ -1212,31 +1249,27 @@ fn prepare_css_direction(
     })
 }
 
-fn canonical_stabilizer_rows(code: &StabilizerCode) -> Result<Vec<PhysicalRow>, PauliError> {
-    if code.canonical_stabilizer_word_rows().len() != code.rank() {
+fn build_canonical_stabilizer_rows(code: &StabilizerCode) -> Result<Vec<PhysicalRow>, PauliError> {
+    let canonical_bits = code.canonical_stabilizer_bit_rows();
+    if canonical_bits.len() != code.rank() {
         return Err(PauliError::InvalidStabilizer {
             context: "logical-search stabilizer rank disagrees with the code handle",
         });
     }
-    code.canonical_stabilizer_word_rows()
+    let expected_bit_words =
+        packed_count(code.nqubits().checked_mul(2).ok_or(PauliError::Overflow {
+            context: "checking retained logical-search stabilizer bit width",
+        })?);
+    canonical_bits
         .iter()
-        .map(|row| {
-            if row.len()
-                != code
-                    .word_count()
-                    .checked_mul(2)
-                    .ok_or(PauliError::Overflow {
-                        context: "checking retained logical-search stabilizer row width",
-                    })?
-            {
+        .map(|bits| {
+            if bits.len() != expected_bit_words {
                 return Err(PauliError::InvalidStabilizer {
-                    context: "retained logical-search stabilizer row width is inconsistent",
+                    context: "retained logical-search stabilizer bit width is inconsistent",
                 });
             }
-            Ok(PhysicalRow {
-                x_words: row[..code.word_count()].to_vec(),
-                z_words: row[code.word_count()..].to_vec(),
-            })
+            let (x_words, z_words) = words_from_bits(bits, code.nqubits());
+            Ok(PhysicalRow { x_words, z_words })
         })
         .collect()
 }
@@ -2032,6 +2065,47 @@ mod tests {
                 .expect("search");
         assert!(result.best_weight >= 1);
         assert!(code.is_in_normalizer_words(&result.best.x_words, &result.best.z_words));
+    }
+
+    #[test]
+    fn search_caches_are_lazy_until_search() {
+        let code =
+            StabilizerCode::from_css_binary(3, &[], &[1, 1, 0, 0, 1, 1], &[], &[1, 1], u128::MAX)
+                .expect("repetition code");
+        assert!(code.general_search_cache().get().is_none());
+        assert!(code.css_analysis_cache().get().is_none());
+
+        search_logical_witness(
+            &code,
+            LogicalSearchSector::General,
+            1,
+            4,
+            None,
+            7,
+            u128::MAX,
+        )
+        .expect("general search");
+        assert!(code.general_search_cache().get().is_some());
+        assert!(code.css_analysis_cache().get().is_none());
+    }
+
+    #[test]
+    fn search_caches_are_shared_across_clones() {
+        let code =
+            StabilizerCode::from_css_binary(3, &[], &[1, 1, 0, 0, 1, 1], &[], &[1, 1], u128::MAX)
+                .expect("repetition code");
+        let clone = code.clone();
+        search_logical_witness(
+            &clone,
+            LogicalSearchSector::General,
+            1,
+            4,
+            None,
+            7,
+            u128::MAX,
+        )
+        .expect("general search");
+        assert!(code.general_search_cache().get().is_some());
     }
 
     #[test]
