@@ -85,6 +85,20 @@ def _validate_result(
         raise RuntimeError("search returned an inconsistent witness weight")
 
 
+def _paper_reference(workload: Workload) -> dict[str, Any] | None:
+    if workload.paper_l is None:
+        return None
+    return {
+        "l": workload.paper_l,
+        "m": workload.paper_m,
+        "k": workload.paper_k,
+        "distance": workload.paper_distance,
+        "distance_exact": workload.paper_distance_exact,
+        "a": list(workload.paper_a),
+        "b": list(workload.paper_b),
+    }
+
+
 def _measure(
     code: tcp.StabilizerCode,
     workload: Workload,
@@ -131,6 +145,7 @@ def _measure(
     return {
         "workload": workload.name,
         "family": workload.family,
+        "paper_reference": _paper_reference(workload),
         "nqubits": code.nqubits,
         "nchecks": code.nchecks,
         "rank": code.rank,

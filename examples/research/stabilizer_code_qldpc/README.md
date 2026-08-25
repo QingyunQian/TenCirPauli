@@ -4,7 +4,15 @@ This manual Research Example compares TenCirPauli with qLDPC 0.3.3 on their shar
 
 The example does not add qLDPC to TenCirPauli's runtime dependencies and intentionally has no `requirements.txt`. `run_tencirpauli.py` uses the public `StabilizerCode` API. `run_qldpc.py` imports qLDPC directly and uses its documented `CSSCode`/`QuditCode`, `rank`, `dimension`, and `get_logical_ops()` interfaces; the visible adapter performs only the shared GF(2) syndrome, classification, and residual products.
 
-The workload owner is [`workloads.py`](workloads.py). It creates identical ordered X/Z symplectic matrices, deterministic error and correction batches, reference logical fixtures, and content hashes without importing either package. The matrix set includes repetition codes, independent five-qubit-code direct sums with a fixed qubit permutation, Steane's code, binary hypergraph products of open-boundary repetition checks, a reproducible sparse random HGP workload `random_hgp_14400`, and a fixed dense general stabilizer search-quality workload `random_general_256`. Redundant-check variants are included for the medium repetition and finite-rate families.
+The workload owner is [`workloads.py`](workloads.py). It creates identical ordered X/Z symplectic matrices, deterministic error and correction batches, reference logical fixtures, and content hashes without importing either package. The matrix set includes repetition codes, independent five-qubit-code direct sums with a fixed qubit permutation, Steane's code, binary hypergraph products of open-boundary repetition checks, the paper-listed bivariate bicycle (BB) codes, a reproducible sparse random HGP workload `random_hgp_14400`, and a fixed dense general stabilizer search-quality workload `random_general_256`. Redundant-check variants are included for the medium repetition and finite-rate families.
+
+The BB workloads reproduce the construction in IBM's Nature paper [High-threshold and low-overhead fault-tolerant quantum memory](https://arxiv.org/abs/2308.07915): `x=S_l⊗I_m`, `y=I_l⊗S_m`, `A` and `B` are sums of three GF(2) monomials, and `H_X=[A|B]`, `H_Z=[B.T|A.T]`. The seven table instances are available as `bb_72_12_6`, `bb_90_8_10`, `bb_108_8_10`, `bb_144_12_12`, `bb_288_12_18`, `bb_360_12_le24`, and `bb_756_16_le34`; the last two retain the paper's `≤` distance notation. The construction is dense at the NumPy representation level but remains small enough for the selected examples, and it requires no group-theory library: only cyclic permutation matrices, Kronecker products, transpose, and GF(2) addition are used.
+
+Run the structural BB checks without importing TenCirPauli:
+
+```bash
+PYTHONPATH="$PWD/examples/research/stabilizer_code_qldpc" .conda/bin/python examples/research/stabilizer_code_qldpc/bb_static.py
+```
 
 Both implementations use q0-first qubit order and phase-free I/X/Y/Z codes `0/1/2/3`. General checks are represented as `[x | z]`. CSS checks are represented as X-only rows followed by Z-only rows, matching TenCirPauli's public syndrome order; qLDPC's internal field arrays are not used as a substitute for the original ordered input matrix.
 
@@ -14,7 +22,25 @@ Each timed child reports import-independent warmup, fresh construction-to-logica
 
 The timed operations have distinct meanings. Construction-to-logicals builds a fresh code and materializes the physical logical operators; this is the construction boundary used for comparison because it includes the code-space basis needed by the shared workflow. Syndrome computes which ordered stabilizer checks anticommute with every batch error. Classification computes the syndrome and, for zero-syndrome rows, distinguishes stabilizers from non-trivial logical errors and returns logical coordinates. Correction forms the residual `correction * error` for each pair and classifies that residual; it does not search for a decoder correction.
 
-The independent logical-witness quality benchmark is [`search_benchmark.py`](search_benchmark.py). It is not part of the bounded qLDPC comparison or the repository regression benchmark suite. It builds deterministic HGP and general-code workloads through the public TenCirPauli API, sweeps selected `sketch_rows` and `max_trials`, validates every returned witness, and reports the deterministic incumbent, best weight, improvement amount, first/steady end-to-end time, trials per second, native setup and initialization counters, resolved sketch rows, RSS, and source-tree native provenance. CSS workloads measure `auto`, explicit `x`, explicit `z`, and `general` separately by default, while `--sectors general` restricts a run to the general path. The default profile is capped at 180 seconds and uses HGP-8/16/24/32 with `sketch_rows=32,64` and `max_trials=16,64`; larger HGP-48, `random_hgp_14400`, `random_general_256`, or wider sweeps are opt-in.
+The independent logical-witness quality benchmark is [`search_benchmark.py`](search_benchmark.py). It is not part of the bounded qLDPC comparison or the repository regression benchmark suite. It builds deterministic HGP, BB, and general-code workloads through the public TenCirPauli API, sweeps selected `sketch_rows` and `max_trials`, validates every returned witness, and reports the deterministic incumbent, best weight, improvement amount, first/steady end-to-end time, trials per second, native setup and initialization counters, resolved sketch rows, RSS, and source-tree native provenance. CSS workloads measure `auto`, explicit `x`, explicit `z`, and `general` separately by default, while `--sectors general` restricts a run to the general path. The default profile is capped at 180 seconds and uses HGP-8/16/24/32 with `sketch_rows=32,64` and `max_trials=16,64`; BB, larger HGP-48, `random_hgp_14400`, `random_general_256`, or wider sweeps are opt-in.
+
+For the first BB distance-witness profile, use the paper's exact-distance examples at three sizes. Every `best_weight=w` result is a concrete static logical witness and means only `d≤w`; the paper's distance column is retained as an independent reference and is not silently promoted to an exact result from this search:
+
+```bash
+PYTHONPATH="$PWD/python:$PWD/examples/research/stabilizer_code_qldpc" .conda/bin/python examples/research/stabilizer_code_qldpc/search_benchmark.py \
+  --workloads bb_72_12_6,bb_144_12_12,bb_288_12_18 \
+  --sectors auto,x,z --sketch-rows 16,32,64 --trials 1,16,64,256 \
+  --time-budget 180 --output .benchmarks/bb-paper-search.json
+```
+
+For the two largest table entries, a full directional sketch is the important quality setting. Request a cap larger than either directional search space and use explicit `x,z` sectors so both directions receive the full trial budget; with the fixed workload seeds, 10,000 trials reaches witness weights 24 for `bb_360_12_le24` and 34 for `bb_756_16_le34`:
+
+```bash
+PYTHONPATH="$PWD/python:$PWD/examples/research/stabilizer_code_qldpc" .conda/bin/python examples/research/stabilizer_code_qldpc/search_benchmark.py \
+  --workloads bb_360_12_le24,bb_756_16_le34 --sectors x,z \
+  --sketch-rows 772 --trials 10000 --time-budget 180 \
+  --output .benchmarks/bb-paper-tuned-directional.json
+```
 
 The `random_hgp_14400` workload uses a fixed simple `(4,3)`-regular `72×96` binary matrix with full row rank as both classical HGP factors. Its HGP has 14,400 physical qubits and 576 logical qubits; the generated matrix hash is reported in every search record. The distance is not assumed known, so search results are witnessed upper bounds only.
 

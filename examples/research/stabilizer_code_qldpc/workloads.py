@@ -21,6 +21,13 @@ class Workload:
     z_checks: np.ndarray[Any, Any]
     reference_logicals: np.ndarray[Any, Any]
     seed: int
+    paper_l: int | None = None
+    paper_m: int | None = None
+    paper_k: int | None = None
+    paper_distance: int | None = None
+    paper_distance_exact: bool = False
+    paper_a: tuple[str, ...] = ()
+    paper_b: tuple[str, ...] = ()
 
     @property
     def nqubits(self) -> int:
@@ -87,6 +94,156 @@ def _hgp_repetition(length: int) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, 
         (np.kron(np.eye(n, dtype=np.uint8), h), np.kron(h.T, np.eye(m, dtype=np.uint8)))
     )
     return matrix_x, matrix_z
+
+
+def _cyclic_shift(size: int) -> np.ndarray[Any, Any]:
+    """Return the paper's cyclic shift: row ``i`` has its one at ``i + 1``."""
+    matrix = np.zeros((size, size), dtype=np.uint8)
+    matrix[np.arange(size), (np.arange(size) + 1) % size] = 1
+    return matrix
+
+
+def _bb_monomial(ell: int, m: int, axis: str, exponent: int) -> np.ndarray[Any, Any]:
+    """Return one BB polynomial monomial as a binary permutation matrix."""
+    if axis == "1":
+        if exponent != 0:
+            raise ValueError("the BB identity monomial must be written as 1^0")
+        return np.eye(ell * m, dtype=np.uint8)
+    if axis == "x":
+        if exponent < 0:
+            raise ValueError("BB monomial exponents must be non-negative")
+        return np.kron(
+            np.linalg.matrix_power(_cyclic_shift(ell), exponent % ell),
+            np.eye(m, dtype=np.uint8),
+        )
+    if axis == "y":
+        if exponent < 0:
+            raise ValueError("BB monomial exponents must be non-negative")
+        return np.kron(
+            np.eye(ell, dtype=np.uint8),
+            np.linalg.matrix_power(_cyclic_shift(m), exponent % m),
+        )
+    raise ValueError(f"unknown BB monomial axis {axis!r}")
+
+
+def _bb_polynomial(
+    ell: int, m: int, terms: tuple[tuple[str, int], ...]
+) -> np.ndarray[Any, Any]:
+    """Add BB monomials over GF(2), preserving the paper's polynomial form."""
+    if len(terms) != 3:
+        raise ValueError("a BB polynomial must contain three monomials")
+    matrix = np.zeros((ell * m, ell * m), dtype=np.uint8)
+    monomials = []
+    for axis, exponent in terms:
+        monomial = _bb_monomial(ell, m, axis, exponent)
+        matrix ^= monomial
+        monomials.append(monomial)
+    if len({bytes(monomial) for monomial in monomials}) != len(monomials):
+        raise ValueError("BB polynomial terms must be distinct modulo x^l = y^m = 1")
+    return matrix
+
+
+def _bivariate_bicycle(
+    ell: int,
+    m: int,
+    a_terms: tuple[tuple[str, int], ...],
+    b_terms: tuple[tuple[str, int], ...],
+) -> tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
+    """Construct the CSS matrices ``H_X=[A|B]`` and ``H_Z=[B.T|A.T]``."""
+    if ell < 1 or m < 1:
+        raise ValueError("BB dimensions must be positive")
+    a = _bb_polynomial(ell, m, a_terms)
+    b = _bb_polynomial(ell, m, b_terms)
+    return (
+        np.ascontiguousarray(np.hstack((a, b)), dtype=np.uint8),
+        np.ascontiguousarray(np.hstack((b.T, a.T)), dtype=np.uint8),
+    )
+
+
+@dataclass(frozen=True)
+class _BBInstance:
+    """One finite-size BB code listed in the IBM/Nature paper."""
+
+    ell: int
+    m: int
+    a_terms: tuple[tuple[str, int], ...]
+    b_terms: tuple[tuple[str, int], ...]
+    k: int
+    distance: int
+    distance_exact: bool
+
+
+_BB_INSTANCES: dict[str, _BBInstance] = {
+    "bb_72_12_6": _BBInstance(
+        6,
+        6,
+        (("x", 3), ("y", 1), ("y", 2)),
+        (("y", 3), ("x", 1), ("x", 2)),
+        12,
+        6,
+        True,
+    ),
+    "bb_90_8_10": _BBInstance(
+        15,
+        3,
+        (("x", 9), ("y", 1), ("y", 2)),
+        (("1", 0), ("x", 2), ("x", 7)),
+        8,
+        10,
+        True,
+    ),
+    "bb_108_8_10": _BBInstance(
+        9,
+        6,
+        (("x", 3), ("y", 1), ("y", 2)),
+        (("y", 3), ("x", 1), ("x", 2)),
+        8,
+        10,
+        True,
+    ),
+    "bb_144_12_12": _BBInstance(
+        12,
+        6,
+        (("x", 3), ("y", 1), ("y", 2)),
+        (("y", 3), ("x", 1), ("x", 2)),
+        12,
+        12,
+        True,
+    ),
+    "bb_288_12_18": _BBInstance(
+        12,
+        12,
+        (("x", 3), ("y", 2), ("y", 7)),
+        (("y", 3), ("x", 1), ("x", 2)),
+        12,
+        18,
+        True,
+    ),
+    "bb_360_12_le24": _BBInstance(
+        30,
+        6,
+        (("x", 9), ("y", 1), ("y", 2)),
+        (("y", 3), ("x", 25), ("x", 26)),
+        12,
+        24,
+        False,
+    ),
+    "bb_756_16_le34": _BBInstance(
+        21,
+        18,
+        (("x", 3), ("y", 10), ("y", 17)),
+        (("y", 5), ("x", 3), ("x", 19)),
+        16,
+        34,
+        False,
+    ),
+}
+
+
+def _format_bb_term(axis: str, exponent: int) -> str:
+    if axis == "1":
+        return "1"
+    return axis if exponent == 1 else f"{axis}^{exponent}"
 
 
 def _gf2_rank(matrix: np.ndarray[Any, Any]) -> int:
@@ -396,6 +553,13 @@ def available_workloads() -> tuple[str, ...]:
         "hgp_24",
         "hgp_32",
         "hgp_48",
+        "bb_72_12_6",
+        "bb_90_8_10",
+        "bb_108_8_10",
+        "bb_144_12_12",
+        "bb_288_12_18",
+        "bb_360_12_le24",
+        "bb_756_16_le34",
         "random_hgp_14400",
         "random_general_256",
         "five_qubit_16",
@@ -413,7 +577,16 @@ def get_workload(name: str) -> Workload:
             f"unknown workload {name!r}; choose from {available_workloads()}"
         )
 
-    if name.startswith("repetition_"):
+    paper_instance: _BBInstance | None = _BB_INSTANCES.get(name)
+    if paper_instance is not None:
+        x_checks, z_checks = _bivariate_bicycle(
+            paper_instance.ell,
+            paper_instance.m,
+            paper_instance.a_terms,
+            paper_instance.b_terms,
+        )
+        family = "bivariate_bicycle"
+    elif name.startswith("repetition_"):
         suffix = name.removeprefix("repetition_")
         if suffix.endswith("_redundant"):
             suffix = suffix.removesuffix("_redundant")
@@ -461,7 +634,14 @@ def get_workload(name: str) -> Workload:
         family=family,
         kind=(
             "css"
-            if family in {"repetition", "steane", "hgp_repetition", "random_hgp"}
+            if family
+            in {
+                "repetition",
+                "steane",
+                "hgp_repetition",
+                "random_hgp",
+                "bivariate_bicycle",
+            }
             else "general"
         ),
         x_checks=np.ascontiguousarray(x_checks, dtype=np.uint8),
@@ -475,6 +655,25 @@ def get_workload(name: str) -> Workload:
                 if name == "random_general_256"
                 else 20260822 + sum(ord(character) for character in name)
             )
+        ),
+        paper_l=paper_instance.ell if paper_instance is not None else None,
+        paper_m=paper_instance.m if paper_instance is not None else None,
+        paper_k=paper_instance.k if paper_instance is not None else None,
+        paper_distance=(
+            paper_instance.distance if paper_instance is not None else None
+        ),
+        paper_distance_exact=(
+            paper_instance.distance_exact if paper_instance is not None else False
+        ),
+        paper_a=(
+            tuple(_format_bb_term(*term) for term in paper_instance.a_terms)
+            if paper_instance is not None
+            else ()
+        ),
+        paper_b=(
+            tuple(_format_bb_term(*term) for term in paper_instance.b_terms)
+            if paper_instance is not None
+            else ()
         ),
     )
 
