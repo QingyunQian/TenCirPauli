@@ -107,7 +107,7 @@ def _gate(
 
 
 class _CircuitProgram:
-    """Small immutable U(1) logical tape containing concrete angles only."""
+    """Small mutable U(1) logical tape containing concrete angles only."""
 
     _SUPPORTED: ClassVar[set[str]] = {
         "rz",
@@ -123,52 +123,57 @@ class _CircuitProgram:
         if not isinstance(nqubits, int) or isinstance(nqubits, bool) or nqubits < 0:
             raise ValueError("nqubits must be a non-negative integer")
         self.nqubits = nqubits
-        self.operations = tuple(operations)
-        self._validate()
+        self.operations: list[_LogicalGate] = []
+        self._angle_count = 0
+        for operation in operations:
+            self.append_operation(operation)
 
-    def _validate(self) -> None:
-        for operation in self.operations:
-            if operation.name not in self._SUPPORTED:
-                raise ValueError(f"unsupported circuit gate {operation.name!r}")
-            if not operation.wires or any(
-                not isinstance(wire, int)
-                or isinstance(wire, bool)
-                or wire < 0
-                or wire >= self.nqubits
-                for wire in operation.wires
+    def _validate_operation(self, operation: _LogicalGate) -> None:
+        if operation.name not in self._SUPPORTED:
+            raise ValueError(f"unsupported circuit gate {operation.name!r}")
+        if not operation.wires or any(
+            not isinstance(wire, int)
+            or isinstance(wire, bool)
+            or wire < 0
+            or wire >= self.nqubits
+            for wire in operation.wires
+        ):
+            raise ValueError("gate wire is outside the circuit")
+        if len(set(operation.wires)) != len(operation.wires):
+            raise ValueError("gate wires must be distinct")
+        if (
+            operation.name in {"rzz", "cz", "cphase", "swap", "iswap"}
+            and len(operation.wires) != 2
+        ):
+            raise ValueError("two-qubit gate requires exactly two wires")
+        if operation.name == "rz" and len(operation.wires) != 1:
+            raise ValueError("rz requires exactly one wire")
+        if operation.name == "diagonal":
+            if operation.payload is None:
+                raise ValueError("diagonal requires a static payload")
+            expected = 1 << len(operation.wires)
+            if len(operation.payload) != expected:
+                raise ValueError("diagonal payload length does not match arity")
+            if any(
+                not math.isfinite(value.real)
+                or not math.isfinite(value.imag)
+                or abs(abs(value) - 1.0) > 1e-12
+                for value in operation.payload
             ):
-                raise ValueError("gate wire is outside the circuit")
-            if len(set(operation.wires)) != len(operation.wires):
-                raise ValueError("gate wires must be distinct")
-            if (
-                operation.name in {"rzz", "cz", "cphase", "swap", "iswap"}
-                and len(operation.wires) != 2
-            ):
-                raise ValueError("two-qubit gate requires exactly two wires")
-            if operation.name == "rz" and len(operation.wires) != 1:
-                raise ValueError("rz requires exactly one wire")
-            if operation.name == "diagonal":
-                if operation.payload is None:
-                    raise ValueError("diagonal requires a static payload")
-                expected = 1 << len(operation.wires)
-                if len(operation.payload) != expected:
-                    raise ValueError("diagonal payload length does not match arity")
-                if any(
-                    not math.isfinite(value.real)
-                    or not math.isfinite(value.imag)
-                    or abs(abs(value) - 1.0) > 1e-12
-                    for value in operation.payload
-                ):
-                    raise ValueError("diagonal payload must be finite and unit modulus")
-            if operation.angle is not None:
-                _angle(operation.angle)
+                raise ValueError("diagonal payload must be finite and unit modulus")
+        if operation.angle is not None:
+            _angle(operation.angle)
+
+    def append_operation(self, operation: _LogicalGate) -> None:
+        """Validate and append one operation without rescanning the tape."""
+        self._validate_operation(operation)
+        self.operations.append(operation)
+        if operation.angle is not None:
+            self._angle_count += 1
 
     @property
     def angle_count(self) -> int:
-        return sum(operation.angle is not None for operation in self.operations)
-
-    def with_operations(self, operations: Iterable[_LogicalGate]) -> "_CircuitProgram":
-        return _CircuitProgram(self.nqubits, operations)
+        return self._angle_count
 
     def inverse(self) -> "_CircuitProgram":
         operations: list[_LogicalGate] = []
@@ -184,12 +189,15 @@ class _CircuitProgram:
             operations.append(
                 _LogicalGate(operation.name, operation.wires, angle, payload)
             )
-        return self.with_operations(operations)
+        return _CircuitProgram(self.nqubits, operations)
 
     def append(self, other: "_CircuitProgram") -> "_CircuitProgram":
         if self.nqubits != other.nqubits:
             raise ValueError("circuits must have the same nqubits")
-        return self.with_operations(self.operations + other.operations)
+        result = _CircuitProgram(self.nqubits)
+        result.operations = self.operations + other.operations
+        result._angle_count = self._angle_count + other._angle_count
+        return result
 
     def to_qir(self) -> list[dict[str, object]]:
         result: list[dict[str, object]] = []

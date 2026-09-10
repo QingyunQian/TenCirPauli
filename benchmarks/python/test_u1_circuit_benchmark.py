@@ -37,6 +37,7 @@ JAX_WORKLOADS = tuple(workload for workload in WORKLOADS if workload.name != "40
 PARAMETERIZED_WORKLOAD = U1Workload(
     "16q-k4-parameterized", nqubits=16, particles=4, layers=3
 )
+CONSTRUCTION_GATE_COUNT = 10_000
 
 
 def make_native(workload: U1Workload = WORKLOADS[0]) -> tcp.U1Circuit:
@@ -225,6 +226,28 @@ def _parameterized_metadata(backend: str, workload: U1Workload) -> dict[str, int
         "observable_terms": 1,
         "backend": backend,
     }
+
+
+def test_u1_python_gate_construction(benchmark: BenchmarkFixture) -> None:
+    """Measure Python-side logical-tape construction without native execution."""
+
+    def build() -> tcp.U1Circuit:
+        circuit = tcp.U1Circuit(2, particle_number=1)
+        for index in range(CONSTRUCTION_GATE_COUNT):
+            circuit.rz(index % 2, theta=0.01 * index)
+        return circuit
+
+    result = benchmark(build)
+    assert result.angle_count == CONSTRUCTION_GATE_COUNT
+    benchmark.extra_info.update(
+        {
+            "backend": "tencirpauli-python-builder",
+            "gate_count": CONSTRUCTION_GATE_COUNT,
+            "nqubits": 2,
+            "particle_number": 1,
+            "native_compilation_included": False,
+        }
+    )
 
 
 @pytest.mark.performance_large

@@ -415,8 +415,7 @@ class U1Circuit:
         result.particle_number = other.particle_number
         result.max_bytes = other.max_bytes
         result.sector = other.sector
-        result._initial_state = other._initial_state.copy()
-        result._initial_state.flags.writeable = False
+        result._initial_state = other._initial_state
         result._program = program
         result._native_forward_plan = None
         result._native_gradient_plan = None
@@ -435,9 +434,7 @@ class U1Circuit:
         return self.sector.dimension
 
     def _append(self, operation: _LogicalGate) -> None:
-        self._program = self._program.with_operations(
-            (*self._program.operations, operation)
-        )
+        self._program.append_operation(operation)
         self._native_forward_plan = None
         self._native_gradient_plan = None
         self._state_cache = None

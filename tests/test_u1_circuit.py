@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import tencirpauli as tcp
+from tencirpauli.circuit import _CircuitProgram, _LogicalGate
 
 
 def _observable(nqubits: int, word: str = "ZI") -> tcp.PauliOperator:
@@ -26,6 +27,46 @@ def test_required_gates_match_state_and_expectation_contract() -> None:
     assert circuit.probability().shape == (3,)
     assert circuit.state_full().shape == (8,)
     assert circuit.expectation(_observable(3, "ZII")).imag == pytest.approx(0.0)
+
+
+def test_gate_append_validates_only_the_new_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validation_count = 0
+    validate_operation = _CircuitProgram._validate_operation
+
+    def counted_validate(program: _CircuitProgram, operation: _LogicalGate) -> None:
+        nonlocal validation_count
+        validation_count += 1
+        validate_operation(program, operation)
+
+    monkeypatch.setattr(_CircuitProgram, "_validate_operation", counted_validate)
+    circuit = tcp.U1Circuit(2, particle_number=1)
+    for index in range(128):
+        circuit.rz(index % 2, 0.01 * index)
+
+    assert validation_count == 128
+    assert circuit.angle_count == 128
+    assert len(circuit.to_qir()) == 128
+
+
+def test_derived_circuits_do_not_share_mutable_gate_storage() -> None:
+    left = tcp.U1Circuit(2, particle_number=1)
+    left.rz(0, 0.1)
+    right = tcp.U1Circuit(2, particle_number=1)
+    right.rz(1, 0.2)
+
+    combined = left.append(right)
+    inverted = left.inverse()
+    left.cz(0, 1)
+    right.swap(0, 1)
+
+    assert len(left.to_qir()) == 2
+    assert len(right.to_qir()) == 2
+    assert len(combined.to_qir()) == 2
+    assert len(inverted.to_qir()) == 1
+    assert combined.angle_count == 2
+    assert inverted.angle_count == 1
 
 
 def test_full_state_and_probability_materialization_match_restricted_values() -> None:
